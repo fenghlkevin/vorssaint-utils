@@ -1,248 +1,162 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/logo-dark.svg">
-    <img src="docs/assets/readme/logo.svg" width="220" alt="Vorssaint logo">
+    <img src="docs/assets/readme/logo.svg" width="220" alt="Vorssaint 标志">
   </picture>
 </p>
 
 <h1 align="center">Vorssaint</h1>
 
 <p align="center">
-  One menu bar icon doing the job of a dozen paid Mac apps.<br>
-  Free, open source, and everything runs on your Mac.
+  一个菜单栏图标，集成十余款常用 Mac 工具的能力。<br>
+  免费、开源，所有核心处理均在本机完成。
 </p>
 
 <p align="center">
-  <a href="https://vorssaint.com">Website</a> ·
-  <a href="#install">Install</a> ·
-  <a href="#everything-it-does">Features</a> ·
-  <a href="#private-by-default">Privacy</a> ·
-  <a href="CHANGELOG.md">Changelog</a> ·
-  <a href="mailto:hello@vorssaint.com">Contact</a> ·
-  <a href="https://buymeacoffee.com/vorssaint">Buy Me a Coffee</a>
+  <a href="https://vorssaint.com">官网</a> · <a href="#安装">安装</a> ·
+  <a href="#主要功能">功能</a> · <a href="#隐私与权限">隐私</a> ·
+  <a href="CHANGELOG.md">更新日志</a> · <a href="mailto:hello@vorssaint.com">联系作者</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/vorssaintapp/vorssaint-utils/releases"><img src="https://img.shields.io/github/v/release/vorssaintapp/vorssaint-utils?label=release&color=4c8dff" alt="Latest release"></a>
-  <a href="https://github.com/vorssaintapp/vorssaint-utils/releases"><img src="https://img.shields.io/github/downloads/vorssaintapp/vorssaint-utils/total?color=4c8dff" alt="Downloads"></a>
-  <a href="https://github.com/vorssaintapp/vorssaint-utils/actions/workflows/ci.yml"><img src="https://github.com/vorssaintapp/vorssaint-utils/actions/workflows/ci.yml/badge.svg?branch=main&event=push" alt="CI status"></a>
-  <a href="#what-you-need"><img src="https://img.shields.io/badge/macOS-14%2B%20Apple%20Silicon-black" alt="macOS 14 and newer, Apple Silicon"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="License GPL 3.0 or later"></a>
+  <a href="https://github.com/vorssaintapp/vorssaint-utils/releases"><img src="https://img.shields.io/github/v/release/vorssaintapp/vorssaint-utils?label=release&color=4c8dff" alt="最新版本"></a>
+  <a href="https://github.com/vorssaintapp/vorssaint-utils/releases"><img src="https://img.shields.io/github/downloads/vorssaintapp/vorssaint-utils/total?color=4c8dff" alt="下载次数"></a>
+  <a href="https://github.com/vorssaintapp/vorssaint-utils/actions/workflows/ci.yml"><img src="https://github.com/vorssaintapp/vorssaint-utils/actions/workflows/ci.yml/badge.svg?branch=main&event=push" alt="CI 状态"></a>
+  <img src="https://img.shields.io/badge/macOS-14%2B%20Apple%20Silicon-black" alt="macOS 14 及以上，Apple 芯片">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="GPL 3.0 或更高版本"></a>
 </p>
 
 <p align="center">
-  <a href="https://discord.gg/M6BwWH4BJp">
-    <img src="docs/assets/readme/discord-symbol.svg" width="72" alt="Discord">
-  </a>
+  <img src="docs/assets/readme/panel-mixer.png" width="196" alt="按应用调节音量">
+  <img src="docs/assets/readme/panel-system.png" width="196" alt="系统监控面板">
+  <img src="docs/assets/readme/panel-controls.png" width="196" alt="窗口与 Dock 控制">
+  <img src="docs/assets/readme/panel-utilities.png" width="196" alt="实用工具面板">
 </p>
 
-<p align="center">
-  For partnerships or anything private, email
-  <a href="mailto:hello@vorssaint.com"><strong>hello@vorssaint.com</strong></a>.
-</p>
+Vorssaint 是一款面向 macOS 的一体化菜单栏工具，整合了应用音量、系统监控、窗口管理、剪贴板、截图录屏、文件处理、应用卸载等能力。无需注册账号、没有遥测，也不需要订阅。
 
-<p align="center">
-  <a href="https://trendshift.io/repositories/53716?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-53716" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/53716" alt="vorssaintapp%2Fvorssaint-utils | Trendshift" width="250" height="55"></a>
-  <a href="https://trendshift.io/repositories/53716?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-53716" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/53716/weekly?language=Swift" alt="vorssaintapp/vorssaint-utils | Trendshift weekly ranking" width="250" height="55"></a>
-</p>
+## 按需启用
 
-<p align="center">
-  <img src="docs/assets/readme/panel-mixer.png" width="196" alt="Volume mixer with per app sliders, one app boosted past 100 percent">
-  <img src="docs/assets/readme/panel-system.png" width="196" alt="System tab with temperatures, usage graphs and memory pressure">
-  <img src="docs/assets/readme/panel-controls.png" width="196" alt="Window controls with the app switcher and Dock features">
-  <img src="docs/assets/readme/panel-utilities.png" width="196" alt="Utilities with cleaner, Homebrew, media tools and clipboard">
-</p>
+“功能中心”可以单独安装或卸载完整功能模块。卸载后，该模块会从界面中消失并停止加载，不再占用 CPU、内存或电量；已有设置不会删除，重新安装即可恢复。
 
-Per app volume, a real system monitor, a better app switcher, window snapping, Dock previews, clipboard history, text snippets, a file shelf, an uninstaller. The utilities Mac users usually buy one by one, together behind a single menu bar icon, with no account, no telemetry and no subscription.
+首次启动可选择“基础”“窗口”或“省电静音”预设，也可以逐项选择功能。应用只申请所选功能真正需要的权限，并标明功能启用后的能耗类型。面板分区支持排序与隐藏，设置也可以导出后在另一台 Mac 上导入。
 
-## Install only what you use
+<p align="center"><img src="docs/assets/readme/features-hub.png" width="720" alt="功能中心"></p>
 
-Nobody needs all of it, and Vorssaint is built around that. The Features page installs and uninstalls whole features: what you uninstall disappears from the entire app and stops loading, so it spends no CPU, memory or energy. Nothing is deleted, and installing again brings your old settings back.
+## 主要功能
 
-First setup offers three one click bundles, Essentials, Windows, and Battery and quiet, plus a visual picker for choosing individual features. Only the permissions those choices need are requested next, and everything can be changed later in Settings. Every feature also wears an honest energy badge saying what it keeps alive while on.
+### 声音
 
-<p align="center">
-  <img src="docs/assets/readme/features-hub.png" width="720" alt="The Features hub in Settings, installing and uninstalling whole features">
-</p>
+- **应用音量混合器**：分别调整系统及每个应用的音量，支持精确百分比、超过 100% 增益、应用隐藏和系统声音输出分流。
+- **按应用选择输出设备**：例如让音乐走扬声器、通话走耳机。
+- **输出设备与麦克风**：快捷键轮换输出设备、固定首选输入设备、一键静音全部麦克风。
+- **音乐应用拦截**：阻止耳机连接时“音乐”应用自动启动。
 
-The rest bends the same way: panel sections reorder and hide, the compact layout trades sections for tabs, settings export to a file and import on a new Mac, the app can stay light or dark apart from the Mac, and the whole app speaks more than a dozen languages.
+### 系统监控
 
-## Everything it does
+- **性能与硬件状态**：CPU、GPU、内存、交换空间、磁盘、温度、电池健康度、循环次数及功耗历史。
+- **风扇控制（测试功能）**：实时转速、固定转速和自定义温度曲线。
+- **菜单栏读数与提醒**：显示用量、温度、电池时间、风扇转速，并在高负载、高温、内存压力、低磁盘或低电量时通知。
+- **网络工具**：实时速率、会话流量统计和网速测试。
 
-### Sound
+### 窗口与 Dock
 
-- **Volume mixer.** Adjust the Mac's overall volume or slide any single app up or down, enter an exact percentage, and push a quiet one past 100 percent when a video is just too low. Send system sounds through another output, or hide the apps you never adjust to keep the list short. No audio driver, no setup.
-- **Per app output.** Send your music to the speakers and a call to your headset at the same time.
-- **Output switcher.** Cycle between chosen outputs with one shortcut, and drop the volume automatically when headphones disconnect.
-- **Microphone tools.** Pin your favorite input so the Mac stops guessing, and mute every microphone at once with a click or shortcut, whichever one an app is using.
-- **Music app blocker.** Stops the Music app from bursting in when headphones connect. You can still open it yourself.
+- **应用切换器**：增强版 ⌘Tab，支持实时窗口缩略图、多窗口、搜索、按应用规则和多显示器定位。
+- **窗口布局**：半屏、三分屏、六分屏、角落、居中、跨屏移动、边缘吸附、间距、快捷键及布局恢复。
+- **Dock 窗口预览与点击动作**：预览、选择和拖动窗口，也可最小化、隐藏或循环切换窗口。
+- **窗口最大化与关闭即退出**：绿色按钮最大化时不新建“空间”，也可让指定应用在最后一个窗口关闭后退出。
 
-### Know what your Mac is doing
+<p align="center"><img src="docs/assets/readme/window-switcher.gif" width="540" alt="窗口切换器演示"></p>
 
-- **System monitor.** CPU, GPU, memory, swap use and temperatures with history graphs, including a choice between total memory in use and memory held by apps, plus battery health, time remaining, cycle count, power draw, an optional Fan Control beta with continuous manual speeds, custom temperature curves and live RPM, the apps burning energy right now and a shortcut to the Mac's full process inspector.
-- **Menu bar readouts.** Keep the readings you care about in the bar itself, with values or compact usage bars, including optional battery time remaining and fan speed, combined or as separate items.
-- **Network.** Live rates, session totals and a built in speed test.
-- **Alerts.** Optional notifications for sustained CPU load, high CPU or battery temperature, memory pressure, low disk space and low battery.
+### 键盘与鼠标
 
-### Windows and the Dock
+- 文本片段自动展开、平滑滚动、鼠标跟随聚焦、滚轮方向独立设置。
+- 鼠标侧键导航、自定义鼠标按键快捷键、三指中键，并可为特定应用设置例外。
+- 键盘防连击，以及把 Caps Lock 或右侧修饰键变成组合修饰键的“超级键”。
+- 在统一页面管理所有已安装功能的全局快捷键。
 
-- **App switcher.** A richer take on pressing ⌘Tab, with adjustable live window thumbnails, minimized windows included, and more than one window per app. Simple mode keeps every window and its title without previews or screen capture, with optional grouping to one entry per app. Optionally press S to keep search open after releasing the switcher shortcut, or hide the shortcut hints below the large icon row. Press the window shortcut directly to move between windows of the app in front. Choose whether it opens on the screen under the pointer, the one with the menu bar or the one with the active window. Set per-app rules to include windowless apps, keep them window-only or hide them. Choose apps where Vorssaint pauses both switcher and Dock thumbnail capture while they are in front.
-- **Window layout.** Snap the active window to halves, thirds, sixths, corners or center, maximize it with or without a margin, or move it to the next or previous display, each with its own optional shortcut. Restore steps back through recent placements. Turn on edge snapping in Window Layout, then drag a title bar to any screen edge or corner for a live preview. Hold chosen modifiers and drag anywhere to move it, then add Shift to resize. A mouse can also resize with the right button.
-- **Dock Preview.** Hover a Dock icon to see adjustable window thumbnails with clear titles, click the one you want or drag it to move and snap the window.
-- **Dock clicks.** Click the Dock icon of the active app to minimize its windows, hide the app, or cycle through its windows.
-- **Maximize windows.** The green button fills the screen without creating another Space, and puts the window back on the next click.
-- **Quit on close.** Apps you choose quit when their last window closes.
+### 剪贴板、文件与链接
 
-<p align="center">
-  <img src="docs/assets/readme/window-switcher.gif" width="540" alt="The window switcher showing live thumbnails of open windows">
-</p>
+- **剪贴板历史**：本地保存文本、图片和文件，支持固定、搜索、预览、编辑和快速粘贴。
+- **自动清空与纯文本粘贴**：按时间、睡眠、息屏或锁屏清空系统剪贴板；快捷键移除格式后粘贴。
+- **文件暂存架与 Finder 增强**：临时存放拖拽内容，使用 ⌘X/⌘V 移动文件、F2 重命名，把图片粘贴成 PNG。
+- **链接清理与 DMG 安装**：移除跟踪参数；一键安装磁盘映像中的应用并清理下载文件。
 
-### Keyboard and mouse
+### 日常工具
 
-- **Text snippets.** Type a short trigger anywhere and it becomes your text, expanded instantly or after a space, with clipboard variables plus date and time in any format you like. A searchable quick menu, organized into folders, types any snippet right at your cursor.
-- **Smooth scrolling.** Gives a mouse wheel the glide of a trackpad.
-- **Focus follows mouse.** Install it from Features to bring the window under the
-  pointer to the front after an adjustable pause. It waits while you drag or hold a
-  modifier key.
-- **Scroll direction.** Invert vertical and horizontal wheel movement separately without
-  touching the trackpad's natural scrolling.
-- **Side buttons.** The mouse Back and Forward buttons start meaning it, in Finder, browsers and compatible apps.
-- **Mouse button shortcuts.** Give any extra button or side-wheel direction a key combination of your choice. Click add, use it, record the keys.
-- **Middle click.** A three finger press becomes a real middle click.
-- **Apps to leave alone.** Every feature above can name apps from anywhere on your Mac that drive themselves with the mouse, like 3D and design tools, and it steps aside in those.
-- **Key debounce.** Filters the double letters a worn keyboard invents.
-- **Super key.** Hold Caps Lock or a right-side modifier key and it counts as the modifier combination you choose, so one key can drive your shortcuts. A tap on its own can switch input sources, switch capitals, press Escape, or do nothing. Keep the selected key at its default action in System Settings › Keyboard › Modifier Keys.
-- **Keyboard shortcuts.** Edit every installed feature's global shortcut from one categorized page, see what is active and use the shorter Super key combination when available.
+- **命令栏**：搜索并执行功能、应用、窗口、菜单命令、表情、文本片段、剪贴板和文件；支持计算、换算、日期、本地脚本和系统设置入口。
+- **快捷面板、快捷开关与径向菜单**：集中调用常用功能、系统开关、应用、文件、链接和快捷键。
+- **截图与录屏**：区域、窗口和全屏捕获，滚动截图、OCR、二维码、标注、遮挡、裁剪、指针平滑、自动缩放、音轨编辑及 GIF/视频导出。
+- **屏幕取色、摄像头预览与便笺**：在本地完成取色、预览和临时文本记录。
+- **应用更新、清理器与卸载器**：聚合更新来源，查找缓存、日志和应用残留，并在确认后移入废纸篓。
+- **媒体与 Homebrew 工具**：压缩、裁剪和转换视频或图片，制作 GIF、添加水印，并通过图形界面管理 formula 和 cask。
+- **清洁模式**：清洁设备时锁定键盘并黑屏；另提供进程结束、临时粘贴等实用能力。
 
-### Clipboard, files and links
+### 电源、显示与连接
 
-- **Clipboard history.** Local history of text, images and files with pinned favorites, search, quick paste shortcuts and an on-demand preview where text can be selected or edited.
-- **Auto clear clipboard.** Empty the system clipboard a set time after you copy, and when the Mac sleeps, the display sleeps or the screen locks. Each trigger is optional, works with history off, and leaves your saved items untouched.
-- **Paste as plain text.** One shortcut pastes without fonts, colors or links, and the original stays on the clipboard.
-- **Shelf.** Park files, text and links near your cursor mid drag, or open it from a screen edge, then drop them where they belong later.
-- **Finder shortcuts.** ⌘X and ⌘V move files, an optional F2 shortcut renames the selection, and copied images can become PNG files with ⌘V.
-- **Clean URL.** Strips tracking parameters and extra names you choose from copied links, on demand or automatically.
-- **Disk image installer.** When a mounted disk image contains one app, install it into Applications with one click, eject the image and move its download to Trash.
+- **保持唤醒**：按时长、外接显示器或电源状态保持 Mac 唤醒，支持合盖工作及菜单栏倒计时。
+- **显示器控制**：调整内外置显示器亮度、开关单个显示器，并让亮度键跟随鼠标所在屏幕。
+- **额外亮度**：利用 MacBook Pro XDR 屏幕的 HDR 余量突破常规最高亮度。
+- **睡眠时关闭蓝牙**：睡眠后暂时关闭蓝牙，唤醒时仅恢复由 Vorssaint 关闭的状态。
 
-### Everyday tools
+## 安装
 
-- **Command Bar.** One shortcut opens a field over whatever you are doing. Drag its mark to place it anywhere on a screen, or double-click the mark to put it back. Type a few letters to run any Vorssaint action, open an app, switch to a window, insert an emoji or snippet, paste from your clipboard history at the cursor, and it reaches into the app you are using to run any command from its menus, showing that command's own shortcut. It answers sums, conversions, dates and questions about your Mac as you type, opens a web address you enter, and acts on the text you already have selected. Saved shortcuts can also run a local script and show its output as you type. Name a few folders and it finds files in them by name too, through the Mac's own search, without building its own index or looking beyond the folders you choose. Apps also answer to alternate names known by macOS, and the Mac's own Settings panes are one row away. Press ⌘K on an app to quit, restart, force quit or send it to the Uninstaller, and on any row to name it, pin it, hide it or give it a shortcut of its own; ⌘Return shows an app, a folder or a file where it lives. Bug reports and feature ideas can also be sent from here, with every technical detail shown before you choose whether to include it. It learns what you use most and forgets everything you type into the bar.
-- **Quick panel.** ⌃⌘V opens a small floating palette with your favorite tools one key away.
-- **Quick toggles.** One-click system actions in their own panel tab: switch light and dark mode, toggle the keyboard light, empty the Trash, eject every disk, show hidden files, hide desktop icons, lock the screen and more.
-- **Radial menu.** Hold a shortcut, or any extra mouse button, and a wheel of your favorite actions opens around the pointer: apps, files, links, key combos, media controls, quick toggles and Vorssaint tools, with submenus for more. Point and release to run one. Custom profiles let you switch between different wheel layouts, color themes, shortcuts and mouse triggers, and website links can fetch their actual icons on demand.
-- **Screen capture.** Screenshots, screen recordings, copying text from the screen and picking a color share one selector, and each tool's own shortcut opens it already on that tool, ready to switch. Only installed tools appear, recording sound and microphone choices stay beside the mode selector, and every related setting lives on one page with a separate mode for each tool.
-- **Screenshot.** Capture an area, a window or the whole screen on a frozen picture, or join a long page or document by scrolling it yourself, then pressing Enter or Done. It can include ordinary Vorssaint windows without showing its own capture controls. Its quick preview can stay near the shot or in any screen corner, can be dragged out as a PNG, and can copy, save, delete or open the editor, which adds stickers, annotations, precise crop, redaction, adjustable backgrounds and pinned captures. Recent screenshots and recordings stay one click away in their panel cards and editors, and are searchable from the Command Bar. Copied captures paste as PNG files, including in tools that expect a file path. The preview and editor can share a capture for 1, 6 or 24 hours and delete it early from the app. A QR code in the shot shows its content to copy or open, from the preview and the editor. Optional timer, save folder and 1x export included. Captures can copy themselves to the clipboard, run your favorite action right after the shot, save into dated subfolders with a file name pattern of your own, and use separate shortcuts for a whole-screen shot, the latest capture or any copied image.
-- **Screen recording.** Record an area, a window or the whole screen with optional system sound and microphone audio on separate tracks. A dimmed guide keeps the chosen area visible while recording, and floating controls can pause, resume or stop it. Choose either source while selecting, then adjust its volume or remove it in the editor. Vorssaint windows can be selected like any other while recording controls stay out. The editor trims, cuts, smooths the pointer, adds optional automatic zooms that can stay with typing after a click, adds text and adjustable backgrounds, and saves reusable presets. Copy the finished video directly, copy and delete in one step, export video and GIF files to the folder you choose, or compress it locally and share a temporary 1-hour or 6-hour link under 100 MB.
-- **Camera preview.** A floating mirror to check how you look before joining a call, one click or shortcut away. Pick the camera when several are connected; it closes as soon as you click away.
-- **Scratchpad.** Floating pads in named tabs for short-lived text: meeting notes, numbers, fragments on their way somewhere else. They save as you type, preview Markdown formatting on demand, step aside when you click elsewhere (or stay floating, your call), and can copy everything, export to a file or clear themselves after a quiet period.
-- **Copy text from screen.** Select any area and its text is recognized offline, straight onto the clipboard. When the area holds a QR code, its content is shown so you can copy it or open the link.
-- **Color picker.** Grab any pixel from the shared screen selector as HEX, RGB, HSL or SwiftUI code, with the system loupe kept as a permission-free fallback.
-- **App updates.** One list of the apps on your Mac that have a newer version. It checks package-managed and store apps, then compares other exact app names with a public online catalog. Managed updates install together; other rows open the original app so its own updater stays in control. Each source can be switched off, and optional background checks tell you when something is waiting.
-- **Cleaner.** Sweeps app leftovers, caches and logs, by hand or on a schedule.
-- **Messaging downloads.** The Cleaner can also tidy the media a messaging app saves into Downloads, confirmed by macOS metadata and only ever moved to the Trash, with a review list, retention rules and an optional organizer that files new ones into a folder of your choice.
-- **Uninstaller.** Drop an app in and take its caches, preferences, helpers, plugins, containers and other leftovers to the Trash with it. Related finds start unchecked so you can review them first.
-- **Media tools.** Compress videos or open any one in the editor to trim, cut and crop it, convert images one at a time or in batches with resizing, watermarks and reusable profiles, make GIFs and extract text, all locally.
-- **Homebrew manager.** Search, install and remove formulae and casks without opening a terminal.
-- **Cleaning Mode.** Locks the keyboard and blacks out every display while you clean.
-
-### Energy and display
-
-- **Keep awake.** Keep the Mac up for a timer, until you say stop or automatically with an external display or power connection, including with the lid closed, let displays sleep without stopping local work, choose the active menu bar icon and color, see the remaining time beside it, and optionally toggle it with a right click.
-- **Displays.** Adjust brightness or turn individual displays on and off. External screens use their own control channel when available and fall back to dimming the picture, while the keyboard brightness keys can follow the pointer and show the brightness percentage.
-- **Extra brightness.** Pushes the XDR panel of a MacBook Pro past its regular maximum using the display's HDR headroom.
-- **Bluetooth on sleep.** Switches Bluetooth off while the Mac sleeps, so a laptop in a bag stops stealing the headphones you are listening to elsewhere. Bluetooth you had already turned off stays off, and only what Vorssaint switched off comes back on wake.
-
-## Install
-
-With [Homebrew](https://brew.sh):
+使用 [Homebrew](https://brew.sh)：
 
 ```sh
 brew install --cask vorssaint
 ```
 
-Or grab the disk image from the [releases page](https://github.com/vorssaintapp/vorssaint-utils/releases) and drag Vorssaint into Applications.
+也可以从 [Releases 页面](https://github.com/vorssaintapp/vorssaint-utils/releases) 下载磁盘映像，然后将 Vorssaint 拖入“应用程序”。正式构建已使用 Apple Developer ID 签名并通过公证。
 
-Builds are signed with an Apple Developer ID and notarized, so macOS opens them without a fuss and your permissions survive updates.
-
-## Uninstall
-
-With Homebrew:
+## 卸载
 
 ```sh
 brew uninstall --cask vorssaint
 ```
 
-To remove Vorssaint completely, including its settings and permissions:
+如需同时清除设置和权限，可在源码目录运行：
 
 ```sh
 ./Tools/uninstall.sh
 ```
 
-## Private by default
+## 隐私与权限
 
-Vorssaint is local-first, with no account, analytics or tracking. The network is touched only by things you can see: update checks, the speed test, Homebrew actions, temporary screenshot or recording links and feedback you explicitly send. The full story is in the [privacy notes](docs/PRIVACY.md).
+Vorssaint 默认在本机处理数据，不要求账号，不包含分析或跟踪。只有更新检查、测速、Homebrew 操作、临时截图/录屏分享以及用户主动发送的反馈等明确功能会访问网络，详见[隐私说明](docs/PRIVACY.md)。
 
-Permissions get the same treatment. Every one is optional, the app explains each in plain words, shows which features actually use it, and even tells you when a permission you granted is no longer needed by anything, with a shortcut to revoke it.
+所有 macOS 权限均为可选，并会说明用途和关联功能。部分能力需要“辅助功能”“屏幕与系统音频录制”“输入监控”等权限，完整说明见[权限指南](docs/PERMISSIONS.md)。
 
-<p align="center">
-  <img src="docs/assets/readme/permissions.png" width="720" alt="The Permissions page showing what each permission does, which features use it, and an unused permission warning">
-</p>
+## 系统要求与源码构建
 
-| Permission | Used by | Without it |
-|---|---|---|
-| Accessibility | Switcher, Dock features, window controls, mouse and keyboard features, snippets, cut and paste | Those features stay off |
-| Screen Recording | Window previews, screenshots, copy text and screen recordings | Those captures stay unavailable |
-| System Audio Recording | Per app volume and output routing | Apps stay on normal system audio |
-| Microphone | Optional voice track in screen recordings | Recordings continue without your voice |
-| Notifications | Keep awake, battery, monitor and update alerts | The app stays silent |
-| Full Disk Access, optional | Deeper cleaner and uninstaller scans | Only reachable places are scanned |
-| Administrator, once, optional | Password free closed lid toggling | A password prompt per toggle |
+- Apple 芯片 Mac
+- macOS 14 Sonoma 或更高版本
+- 源码构建需要 Xcode Command Line Tools
 
-The shelf and almost every quick toggle need no permission at all. Finder cut and paste, the uninstaller, emptying the Trash and the Homebrew terminal handoff ask macOS for Automation access the first time they talk to Finder or Terminal.
-
-## What you need
-
-- A Mac with Apple Silicon
-- macOS 14 Sonoma or newer
-
-### Build it yourself
+开发构建使用独立名称和 Bundle ID，可以与正式版共存：
 
 ```sh
-git clone https://github.com/vorssaintapp/vorssaint-utils.git
-cd vorssaint-utils
-./build.sh            # compile, generate the icon, assemble the signed bundle
-./build.sh --install  # the same, then install into Applications and launch
+./build.sh --dev --install
 ```
 
-Xcode Command Line Tools are the only requirement. The [contributing guide](CONTRIBUTING.md) covers the layout and conventions. Official builds come only from the maintainer: the GPL covers the source, while the Vorssaint name, icon and look are covered by [TRADEMARKS.md](TRADEMARKS.md), so forks need their own identity.
+运行项目测试：
 
-## When something misbehaves
+```sh
+./build.sh --test
+```
 
-The [troubleshooting guide](docs/TROUBLESHOOTING.md) walks through the common cases: the app blocked on first launch, a permission that will not stick, thumbnails showing as icons. To remove Vorssaint completely, `./Tools/uninstall.sh` quits the app, drops the login item, resets its privacy grants and deletes every trace.
+构建脚本会优先使用已安装的 Developer ID；如没有，则为开发版创建稳定的本地签名，以免辅助功能和录屏权限在每次重编译后失效。
 
-## Documentation
+## 文档与支持
 
-- [Privacy](docs/PRIVACY.md), what does and does not leave your Mac
-- [Permissions](docs/PERMISSIONS.md), every macOS permission in plain words
-- [Troubleshooting](docs/TROUBLESHOOTING.md), the common fixes
-- [Contributing](CONTRIBUTING.md), build, layout and conventions
-- [Support](SUPPORT.md), where to get help
-- [Security](SECURITY.md), how to report a vulnerability
+- [更新日志](CHANGELOG.md) · [隐私说明](docs/PRIVACY.md) · [权限指南](docs/PERMISSIONS.md)
+- [故障排除](docs/TROUBLESHOOTING.md) · [贡献指南](CONTRIBUTING.md)
+- [支持渠道](SUPPORT.md) · [安全问题报告](SECURITY.md)
 
-## Community
+欢迎提交 Bug、功能建议、翻译和 Pull Request。私密问题或合作事宜可发送邮件至 [hello@vorssaint.com](mailto:hello@vorssaint.com)，也可以加入 [Discord 社区](https://discord.gg/M6BwWH4BJp)。
 
-Vorssaint went from first commit to the front of GitHub trending in three days, top of the Swift charts, and issues and pull requests have shaped every release since. Bug reports, feature ideas and translations are all welcome, starting from the [contributing guide](CONTRIBUTING.md).
+## 致谢与许可证
 
-Vorssaint is free and will stay that way. If it earned its place in your menu bar, a star helps other people find it, and a [coffee](https://buymeacoffee.com/vorssaint) keeps the maintainer awake, with or without the Keep awake feature.
+应用图标由 [@divisionseven](https://github.com/divisionseven) 设计。源代码采用 [GPL-3.0-or-later](LICENSE) 许可证，版权归 Vorssaint（2026）所有；名称、标志及视觉形象另受[商标说明](TRADEMARKS.md)约束。
 
-## Acknowledgements
-
-- App icon designed by [@divisionseven](https://github.com/divisionseven)
-
-## License
-
-[GPL 3.0 or later](LICENSE), copyright 2026 Vorssaint. The license covers the source code; the Vorssaint name, logo and look are covered separately in [TRADEMARKS.md](TRADEMARKS.md).
-
-<p align="center">
-  <sub>Made by <a href="https://x.com/vorssaint">@vorssaint</a></sub>
-</p>
+<p align="center"><sub>由 <a href="https://x.com/vorssaint">@vorssaint</a> 制作</sub></p>
