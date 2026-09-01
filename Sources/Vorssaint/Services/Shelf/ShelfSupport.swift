@@ -291,32 +291,28 @@ enum ShelfEdgeDragSupport {
     /// fire, the same as approaching any other point near the edge would.
     static let dwell: TimeInterval = 0.15
 
-    /// The left or right edge of whichever screen the point is closest to,
-    /// within `distance` of that edge, or nil when nothing qualifies. A
-    /// seam shared by two adjacent displays never counts as either
-    /// screen's own outer edge, so a drag crossing between displays there
-    /// is never caught. A point resting inside a side-mounted Dock's own
-    /// reserved margin (`frame` minus `visibleFrame`, horizontally) never
-    /// counts either, so parking over a Dock icon to drop there doesn't
-    /// also peek the shelf.
+    /// The left or right edge of the screen the point is currently in (or is
+    /// closest to), within `distance` of that edge. Shared display seams count:
+    /// approaching from the left display resolves its right edge, while
+    /// approaching from the right resolves that display's left edge. A point
+    /// resting inside a side-mounted Dock's own reserved margin (`frame` minus
+    /// `visibleFrame`, horizontally) never counts, so parking over a Dock icon
+    /// to drop there doesn't also peek the shelf.
     static func match(at point: CGPoint, screens: [ShelfEdgeScreen], distance: CGFloat) -> ShelfEdgeMatch? {
-        let ordered = screens.enumerated().sorted {
-            distanceSquared(from: point, to: $0.element.frame) < distanceSquared(from: point, to: $1.element.frame)
+        let ordered = screens.sorted {
+            distanceSquared(from: point, to: $0.frame) < distanceSquared(from: point, to: $1.frame)
         }
-        for (index, screen) in ordered {
+        for screen in ordered {
             let frame = screen.frame
             guard frame.width > 0, frame.height > 0,
                   point.x >= frame.minX - distance, point.x <= frame.maxX + distance,
                   point.y >= frame.minY - distance, point.y <= frame.maxY + distance
             else { continue }
-            let others = screens.enumerated().compactMap { $0.offset == index ? nil : $0.element.frame }
             let nearLeft = point.x <= frame.minX + distance
                 && point.x >= screen.visibleFrame.minX
-                && !hasNeighbor(at: CGPoint(x: frame.minX - distance - 1, y: point.y), frames: others)
             if nearLeft { return ShelfEdgeMatch(edge: .left, screen: frame) }
             let nearRight = point.x >= frame.maxX - distance
                 && point.x <= screen.visibleFrame.maxX
-                && !hasNeighbor(at: CGPoint(x: frame.maxX + distance + 1, y: point.y), frames: others)
             if nearRight { return ShelfEdgeMatch(edge: .right, screen: frame) }
         }
         return nil
@@ -347,9 +343,52 @@ enum ShelfEdgeDragSupport {
         let dy = max(frame.minY - point.y, 0, point.y - frame.maxY)
         return dx * dx + dy * dy
     }
+}
 
-    private static func hasNeighbor(at point: CGPoint, frames: [CGRect]) -> Bool {
-        frames.contains { $0.insetBy(dx: -1, dy: -1).contains(point) }
+/// Geometry for the Shelf when it opens from the left or right edge. Kept
+/// separate from the ordinary cursor-summoned card: a side shelf is a tall
+/// working strip, while the ordinary shelf remains compact and portable.
+enum ShelfEdgePanelSupport {
+    static let defaultWidth: CGFloat = 360
+    static let defaultHeightRatio: CGFloat = 0.90
+    static let minimumWidth: CGFloat = 304
+    static let maximumWidth: CGFloat = 600
+    static let minimumHeightRatio: CGFloat = 0.45
+    static let maximumHeightRatio: CGFloat = 0.96
+    static let margin: CGFloat = 8
+
+    static func size(in visibleFrame: CGRect,
+                     preferredWidth: CGFloat,
+                     heightRatio: CGFloat) -> CGSize {
+        let availableWidth = max(0, visibleFrame.width - margin * 2)
+        let availableHeight = max(0, visibleFrame.height - margin * 2)
+        let width = min(max(preferredWidth, minimumWidth), maximumWidth, availableWidth)
+        let ratio = min(max(heightRatio, minimumHeightRatio), maximumHeightRatio)
+        let height = min(max((visibleFrame.height * ratio).rounded(), 360), availableHeight)
+        return CGSize(width: width.rounded(), height: height)
+    }
+
+    static func frame(edge: ShelfEdge,
+                      visibleFrame: CGRect,
+                      size: CGSize,
+                      peeking: Bool) -> CGRect {
+        let x: CGFloat
+        if peeking {
+            let onScreenWidth = (size.width / 3).rounded()
+            switch edge {
+            case .left: x = visibleFrame.minX
+            case .right: x = visibleFrame.maxX - onScreenWidth
+            }
+            let y = visibleFrame.midY - size.height / 2
+            return CGRect(x: x, y: y, width: onScreenWidth, height: size.height)
+        } else {
+            switch edge {
+            case .left: x = visibleFrame.minX + margin
+            case .right: x = visibleFrame.maxX - size.width - margin
+            }
+        }
+        let y = visibleFrame.midY - size.height / 2
+        return CGRect(x: x, y: y, width: size.width, height: size.height)
     }
 }
 

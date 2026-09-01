@@ -966,6 +966,8 @@ extension Strings {
         uninstallerHomebrewPackageFormat: "%@ также будет удалён из Homebrew.",
         shelfEdgeToggle: "Открывать у края экрана",
         shelfEdgeCaption: "Перетащите файл к краю экрана, чтобы полка выглянула. Отпустите его там, или потяните обратно, и полка уберётся.",
+        shelfEdgeWidth: "Ширина сбоку",
+        shelfEdgeHeight: "Высота сбоку",
         focusFollowsMouseName: "Фокус следует за мышью",
         focusFollowsMouseCaption: "Фокусирует и поднимает окно под указателем после короткой паузы.",
         focusFollowsMouseDelay: "Задержка наведения",

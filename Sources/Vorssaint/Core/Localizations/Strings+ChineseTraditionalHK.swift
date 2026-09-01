@@ -966,6 +966,8 @@ extension Strings {
         uninstallerHomebrewPackageFormat: "%@ 亦會從 Homebrew 移除。",
         shelfEdgeToggle: "接近螢幕邊緣時開啟",
         shelfEdgeCaption: "將檔案拖曳至螢幕邊緣，暫存架便會探出一角。放在那裡即可放低，往回拖曳暫存架便會縮回去。",
+        shelfEdgeWidth: "側邊闊度",
+        shelfEdgeHeight: "側邊高度",
         focusFollowsMouseName: "游標停留時聚焦",
         focusFollowsMouseCaption: "游標短暫停留後，聚焦並將其下方視窗移至最前方。",
         focusFollowsMouseDelay: "停留延遲",

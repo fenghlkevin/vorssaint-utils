@@ -19,6 +19,9 @@ struct ShelfView: View {
     /// The docked shelf shows the brand mark as a quiet watermark, so it reads
     /// as the app's own tray rather than a plain floating card.
     var brandWatermark: Bool = false
+    /// Nil keeps the compact floating card. An edge-opened Shelf supplies a
+    /// tall target size, turning the tile area into a vertical working strip.
+    var edgePanelSize: CGSize? = nil
 
     @EnvironmentObject private var shelf: ShelfService
     @ObservedObject private var l10n = L10n.shared
@@ -41,7 +44,7 @@ struct ShelfView: View {
             }
         }
         .padding(14)
-        .frame(width: Self.panelWidth)
+        .frame(width: panelWidth)
         .background(
             ZStack {
                 HUDBackdrop(cornerRadius: 18)
@@ -77,6 +80,20 @@ struct ShelfView: View {
 
     private var isDropTargeted: Bool {
         targeted || shelf.dropTargeted
+    }
+
+    private var panelWidth: CGFloat {
+        edgePanelSize?.width ?? Self.panelWidth
+    }
+
+    /// The fixed chrome above/below the scroll area is 69 points for an empty
+    /// shelf and 110 points once the bottom bar appears. Subtracting it keeps
+    /// the whole edge panel at the requested height rather than adding the
+    /// requested height to the title bar and padding.
+    private var tileAreaHeight: CGFloat {
+        guard let edgePanelSize else { return Self.tileAreaHeight }
+        let chrome: CGFloat = shelf.items.isEmpty ? 69 : 110
+        return max(Self.tileAreaHeight, edgePanelSize.height - chrome)
     }
 
     /// The official mark, large and faint in the corner: unmistakably ours,
@@ -120,7 +137,7 @@ struct ShelfView: View {
 
     private var topMoveHandle: some View {
         WindowMoveHandle(acceptsDrops: true)
-            .frame(width: Self.panelWidth - (brandWatermark ? 58 : 96), height: 55)
+            .frame(width: panelWidth - (brandWatermark ? 58 : 96), height: 55)
     }
 
     private var pinButton: some View {
@@ -213,13 +230,13 @@ struct ShelfView: View {
         if shelf.items.isEmpty {
             emptyState
         } else {
-            ShelfTilesView(items: shelf.visibleItems,
+                ShelfTilesView(items: shelf.visibleItems,
                            contentRevision: shelf.contentRevision,
                            selection: shelf.selection,
                            expandedBatches: shelf.expandedBatches,
                            revealID: shelf.revealTargetID,
                            revealSerial: shelf.addSerial)
-                .frame(height: Self.tileAreaHeight)
+                .frame(height: tileAreaHeight)
         }
     }
 
@@ -227,7 +244,7 @@ struct ShelfView: View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
             .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [6, 5]))
             .foregroundStyle(.secondary.opacity(0.4))
-            .frame(height: Self.tileAreaHeight)
+            .frame(height: tileAreaHeight)
             .overlay(
                 VStack(spacing: 8) {
                     Image(systemName: "arrow.down.to.line")
@@ -248,6 +265,49 @@ struct ShelfView: View {
             shelf.clear()
         } else {
             shelf.removeItems(Array(shelf.selection))
+        }
+    }
+}
+
+/// The edge-drag preview is a real narrow window rather than a full card moved
+/// mostly outside one display. At a shared display seam there is no off-screen
+/// space, so the old approach spilled across the neighboring monitor. This
+/// strip stays wholly inside the target display and expands only after a drop.
+struct ShelfEdgePeekView: View {
+    let edge: ShelfEdge
+    let size: CGSize
+
+    @EnvironmentObject private var shelf: ShelfService
+    @State private var targeted = false
+
+    private static let dropTypes: [UTType] = [.fileURL, .image, .url, .text, .plainText]
+
+    var body: some View {
+        ZStack {
+            HUDBackdrop(cornerRadius: 16)
+            VStack(spacing: 10) {
+                Image(systemName: "tray.and.arrow.down.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                Image(systemName: edge == .left ? "arrow.right" : "arrow.left")
+                    .font(.system(size: 17, weight: .bold))
+            }
+            .foregroundStyle(targeted ? Color.accentColor : Color.secondary)
+        }
+        .frame(width: size.width, height: size.height)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(targeted ? Color.accentColor : Color.white.opacity(0.18),
+                              lineWidth: targeted ? 2 : 1)
+        )
+        .contentShape(Rectangle())
+        .animation(.easeOut(duration: 0.15), value: targeted)
+        .onHover { shelf.setPointerInsidePanel($0) }
+        .onChange(of: targeted) { _, value in shelf.setDropTargeted(value) }
+        .onDrop(of: Self.dropTypes, isTargeted: $targeted) { providers in
+            let accepted = shelf.accept(providers: providers)
+            if accepted { shelf.noteInteraction() }
+            return accepted
         }
     }
 }

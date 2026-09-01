@@ -11,6 +11,8 @@ struct ShelfSettings: View {
     @AppStorage(DefaultsKey.shelfShakeToOpen) private var shake = true
     @AppStorage(DefaultsKey.shelfDropZoneEnabled) private var dropZone = true
     @AppStorage(DefaultsKey.shelfEdgeDragEnabled) private var edgeDrag = false
+    @AppStorage(DefaultsKey.shelfEdgePanelWidth) private var edgePanelWidth = 360.0
+    @AppStorage(DefaultsKey.shelfEdgePanelHeightRatio) private var edgePanelHeightRatio = 0.90
     @AppStorage(DefaultsKey.shelfCloseAfterDrop) private var closeAfterDrop = false
     @AppStorage(DefaultsKey.shelfRemoveAfterDrop) private var removeAfterDrop = true
     @State private var showingAppPicker = false
@@ -76,6 +78,18 @@ struct ShelfSettings: View {
                         Text(l10n.s.shelfEdgeCaption)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        if edgeDrag {
+                            edgeSizeSlider(title: l10n.s.shelfEdgeWidth,
+                                           value: $edgePanelWidth,
+                                           range: 304...600,
+                                           step: 8,
+                                           valueText: "\(Int(edgePanelWidth)) pt")
+                            edgeSizeSlider(title: l10n.s.shelfEdgeHeight,
+                                           value: $edgePanelHeightRatio,
+                                           range: 0.45...0.96,
+                                           step: 0.01,
+                                           valueText: "\(Int((edgePanelHeightRatio * 100).rounded()))%")
+                        }
                     }
                     Button {
                         ShelfService.shared.summon()
@@ -137,6 +151,26 @@ struct ShelfSettings: View {
         .sheet(isPresented: $showingAppPicker) {
             appPickerSheet
         }
+    }
+
+    private func edgeSizeSlider(title: String,
+                                value: Binding<Double>,
+                                range: ClosedRange<Double>,
+                                step: Double,
+                                valueText: String) -> some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .frame(width: 82, alignment: .leading)
+            Slider(value: value, in: range, step: step)
+                .onChange(of: value.wrappedValue) { _, _ in
+                    ShelfService.shared.refreshEdgePanelLayout()
+                }
+            Text(valueText)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 54, alignment: .trailing)
+        }
+        .padding(.leading, 20)
     }
 
     private var sortedExclusions: [String] {

@@ -3,7 +3,8 @@
 # Copyright (C) 2026 Vorssaint
 
 # Builds Vorssaint, assembles the .app bundle, signs it and (with --install)
-# installs it into /Applications.
+# installs it into /Applications. --install-existing installs the already built
+# build/stage app without compiling again.
 #
 # The bundle is staged in a temporary directory outside ~/Documents: folders synced
 # by File Provider gain xattrs (com.apple.provenance etc.) that invalidate codesign.
@@ -27,17 +28,25 @@ trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
 # Flags: --dev builds the local-only "Vorssaint (Developer)" variant (its own
-# bundle id, so it coexists with the official app); --install puts it in /Applications.
+# bundle id, so it coexists with the official app); --install puts it in /Applications;
+# --install-existing installs the matching build/stage app without rebuilding it.
 DEV=0
 INSTALL=0
+INSTALL_EXISTING=0
 TEST=0
 for arg in "$@"; do
     case "$arg" in
-        --dev)     DEV=1 ;;
-        --install) INSTALL=1 ;;
-        --test)    TEST=1 ;;
+        --dev)              DEV=1 ;;
+        --install)          INSTALL=1 ;;
+        --install-existing) INSTALL=1; INSTALL_EXISTING=1 ;;
+        --test)             TEST=1 ;;
     esac
 done
+
+if (( INSTALL_EXISTING && TEST )); then
+    echo "✗ --install-existing cannot be combined with --test" >&2
+    exit 2
+fi
 
 if (( DEV )); then
     APP_NAME="Vorssaint (Developer)"
@@ -66,22 +75,25 @@ developer_id_identity() {
         | sed -E 's/.*"(.*)".*/\1/' || true
 }
 
+fixed_dev_identity_available() {
+    security find-identity -v -p codesigning 2>/dev/null \
+        | grep -Fq "\"$LEGACY_IDENTITY\""
+}
+
 # The Developer build exists for iterative local work, where an ad-hoc
 # signature is a trap: macOS ties Accessibility and Screen Recording grants to
 # the exact binary hash, so every rebuild orphans them while System Settings
 # keeps showing them as granted, and no new prompt ever appears. When no
 # identity is installed, create the stable local one up front instead of
 # falling through to ad-hoc — setup-signing.sh is free, offline and idempotent.
-if (( DEV )) && [[ -z "$(developer_id_identity)" ]] \
-    && ! security find-identity -p codesigning 2>/dev/null | grep -q "$LEGACY_IDENTITY"; then
-    echo "▸ No signing identity installed; creating the stable local one…"
-    if ! ./Tools/setup-signing.sh; then
-        echo "  ⚠ Tools/setup-signing.sh failed; signing ad-hoc instead." >&2
-        echo "    Accessibility and Screen Recording grants will not survive rebuilds:" >&2
-        echo "    System Settings will show them as granted while the app is not trusted." >&2
-        echo "    After fixing the identity, clear the stale grant once with:" >&2
-        echo "      tccutil reset Accessibility $APP_BUNDLE_ID" >&2
-    fi
+if (( DEV && ! INSTALL_EXISTING )) && ! fixed_dev_identity_available; then
+    echo "▸ Fixed Developer signing identity is unavailable; repairing it…"
+    ./Tools/setup-signing.sh
+fi
+if (( DEV )) && ! fixed_dev_identity_available; then
+    echo "✗ Developer builds require the fixed '$LEGACY_IDENTITY' identity." >&2
+    echo "  Refusing to switch to Apple Development or ad-hoc signing." >&2
+    exit 1
 fi
 
 codesign_with_timestamp_retry() {
@@ -126,7 +138,7 @@ finalize_installed_bundle_after_child() {
     local bundle="$1"
     local helper="$bundle/Contents/Library/LaunchServices/$FAN_HELPER_ID"
     local devid
-    devid="$(developer_id_identity)"
+    if (( DEV )); then devid=""; else devid="$(developer_id_identity)"; fi
 
     echo "▸ Finalizing installed signature…"
     sleep 3
@@ -148,6 +160,80 @@ finalize_installed_bundle_after_child() {
     /usr/bin/codesign --verify --deep --strict "$bundle"
     echo "✓ Signature ready: $bundle"
 }
+
+process_is_running() {
+    local proc="$1"
+    if (( ${#proc} > 15 )); then
+        pgrep -f "/Contents/MacOS/$proc" >/dev/null 2>&1
+    else
+        pgrep -x "$proc" >/dev/null 2>&1
+    fi
+}
+
+stop_process() {
+    local proc="$1"
+    if (( ${#proc} > 15 )); then
+        pkill -f "/Contents/MacOS/$proc" 2>/dev/null || true
+    else
+        pkill -x "$proc" 2>/dev/null || true
+    fi
+    for _ in {1..50}; do
+        if ! process_is_running "$proc"; then
+            return 0
+        fi
+        sleep 0.1
+    done
+    echo "✗ $proc is still running — quit it and retry" >&2
+    return 1
+}
+
+install_existing_bundle() {
+    local source="$PWD/build/stage/$APP_NAME.app"
+    local info="$source/Contents/Info.plist"
+    local executable="$source/Contents/MacOS/$EXECUTABLE"
+    local source_bundle_id source_executable install_dest legacy name proc build_hint
+
+    if [[ ! -d "$source" || ! -f "$info" || ! -x "$executable" ]]; then
+        build_hint="./build.sh"
+        (( DEV )) && build_hint="./build.sh --dev"
+        echo "✗ No installable staged app at: $source" >&2
+        echo "  Build it first with: $build_hint" >&2
+        return 1
+    fi
+    source_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info" 2>/dev/null || true)"
+    source_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info" 2>/dev/null || true)"
+    if [[ "$source_bundle_id" != "$APP_BUNDLE_ID" || "$source_executable" != "$EXECUTABLE" ]]; then
+        echo "✗ Staged app does not match the requested build variant." >&2
+        echo "  expected: $APP_BUNDLE_ID / $EXECUTABLE" >&2
+        echo "  found:    $source_bundle_id / $source_executable" >&2
+        return 1
+    fi
+    if ! /usr/bin/codesign --verify --deep --strict "$source"; then
+        echo "✗ Staged app signature is invalid; rebuild before installing." >&2
+        return 1
+    fi
+
+    echo "▸ Installing existing bundle (build skipped)…"
+    stop_process "$EXECUTABLE"
+    for legacy in "Vorss:Vorss" "Vorssaint Utils:VorssaintUtils"; do
+        name="${legacy%%:*}"; proc="${legacy##*:}"
+        if [[ -d "/Applications/$name.app" ]]; then
+            stop_process "$proc"
+            rm -rf "/Applications/$name.app"
+            echo "  (legacy $name.app removed)"
+        fi
+    done
+    install_dest="/Applications/$APP_NAME.app"
+    rm -rf "$install_dest"
+    ditto --noextattr --noqtn "$source" "$install_dest"
+    finalize_installed_bundle_after_child "$install_dest"
+    echo "✓ Installed existing build: $install_dest"
+}
+
+if (( INSTALL_EXISTING )); then
+    install_existing_bundle
+    exit $?
+fi
 
 if (( INSTALL && ! TEST )) && [[ "${VORSSAINT_INSTALL_CHILD:-0}" != "1" ]]; then
     VORSSAINT_INSTALL_CHILD=1 "$0" "$@"
@@ -215,6 +301,7 @@ if (( TEST )); then
         Sources/Vorssaint/Core/Defaults.swift \
         Sources/Vorssaint/Core/FeatureCatalog.swift \
         Sources/Vorssaint/Core/FeaturePresets.swift \
+        Sources/Vorssaint/Services/InputSourceAutomation/InputSourceAutomationSupport.swift \
         Sources/Vorssaint/Core/FeatureHubStrings.swift \
         Sources/Vorssaint/Core/ShortcutSettingsStrings.swift \
         Sources/Vorssaint/Core/SettingsBackupSupport.swift \
@@ -239,6 +326,7 @@ if (( TEST )); then
         Sources/Vorssaint/Core/BatteryTimeStrings.swift \
         Sources/Vorssaint/Core/KeepAwakeStrings.swift \
         Sources/Vorssaint/Core/BluetoothSleepStrings.swift \
+        Sources/Vorssaint/Core/AwayLockStrings.swift \
         Sources/Vorssaint/Core/PermissionGuideStrings.swift \
         Sources/Vorssaint/Core/FanControlStrings.swift \
         Sources/Vorssaint/Services/FanControl/FanControlSupport.swift \
@@ -270,6 +358,7 @@ if (( TEST )); then
         Sources/Vorssaint/Services/Audio/MixerRoutingSupport.swift \
         Sources/Vorssaint/Services/Audio/MusicLaunchSupport.swift \
         Sources/Vorssaint/Services/Bluetooth/BluetoothSleepSupport.swift \
+        Sources/Vorssaint/Services/AwayLock/AwayLockSupport.swift \
         Sources/Vorssaint/UI/MenuPanel/MixerPercentNativeTextField.swift \
         Sources/Vorssaint/Services/Audio/BoostLimiter.swift \
         Sources/Vorssaint/Services/Audio/MixerRender.swift \
@@ -292,6 +381,7 @@ if (( TEST )); then
         Sources/Vorssaint/UI/Settings/SettingsSearchSupport.swift \
         Sources/Vorssaint/UI/Settings/FeatureVisibilitySupport.swift \
         Sources/Vorssaint/App/MenuBarSpacingSupport.swift \
+        Sources/Vorssaint/App/MenuBarIconCollapserSupport.swift \
         Sources/Vorssaint/App/StatusItemAnchorSupport.swift \
         Sources/Vorssaint/Services/DockClick/DockClickSupport.swift \
         Sources/Vorssaint/Services/Finder/CutPasteProgressSupport.swift \
@@ -505,7 +595,7 @@ xattr -c -r "$STAGE" 2>/dev/null || true
 #      as a fallback so contributors without a Developer ID still get a constant
 #      designated requirement across their local builds.
 #   3. Ad-hoc — fresh clone with no identity at all.
-DEVID="$(developer_id_identity)"
+if (( DEV )); then DEVID=""; else DEVID="$(developer_id_identity)"; fi
 codesign_app() {
     local target="$1"
     if [[ -n "$DEVID" ]]; then
@@ -566,32 +656,6 @@ sign_installed_bundle() {
 }
 
 sign_bundle "$STAGE"
-
-process_is_running() {
-    local proc="$1"
-    if (( ${#proc} > 15 )); then
-        pgrep -f "/Contents/MacOS/$proc" >/dev/null 2>&1
-    else
-        pgrep -x "$proc" >/dev/null 2>&1
-    fi
-}
-
-stop_process() {
-    local proc="$1"
-    if (( ${#proc} > 15 )); then
-        pkill -f "/Contents/MacOS/$proc" 2>/dev/null || true
-    else
-        pkill -x "$proc" 2>/dev/null || true
-    fi
-    for _ in {1..50}; do
-        if ! process_is_running "$proc"; then
-            return 0
-        fi
-        sleep 0.1
-    done
-    echo "✗ $proc is still running — quit it and retry" >&2
-    return 1
-}
 
 wait_for_install_metadata() {
     local bundle="$1"

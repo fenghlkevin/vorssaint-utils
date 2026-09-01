@@ -76,7 +76,7 @@ struct SettingsView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 772, maxWidth: .infinity, minHeight: 528, maxHeight: .infinity)
+        .frame(minWidth: 920, maxWidth: .infinity, minHeight: 528, maxHeight: .infinity)
         .onAppear { ensureVisiblePage() }
         .onChange(of: features.revision) { _, _ in ensureVisiblePage() }
         .onChange(of: searchResults, initial: true) { previous, current in
@@ -356,6 +356,7 @@ struct SettingsView: View {
         case .switcher: SwitcherSettings()
         case .keyDebounce: KeyboardDebounceSettings()
         case .superKey: SuperKeySettings()
+        case .inputSourceAutomation: InputSourceAutomationSettings()
         case .cutPaste: CutPasteSettings()
         case .autoQuit: AutoQuitSettings()
         case .uninstaller: UninstallerView()
@@ -364,6 +365,8 @@ struct SettingsView: View {
         case .cleaner: CleanerSettings()
         case .homebrew: HomebrewSettings()
         case .appUpdates: AppUpdatesSettings()
+        case .menuBarIcons: MenuBarIconCollapserSettings()
+        case .awayLock: AwayLockSettings()
         case .media: MediaSettings()
         case .clipboard: ClipboardSettings()
         case .quickTools: QuickToolsSettings()
@@ -391,9 +394,10 @@ struct GeneralSettings: View {
     @AppStorage(DefaultsKey.hotkeyEnabled) private var hotkeyEnabled = true
     @AppStorage(DefaultsKey.musicBlockEnabled) private var musicBlockEnabled = false
     @AppStorage(DefaultsKey.musicBlockReplacementPath) private var musicBlockReplacementPath = ""
+    @AppStorage(DefaultsKey.panelOpeningSection) private var panelOpeningSection = "lastUsed"
+    @AppStorage(DefaultsKey.menuPanelWidth) private var menuPanelWidth = 420.0
 
     private var appearanceStrings: AppearanceStrings { FeatureStrings.appearance(l10n.language) }
-    private var feedbackStrings: FeedbackStrings { FeatureStrings.feedback(l10n.language) }
 
     var body: some View {
         Form {
@@ -438,11 +442,25 @@ struct GeneralSettings: View {
                 Text(l10n.s.showMenuBarIconCaption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
             }
             // The panel hosts more than monitoring, so its layout editor lives
             // here with the app-wide options rather than on the Monitor page
             // (which the hub can hide entirely).
             Section(l10n.s.monitorOrderSection) {
+                Picker(panelOpeningPickerLabel, selection: $panelOpeningSection) {
+                    Text(panelLastUsedLabel).tag("lastUsed")
+                    ForEach(PanelSectionID.allCases.filter(\.isAvailable)) { section in
+                        Text(section.title(l10n.s)).tag(section.rawValue)
+                    }
+                }
+                HStack {
+                    Text(panelWidthLabel)
+                    Slider(value: $menuPanelWidth, in: 360...520, step: 20)
+                    Text("\(Int(menuPanelWidth)) pt")
+                        .monospacedDigit()
+                        .frame(width: 52, alignment: .trailing)
+                }
                 PanelOrderEditor()
                 Text(l10n.s.monitorOrderHint)
                     .font(.caption)
@@ -496,17 +514,21 @@ struct GeneralSettings: View {
                 }
                 .settingsSectionAnchor(.musicBlocking)
             }
-            Section(feedbackStrings.sectionTitle) {
-                Button {
-                    appDelegate()?.openFeedbackWindow()
-                } label: {
-                    Label(feedbackStrings.openButton,
-                          systemImage: "bubble.left.and.text.bubble.right")
-                }
-                SettingsCaptionText(feedbackStrings.sectionCaption)
-            }
         }
         .formStyle(.grouped)
+    }
+
+    private var panelOpeningPickerLabel: String {
+        [.zhHans, .zhTW, .zhHK].contains(l10n.language)
+            ? "每次打开菜单时显示" : "Section shown when opening the menu"
+    }
+
+    private var panelLastUsedLabel: String {
+        [.zhHans, .zhTW, .zhHK].contains(l10n.language) ? "上次使用" : "Last used"
+    }
+
+    private var panelWidthLabel: String {
+        [.zhHans, .zhTW, .zhHK].contains(l10n.language) ? "弹出框宽度" : "Panel width"
     }
 
     private var musicBlockReplacementName: String {
@@ -1440,8 +1462,6 @@ struct AboutSettings: View {
             Section {
                 aboutContent
             }
-
-            UpdatesView()
         }
         .formStyle(.grouped)
     }

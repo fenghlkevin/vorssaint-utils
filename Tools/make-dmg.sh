@@ -4,13 +4,28 @@
 
 # Packages the built app into a styled, distributable DMG
 # (dist/Vorssaint-<version>.dmg): a window with the app icon, an arrow and
-# the Applications folder for drag-and-drop install. Run ./build.sh first.
+# the Applications folder for drag-and-drop install. Pass --dev to package
+# the separately installed Developer build after running ./build.sh --dev.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP_NAME="Vorssaint"
+DEV=0
+for arg in "$@"; do
+    case "$arg" in
+        --dev) DEV=1 ;;
+    esac
+done
+
+if (( DEV )); then
+    APP_NAME="Vorssaint (Developer)"
+    OUTPUT_NAME="Vorssaint-Developer"
+    VOLUME="Vorssaint Developer"
+else
+    APP_NAME="Vorssaint"
+    OUTPUT_NAME="Vorssaint"
+    VOLUME="$APP_NAME"
+fi
 APP="build/stage/$APP_NAME.app"
-VOLUME="$APP_NAME"
 STAGING=""
 WORK=""
 MOUNT=""
@@ -34,7 +49,7 @@ xattr -cr "$APP"
 codesign --verify --deep --strict "$APP"
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")"
-OUT="dist/Vorssaint-$VERSION.dmg"
+OUT="dist/$OUTPUT_NAME-$VERSION.dmg"
 
 echo "▸ Rendering installer background…"
 swift Tools/MakeDMGBackground.swift build/dmg-background.png

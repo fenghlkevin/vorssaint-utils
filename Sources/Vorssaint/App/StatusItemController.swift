@@ -116,6 +116,7 @@ final class StatusItemController {
         }
         if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
         installStatusItem()
+        MenuBarIconCollapser.shared.attach(to: statusItem)
     }
 
     private func bind() {

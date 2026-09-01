@@ -60,6 +60,8 @@ final class MenuPanelFocus: ObservableObject {
 /// Content of the menu bar popover: keep-awake controls, the volume mixer and
 /// the system monitor.
 struct MenuPanelView: View {
+    private static let horizontalPadding: CGFloat = 12
+
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var updates = UpdateService.shared
     @ObservedObject private var panelFocus = MenuPanelFocus.shared
@@ -72,12 +74,16 @@ struct MenuPanelView: View {
     @AppStorage(DefaultsKey.monitorShowPower) private var showPower = true
     @AppStorage(DefaultsKey.panelShowFanControl) private var showFanControl = true
     @AppStorage(DefaultsKey.panelShowKeepAwake) private var showKeepAwake = true
+    @AppStorage(DefaultsKey.panelShowAwayLock) private var showAwayLock = true
     @AppStorage(DefaultsKey.panelShowBrightness) private var showBrightness = true
     @AppStorage(DefaultsKey.brightnessControlEnabled) private var brightnessEnabled = false
     @AppStorage(DefaultsKey.panelShowUtilities) private var showUtilities = true
     @AppStorage(DefaultsKey.panelShowControls) private var showControls = true
     @AppStorage(DefaultsKey.panelShowToggles) private var showToggles = true
+    @AppStorage(DefaultsKey.panelShowInputSourceAutomation) private var showInputSourceAutomation = true
     @AppStorage(DefaultsKey.panelSectionOrder) private var sectionOrderRaw = ""
+    @AppStorage(DefaultsKey.panelOpeningSection) private var openingSectionRaw = "lastUsed"
+    @AppStorage(DefaultsKey.menuPanelWidth) private var storedPanelWidth = 420.0
     @State private var navigableContentHeight: CGFloat = 0
     @State private var metricContentHeight: CGFloat = 0
     @State private var updateBannerHeight: CGFloat = 0
@@ -94,6 +100,14 @@ struct MenuPanelView: View {
         return max(360, ((anchored ?? NSScreen.withMenuBar)?.visibleFrame.height ?? 760) - 24)
     }
 
+    private var panelWidth: CGFloat {
+        CGFloat(min(max(storedPanelWidth, 360), 520))
+    }
+
+    private var contentWidth: CGFloat {
+        panelWidth - Self.horizontalPadding * 2
+    }
+
     var body: some View {
         Group {
             if selectedMetric != nil {
@@ -103,11 +117,13 @@ struct MenuPanelView: View {
             }
         }
         .onAppear {
+            applyOpeningSectionPreference()
             applyFocus(panelFocus.request)
             KeepAwakeManager.shared.refreshPasswordlessStatus()
             syncMonitorSampling()
         }
         .onReceive(NotificationCenter.default.publisher(for: .menuPanelWillShow)) { _ in
+            applyOpeningSectionPreference()
             syncMonitorSampling()
         }
         .onDisappear {
@@ -165,6 +181,16 @@ struct MenuPanelView: View {
         }
     }
 
+    private func applyOpeningSectionPreference() {
+        guard openingSectionRaw != "lastUsed",
+              let preferred = PanelSectionID(rawValue: openingSectionRaw),
+              isSectionVisible(preferred) else { return }
+        selectedMetric = nil
+        selectedSection = preferred
+        focusedSection = preferred
+        MenuPanelFocus.shared.clearMetricFocus()
+    }
+
     private var navigablePanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             UpdateBanner()
@@ -176,14 +202,14 @@ struct MenuPanelView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     section(for: activeSection, collapsible: false)
                 }
-                .frame(width: 308)
+                .frame(width: contentWidth)
             }
-            .frame(width: 308, height: navigableScrollHeight)
+            .frame(width: contentWidth, height: navigableScrollHeight)
 
             footer
         }
-        .padding(12)
-        .frame(width: 332, height: navigablePanelHeight)
+        .padding(Self.horizontalPadding)
+        .frame(width: panelWidth, height: navigablePanelHeight)
         .panelGlassSurface()
     }
 
@@ -197,15 +223,15 @@ struct MenuPanelView: View {
                 metricNavigationHeader(selectedMetric)
                 OverlayScrollView(measuredHeight: $metricContentHeight) {
                     MetricDetailView(kind: selectedMetric)
-                        .frame(width: 308)
+                        .frame(width: contentWidth)
                 }
-                .frame(width: 308, height: metricScrollHeight)
+                .frame(width: contentWidth, height: metricScrollHeight)
             }
 
             footer
         }
-        .padding(12)
-        .frame(width: 332, height: metricPanelHeight)
+        .padding(Self.horizontalPadding)
+        .frame(width: panelWidth, height: metricPanelHeight)
         .panelGlassSurface()
     }
 
@@ -254,6 +280,7 @@ struct MenuPanelView: View {
     private var estimatedNavigableContentHeight: CGFloat {
         switch activeSection {
         case .keepAwake: return 250
+        case .awayLock: return 280
         case .brightness: return 140
         case .mixer: return 250
         case .system: return 460
@@ -263,6 +290,7 @@ struct MenuPanelView: View {
         case .fanControl: return 220
         case .utilities: return 500
         case .controls: return 360
+        case .inputSourceAutomation: return 260
         case .toggles: return 420
         }
     }
@@ -285,6 +313,7 @@ struct MenuPanelView: View {
     private func section(for id: PanelSectionID, collapsible: Bool = true) -> some View {
         switch id {
         case .keepAwake: KeepAwakeCard(collapsible: collapsible)
+        case .awayLock: if showAwayLock { AwayLockPanelCard(collapsible: collapsible) }
         case .brightness: if showBrightness { BrightnessSection(collapsible: collapsible) }
         case .mixer: if showMixer { MixerSection(collapsible: collapsible) }
         case .system: if showSystem { SystemSection(collapsible: collapsible) }
@@ -294,6 +323,8 @@ struct MenuPanelView: View {
         case .fanControl: if showFanControl { FanControlSection(collapsible: collapsible) }
         case .utilities: UtilitiesSection(collapsible: collapsible, startCleaning: startCleaning)
         case .controls: QuickControlsSection(collapsible: collapsible)
+        case .inputSourceAutomation:
+            if showInputSourceAutomation { InputSourceAutomationPanelCard(collapsible: collapsible) }
         case .toggles: QuickTogglesSection(collapsible: collapsible)
         }
     }
@@ -302,6 +333,7 @@ struct MenuPanelView: View {
         guard id.isAvailable else { return false }
         switch id {
         case .keepAwake: return showKeepAwake
+        case .awayLock: return showAwayLock
         // The section only earns its navigation tab while the feature is on;
         // it is switched on in Settings, not from an empty panel screen.
         case .brightness: return showBrightness && brightnessEnabled
@@ -313,6 +345,7 @@ struct MenuPanelView: View {
         case .fanControl: return showFanControl
         case .utilities: return showUtilities
         case .controls: return showControls
+        case .inputSourceAutomation: return showInputSourceAutomation
         case .toggles: return showToggles
         }
     }
@@ -466,18 +499,6 @@ private struct MenuPanelHeader: View {
                         .clipShape(Capsule())
 
                     Spacer()
-
-                    Button {
-                        appDelegate()?.openFeedbackWindow()
-                    } label: {
-                        Image(systemName: "bubble.left.and.text.bubble.right")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .padding(4)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(FeatureStrings.feedback(l10n.language).openButton)
                 }
             }
         }

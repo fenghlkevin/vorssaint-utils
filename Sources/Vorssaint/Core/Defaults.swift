@@ -34,6 +34,48 @@ enum DefaultsKey {
     static let keepAwakeActiveIcon = "keepAwakeActiveIcon" // KeepAwakeActiveIcon.rawValue
     static let showCountdown = "showCountdownInMenuBar"
     static let statusItemPlacementGeneration = "statusItemPlacementGeneration"
+    static let menuBarIconCollapserEnabled = "menuBarIconCollapserEnabled"
+    static let menuBarIconsCollapsed = "menuBarIconsCollapsed"
+    static let menuBarIconCollapserDelay = "menuBarIconCollapserDelaySeconds"
+    static let awayLockEnabled = "awayLockEnabled"
+    static let awayLockPeripheralID = "awayLockPeripheralID"
+    static let awayLockPeripheralName = "awayLockPeripheralName"
+    static let awayLockThreshold = "awayLockThreshold"
+    static let awayLockReturnMargin = "awayLockReturnMargin"
+    static let awayLockWeakSeconds = "awayLockWeakSeconds"
+    static let awayLockSignalLossSeconds = "awayLockSignalLossSeconds"
+    static let awayLockGraceSeconds = "awayLockGraceSeconds"
+    static let awayLockFiveSecondCountdownMigrated = "awayLockFiveSecondCountdownMigrated"
+    static let awayLockProtectRecentInput = "awayLockProtectRecentInput"
+    static let awayLockSelectedIDs = "awayLockSelectedIDs"
+    static let awayLockPrimaryID = "awayLockPrimaryID"
+    static let awayLockPolicy = "awayLockPolicy"
+    static let awayLockPerDeviceThresholds = "awayLockPerDeviceThresholds"
+    static let awayLockDeviceAliases = "awayLockDeviceAliases"
+    static let awayLockDeviceNames = "awayLockDeviceNames"
+    static let awayLockShowUnnamedDevices = "awayLockShowUnnamedDevices"
+    static let awayLockOnlySelectedDevices = "awayLockOnlySelectedDevices"
+    static let awayLockPreventPresentation = "awayLockPreventPresentation"
+    static let awayLockProtectedApps = "awayLockProtectedApps"
+    static let awayLockAutomaticLearning = "awayLockAutomaticLearning"
+    static let awayLockAutomaticLock = "awayLockAutomaticLock"
+    static let awayLockWakeOnReturn = "awayLockWakeOnReturn"
+    static let awayLockShowCountdown = "awayLockShowCountdown"
+    static let awayLockNotifications = "awayLockNotifications"
+    static let awayLockNotificationSound = "awayLockNotificationSound"
+    static let awayLockEnergyMode = "awayLockEnergyMode"
+    static let awayLockPauseUntil = "awayLockPauseUntil"
+    static let awayLockProfiles = "awayLockProfiles"
+    static let awayLockActiveProfileID = "awayLockActiveProfileID"
+    static let awayLockAutomaticScenes = "awayLockAutomaticScenes"
+    static let awayLockWiFiRules = "awayLockWiFiRules"
+    static let awayLockPowerRules = "awayLockPowerRules"
+    static let awayLockEvents = "awayLockEvents"
+    static let awayLockLearnedThresholds = "awayLockLearnedThresholds"
+    static let panelShowAwayLock = "panelShowAwayLock"
+    static let panelShowInputSourceAutomation = "panelShowInputSourceAutomation"
+    static let panelOpeningSection = "panelOpeningSection"
+    static let menuPanelWidth = "menuPanelWidth"
     static let hasOnboarded = "hasOnboarded"
     static let sleepDisabledFlag = "vorssDisabledSleep"   // internal guard for pmset disablesleep
     static let scrollInverterEnabled = "scrollInverterEnabled"
@@ -49,6 +91,10 @@ enum DefaultsKey {
     static let superKeySource = "superKeySource"           // SuperKeySource raw value
     static let superKeyModifiers = "superKeyModifiers"     // GlobalShortcutModifiers storage tokens
     static let superKeySoloAction = "superKeySoloAction"  // SuperKeySoloAction raw value
+    static let inputSourceAutomationEnabled = "inputSourceAutomationEnabled"
+    static let inputSourceAppRules = "inputSourceAppRules"       // JSON [InputSourceAppRule]
+    static let inputSourceDomainRules = "inputSourceDomainRules" // JSON [InputSourceDomainRule]
+    static let inputSourceLastUsedSources = "inputSourceLastUsedSources" // context: persistent input source id
     // Machine state, never exported: whether the keyboard mapping is in place
     // and which source to take back after a crash.
     static let superKeyMappingApplied = "superKeyMappingApplied"
@@ -113,6 +159,8 @@ enum DefaultsKey {
     static let shelfShakeToOpen = "shelfShakeToOpen"
     static let shelfDropZoneEnabled = "shelfDropZoneEnabled"
     static let shelfEdgeDragEnabled = "shelfEdgeDragEnabled"
+    static let shelfEdgePanelWidth = "shelfEdgePanelWidth"
+    static let shelfEdgePanelHeightRatio = "shelfEdgePanelHeightRatio"
     static let shelfCloseAfterDrop = "shelfCloseAfterDrop"
     static let shelfRemoveAfterDrop = "shelfRemoveAfterDrop"
     static let shelfAutomaticExclusions = "shelfAutomaticExclusions" // [bundle id] blocks automatic opening only
@@ -790,6 +838,44 @@ enum Defaults {
         DefaultsKey.keepAwakeIconTint: KeepAwakeIconTint.orange.rawValue,
         DefaultsKey.keepAwakeActiveIcon: KeepAwakeActiveIcon.vorssaint.rawValue,
         DefaultsKey.showCountdown: false,
+        DefaultsKey.menuBarIconCollapserEnabled: false,
+        DefaultsKey.menuBarIconsCollapsed: false,
+        DefaultsKey.menuBarIconCollapserDelay: 0,
+        DefaultsKey.awayLockEnabled: false,
+        DefaultsKey.awayLockPeripheralID: "",
+        DefaultsKey.awayLockPeripheralName: "",
+        DefaultsKey.awayLockThreshold: -74,
+        DefaultsKey.awayLockReturnMargin: 5,
+        DefaultsKey.awayLockWeakSeconds: 12,
+        DefaultsKey.awayLockSignalLossSeconds: 25,
+        DefaultsKey.awayLockGraceSeconds: 5,
+        DefaultsKey.awayLockProtectRecentInput: true,
+        DefaultsKey.awayLockSelectedIDs: [String](),
+        DefaultsKey.awayLockPrimaryID: "",
+        DefaultsKey.awayLockPolicy: "allAway",
+        DefaultsKey.awayLockPerDeviceThresholds: [String: Double](),
+        DefaultsKey.awayLockDeviceAliases: [String: String](),
+        DefaultsKey.awayLockDeviceNames: [String: String](),
+        DefaultsKey.awayLockShowUnnamedDevices: false,
+        DefaultsKey.awayLockOnlySelectedDevices: false,
+        DefaultsKey.awayLockPreventPresentation: true,
+        DefaultsKey.awayLockProtectedApps: [String](),
+        DefaultsKey.awayLockAutomaticLearning: true,
+        DefaultsKey.awayLockAutomaticLock: true,
+        DefaultsKey.awayLockWakeOnReturn: true,
+        DefaultsKey.awayLockShowCountdown: true,
+        DefaultsKey.awayLockNotifications: true,
+        DefaultsKey.awayLockNotificationSound: true,
+        DefaultsKey.awayLockEnergyMode: "balanced",
+        DefaultsKey.awayLockPauseUntil: 0.0,
+        DefaultsKey.awayLockAutomaticScenes: false,
+        DefaultsKey.awayLockWiFiRules: [String: String](),
+        DefaultsKey.awayLockPowerRules: [String: String](),
+        DefaultsKey.awayLockLearnedThresholds: [String: Double](),
+        DefaultsKey.panelShowAwayLock: true,
+        DefaultsKey.panelShowInputSourceAutomation: true,
+        DefaultsKey.panelOpeningSection: "lastUsed",
+        DefaultsKey.menuPanelWidth: 420.0,
         DefaultsKey.scrollInverterEnabled: false,
         DefaultsKey.scrollInverterHorizontalEnabled: false,
         DefaultsKey.focusFollowsMouseEnabled: false,
@@ -803,6 +889,10 @@ enum Defaults {
         DefaultsKey.superKeySource: SuperKeySource.capsLock.rawValue,
         DefaultsKey.superKeyModifiers: SuperKeySupport.defaultModifierStorageValue,
         DefaultsKey.superKeySoloAction: SuperKeySoloAction.none.rawValue,
+        DefaultsKey.inputSourceAutomationEnabled: false,
+        DefaultsKey.inputSourceAppRules: Data(),
+        DefaultsKey.inputSourceDomainRules: Data(),
+        DefaultsKey.inputSourceLastUsedSources: [String: String](),
         DefaultsKey.smoothScrollExceptions: [String](),
         DefaultsKey.scrollInverterExceptions: [String](),
         DefaultsKey.mouseNavigationExceptions: [String](),
@@ -858,6 +948,10 @@ enum Defaults {
         DefaultsKey.shelfDropZoneEnabled: true,
         // New Shelf behavior stays opt-in for existing users.
         DefaultsKey.shelfEdgeDragEnabled: false,
+        // A side-opened Shelf is a tall strip by default. The height is a
+        // screen-relative ratio so it remains useful on every display.
+        DefaultsKey.shelfEdgePanelWidth: 360.0,
+        DefaultsKey.shelfEdgePanelHeightRatio: 0.90,
         // Closing after a drop is new behavior, so it arrives OFF for people
         // who already rely on the panel staying put; removing after a drop
         // keeps the value shipped releases always had.
@@ -1256,6 +1350,7 @@ enum Defaults {
 
     static func register() {
         let defaults = UserDefaults.standard
+        migrateAwayLockCountdown(in: defaults)
         migrateFanControlVisibility(in: defaults)
         migrateScrollInverterAxes(in: defaults)
         migrateWhatsAppDownloadsEnabled(in: defaults)
@@ -1273,6 +1368,16 @@ enum Defaults {
         migrateOrphanedCaptureShortcut(in: defaults)
         migrateSilentHeadphonesDisconnectVolume(in: defaults)
         migrateSwitcherWindowlessFinder(in: defaults)
+    }
+
+    /// Early Vorssaint builds used an eight-second Away Lock warning. Match the
+    /// original AwayLock five-second default once without changing later edits.
+    private static func migrateAwayLockCountdown(in defaults: UserDefaults) {
+        guard !defaults.bool(forKey: DefaultsKey.awayLockFiveSecondCountdownMigrated) else { return }
+        if defaults.object(forKey: DefaultsKey.awayLockGraceSeconds) as? Int == 8 {
+            defaults.set(5, forKey: DefaultsKey.awayLockGraceSeconds)
+        }
+        defaults.set(true, forKey: DefaultsKey.awayLockFiveSecondCountdownMigrated)
     }
 
     /// When the user installs or runs a beta pre-release, activate the beta

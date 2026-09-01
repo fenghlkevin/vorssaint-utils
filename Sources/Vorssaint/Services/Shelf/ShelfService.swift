@@ -216,6 +216,10 @@ final class ShelfService: ObservableObject {
     /// own retreat rule can be told apart from an ordinary shake/shortcut
     /// opening (which uses the ordinary idle-timer auto-hide instead).
     private var edgePeekMatch: ShelfEdgeMatch?
+    /// Remains set after a successful edge drop has promoted the peek into a
+    /// normal open panel. This preserves the tall side layout until that
+    /// panel closes; `edgePeekMatch` itself must clear so auto-hide can resume.
+    private var activeEdgePanelMatch: ShelfEdgeMatch?
     private var edgePeekEndWork: DispatchWorkItem?
 
     private let tempDir: URL = {
@@ -689,11 +693,9 @@ final class ShelfService: ObservableObject {
         let mouse = NSEvent.mouseLocation
         let now = event.timestamp
         if let edgePeekMatch {
-            // The panel's own on-screen strip sits well within retreatDistance
-            // of the edge by construction (its width is a fraction of the
-            // panel's full width, which is itself far smaller than
-            // retreatDistance), so `stillNear` alone already covers hovering
-            // over the visible panel; no separate frame check is needed.
+            // The narrow preview strip sits well within retreatDistance of
+            // the edge, so `stillNear` alone already covers hovering over it;
+            // no separate panel-frame check is needed.
             guard !ShelfEdgeDragSupport.stillNear(edgePeekMatch, point: mouse,
                                                   distance: ShelfEdgeDragSupport.retreatDistance)
             else { return }
@@ -715,7 +717,7 @@ final class ShelfService: ObservableObject {
         }
         guard let edgeDwellStart, ShelfEdgeDragSupport.hasDwelled(since: edgeDwellStart, now: now)
         else { return }
-        summonEdgePeek(matched, mouse: mouse)
+        summonEdgePeek(matched)
     }
 
     /// Opens the classic panel peeking in from a screen edge, mostly off
@@ -727,62 +729,74 @@ final class ShelfService: ObservableObject {
     /// idle-timer reschedule during the peek (a drop-target or hover
     /// callback firing mid-drag, say) can't fade the panel out from under a
     /// still-live drag.
-    private func summonEdgePeek(_ match: ShelfEdgeMatch, mouse: CGPoint) {
+    private func summonEdgePeek(_ match: ShelfEdgeMatch) {
         guard AppFeature.shelf.isAvailable,
               UserDefaults.standard.bool(forKey: DefaultsKey.shelfEnabled) else { return }
         edgePeekMatch = match
+        activeEdgePanelMatch = match
         edgeDwellMatch = nil
         edgeDwellStart = nil
         let panel = ensurePanel()
+        installEdgePeekContent(match: match)
         cancelAutoHide()
-        positionEdgePeek(panel, match: match, mouse: mouse)
+        positionEdgePeek(panel, match: match)
         panel.alphaValue = 1
         panel.orderFrontRegardless()
         updatePointerInsidePanel()
         scheduleDockedSync()
     }
 
-    /// Places the panel against the triggered edge's usable space (past a
-    /// side-mounted Dock, if one sits there), vertically centered on the
-    /// cursor, offset so only its inner third sits on screen and the rest
-    /// extends past the boundary. Unlike `position(_:)`, this deliberately
-    /// does not clamp fully on screen: going partly off it is the point.
-    /// Both the horizontal offset and the vertical clamp measure from the
-    /// visible frame, matching `revealEdgePeek`, so the peek and its later
-    /// reveal never disagree about where the usable edge actually is.
-    private func positionEdgePeek(_ panel: NSPanel, match: ShelfEdgeMatch, mouse: CGPoint) {
-        let view = panel.contentViewController!.view
-        view.layoutSubtreeIfNeeded()
-        let size = view.fittingSize
+    /// Places a narrow preview strip wholly inside the triggered screen's
+    /// usable edge. Keeping the preview window itself narrow is important at
+    /// a shared display seam: there is no off-screen space there, so moving a
+    /// full card beyond the edge would merely draw it on the other monitor.
+    private func positionEdgePeek(_ panel: NSPanel, match: ShelfEdgeMatch) {
         let visible = visibleFrame(for: match.screen)
-        let onScreenWidth = (size.width / 3).rounded()
-        let x: CGFloat
-        switch match.edge {
-        case .left: x = visible.minX - size.width + onScreenWidth
-        case .right: x = visible.maxX - onScreenWidth
-        }
-        var y = mouse.y - size.height / 2
-        y = min(max(visible.minY + 8, y), visible.maxY - size.height - 8)
-        panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+        let size = configuredEdgePanelSize(for: match)
+        panel.setFrame(ShelfEdgePanelSupport.frame(edge: match.edge,
+                                                   visibleFrame: visible,
+                                                   size: size,
+                                                   peeking: true),
+                       display: true)
     }
 
-    /// Slides a peek that just caught a drop the rest of the way onto
-    /// screen, flush against the usable area of the edge it peeked in from
-    /// (clear of the Dock, if one sits there), keeping its current vertical
-    /// position. Animated on purpose: unlike the panel's other frame
+    /// Replaces a peek that just caught a drop with the full Shelf and expands
+    /// it into the screen, flush against the usable area of the edge it came from
+    /// (clear of the Dock, if one sits there), keeping the tall strip centered
+    /// in that usable area. Animated on purpose: unlike the panel's other frame
     /// changes, this slide is the whole point of the "drop it and it opens
     /// up" behavior, not an incidental resize. Called once, right as
     /// `noteInteraction()` graduates the peek to an ordinary panel.
     private func revealEdgePeek(_ panel: NSPanel, match: ShelfEdgeMatch) {
-        let size = panel.frame.size
         let visible = visibleFrame(for: match.screen)
-        let x: CGFloat
-        switch match.edge {
-        case .left: x = visible.minX + 8
-        case .right: x = visible.maxX - size.width - 8
+        let size = configuredEdgePanelSize(for: match)
+        installClassicPanelContent(edgeSize: size)
+        panel.setFrame(ShelfEdgePanelSupport.frame(edge: match.edge,
+                                                   visibleFrame: visible,
+                                                   size: size,
+                                                   peeking: false),
+                       display: true, animate: true)
+    }
+
+    private func configuredEdgePanelSize(for match: ShelfEdgeMatch) -> CGSize {
+        let defaults = UserDefaults.standard
+        return ShelfEdgePanelSupport.size(
+            in: visibleFrame(for: match.screen),
+            preferredWidth: CGFloat(defaults.double(forKey: DefaultsKey.shelfEdgePanelWidth)),
+            heightRatio: CGFloat(defaults.double(forKey: DefaultsKey.shelfEdgePanelHeightRatio))
+        )
+    }
+
+    /// Applies width/height changes immediately when an edge Shelf is already
+    /// open. A hidden panel simply picks the values up on its next edge peek.
+    func refreshEdgePanelLayout() {
+        guard let match = activeEdgePanelMatch, let panel, panel.isVisible else { return }
+        if edgePeekMatch != nil {
+            installEdgePeekContent(match: match)
+            positionEdgePeek(panel, match: match)
+        } else {
+            revealEdgePeek(panel, match: match)
         }
-        let y = min(max(visible.minY + 8, panel.frame.minY), visible.maxY - size.height - 8)
-        panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true, animate: true)
     }
 
     /// The visible frame (excluding the menu bar and Dock) of the screen a
@@ -819,6 +833,7 @@ final class ShelfService: ObservableObject {
         edgePeekEndWork?.cancel()
         edgePeekEndWork = nil
         guard edgePeekMatch != nil else { return }
+        activeEdgePanelMatch = nil
         resetAutoHide()
         panel?.orderOut(nil)
         ShelfTooltipPopover.shared.hide()
@@ -2107,6 +2122,8 @@ final class ShelfService: ObservableObject {
         guard AppFeature.shelf.isAvailable,
               UserDefaults.standard.bool(forKey: DefaultsKey.shelfEnabled) else { return }
         let panel = ensurePanel()
+        activeEdgePanelMatch = nil
+        installClassicPanelContent(edgeSize: nil)
         cancelAutoHide()
         position(panel)
         panel.alphaValue = 1
@@ -2118,6 +2135,7 @@ final class ShelfService: ObservableObject {
 
     func hide() {
         resetAutoHide()
+        activeEdgePanelMatch = nil
         isPinned = false
         panel?.orderOut(nil)
         ShelfTooltipPopover.shared.hide()
@@ -2271,6 +2289,7 @@ final class ShelfService: ObservableObject {
             self.edgePeekEndWork?.cancel()
             self.edgePeekEndWork = nil
             self.edgePeekMatch = nil
+            self.activeEdgePanelMatch = nil
             // The classic panel leaving is the docked shelf's cue to return.
             self.scheduleDockedSync()
         }
@@ -2293,6 +2312,16 @@ final class ShelfService: ObservableObject {
 
     private func refitIfVisible() {
         guard let panel, panel.isVisible else { return }
+        if let match = activeEdgePanelMatch {
+            let size = configuredEdgePanelSize(for: match)
+            let visible = visibleFrame(for: match.screen)
+            panel.setFrame(ShelfEdgePanelSupport.frame(edge: match.edge,
+                                                       visibleFrame: visible,
+                                                       size: size,
+                                                       peeking: edgePeekMatch != nil),
+                           display: true, animate: false)
+            return
+        }
         let view = panel.contentViewController!.view
         view.layoutSubtreeIfNeeded()
         let size = view.fittingSize
@@ -2334,5 +2363,29 @@ final class ShelfService: ObservableObject {
         panel.contentViewController = host
         self.panel = panel
         return panel
+    }
+
+    private func installClassicPanelContent(edgeSize: CGSize?) {
+        guard let panel else { return }
+        let host = NSHostingController(
+            rootView: ShelfView(edgePanelSize: edgeSize).environmentObject(self)
+        )
+        host.sizingOptions = .preferredContentSize
+        panel.contentViewController = host
+    }
+
+    private func installEdgePeekContent(match: ShelfEdgeMatch) {
+        guard let panel else { return }
+        let fullSize = configuredEdgePanelSize(for: match)
+        let peekFrame = ShelfEdgePanelSupport.frame(edge: match.edge,
+                                                    visibleFrame: visibleFrame(for: match.screen),
+                                                    size: fullSize,
+                                                    peeking: true)
+        let host = NSHostingController(
+            rootView: ShelfEdgePeekView(edge: match.edge, size: peekFrame.size)
+                .environmentObject(self)
+        )
+        host.sizingOptions = .preferredContentSize
+        panel.contentViewController = host
     }
 }

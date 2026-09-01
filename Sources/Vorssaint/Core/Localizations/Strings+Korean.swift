@@ -966,6 +966,8 @@ extension Strings {
         uninstallerHomebrewPackageFormat: "%@도 Homebrew에서 제거됩니다.",
         shelfEdgeToggle: "화면 가장자리 근처에서 열기",
         shelfEdgeCaption: "파일을 화면 가장자리 쪽으로 드래그하면 선반이 살짝 나타납니다. 그 자리에 놓거나, 다시 뒤로 당기면 선반이 들어갑니다.",
+        shelfEdgeWidth: "측면 너비",
+        shelfEdgeHeight: "측면 높이",
         focusFollowsMouseName: "마우스를 따라 포커스",
         focusFollowsMouseCaption: "잠시 멈춘 뒤 포인터 아래의 윈도우에 포커스를 주고 앞으로 가져옵니다.",
         focusFollowsMouseDelay: "호버 지연",

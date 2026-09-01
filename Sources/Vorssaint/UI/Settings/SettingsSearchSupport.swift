@@ -365,7 +365,7 @@ enum SettingsSearchSupport {
 /// restored as is. Kept pure so the unit harness pins the rules.
 enum SettingsWindowSupport {
     /// The layout's design size; the window can only grow from here.
-    static let minContentWidth: Double = 772
+    static let minContentWidth: Double = 920
     static let minContentHeight: Double = 528
     /// Tall default so every sidebar entry is visible on regular screens.
     static let preferredContentHeight: Double = 838

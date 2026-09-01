@@ -177,6 +177,18 @@ enum SettingsDirectory {
             // Everything about the apps installed on the Mac lives together:
             // what is out of date, what is junk and what should go.
             (categories.appManagement, [
+                SettingsDirectoryItem(page: .awayLock,
+                                      title: AwayLockStrings.strings(for: language).title,
+                                      icon: "lock.laptopcomputer",
+                                      keywords: [AwayLockStrings.strings(for: language).device,
+                                                 AwayLockStrings.strings(for: language).threshold]),
+                SettingsDirectoryItem(
+                    page: .menuBarIcons,
+                    title: MenuBarIconCollapserStrings.strings(for: language).title,
+                    icon: "menubar.arrow.up.rectangle",
+                    keywords: [MenuBarIconCollapserStrings.strings(for: language).automaticCollapse,
+                               MenuBarIconCollapserStrings.strings(for: language).collapse,
+                               MenuBarIconCollapserStrings.strings(for: language).expand]),
                 SettingsDirectoryItem(page: .appUpdates,
                                       title: FeatureStrings.appUpdates(language).pageTitle,
                                       icon: "arrow.down.app",
@@ -230,6 +242,12 @@ enum SettingsDirectory {
                                       keywords: SuperKeySource.allCases.map {
                                           FeatureStrings.superKey(language).sourceLabel($0)
                                       }),
+                SettingsDirectoryItem(page: .inputSourceAutomation,
+                                      title: InputSourceAutomationStrings.current(language).pageTitle,
+                                      icon: "character.cursor.ibeam",
+                                      keywords: [InputSourceAutomationStrings.current(language).appRules,
+                                                 InputSourceAutomationStrings.current(language).websiteRules,
+                                                 InputSourceAutomationStrings.current(language).forceEnglishPunctuation]),
                 SettingsDirectoryItem(page: .textSnippets,
                                       title: FeatureStrings.snippets(language).pageTitle,
                                       icon: "text.append",

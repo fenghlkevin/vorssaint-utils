@@ -23,6 +23,7 @@ final class AudioInputDeviceManager: ObservableObject {
     @Published private(set) var preferredInputDeviceUID: String?
     @Published private(set) var currentInputDeviceUID: String?
     @Published private(set) var effectiveInputDeviceUID: String?
+    @Published private(set) var currentInputVolume: Double?
     @Published private(set) var preferredUnavailable = false
     @Published private(set) var lastError: String?
 
@@ -109,6 +110,17 @@ final class AudioInputDeviceManager: ObservableObject {
         refreshAndApply()
     }
 
+    func setCurrentInputVolume(_ volume: Double) {
+        let clamped = min(max(volume, 0), 1)
+        guard let uid = effectiveInputDeviceUID,
+              let device = inputDevices.first(where: { $0.uid == uid }),
+              Self.setInputVolume(Float32(clamped), for: device.audioObjectID) else {
+            refreshAndApply()
+            return
+        }
+        if currentInputVolume != clamped { currentInputVolume = clamped }
+    }
+
     /// The smallest possible answer to a change: the system decides which
     /// thread this arrives on, so it only asks the main thread for a refresh
     /// and returns. The reading that follows happens away from the main
@@ -176,6 +188,7 @@ final class AudioInputDeviceManager: ObservableObject {
         let currentUID: String?
         let devices: [MixerInputDevice]
         let resolution: MixerInputRouteResolution
+        let inputVolume: Double?
         /// Non-nil when this sweep actually pointed the system input at the
         /// preferred device; the write has already happened on the HAL.
         let applied: AppliedInput?
@@ -228,6 +241,8 @@ final class AudioInputDeviceManager: ObservableObject {
                                    currentUID: currentUID,
                                    devices: devices,
                                    resolution: resolution,
+                                   inputVolume: devices.first(where: { $0.uid == resolution.effectiveUID })
+                                    .flatMap { inputVolume(for: $0.audioObjectID).map(Double.init) },
                                    applied: nil)
         }
 
@@ -239,6 +254,7 @@ final class AudioInputDeviceManager: ObservableObject {
                                currentUID: currentUID,
                                devices: devices,
                                resolution: resolution,
+                               inputVolume: inputVolume(for: device.audioObjectID).map(Double.init),
                                applied: AppliedInput(device: device,
                                                      status: status,
                                                      deviceBeforeOverride: before))
@@ -281,6 +297,9 @@ final class AudioInputDeviceManager: ObservableObject {
         }
         if inputDevices != snapshot.devices {
             inputDevices = snapshot.devices
+        }
+        if currentInputVolume != snapshot.inputVolume {
+            currentInputVolume = snapshot.inputVolume
         }
 
         guard let applied = snapshot.applied else { return }
@@ -436,6 +455,40 @@ final class AudioInputDeviceManager: ObservableObject {
         var uidRef: CFString = "" as CFString
         guard read(defaultDevice, kAudioDevicePropertyDeviceUID, &uidRef) else { return nil }
         return uidRef as String
+    }
+
+    private static func inputVolume(for deviceID: AudioObjectID) -> Float32? {
+        for element in [kAudioObjectPropertyElementMain, 1, 2] {
+            var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+                                                     mScope: kAudioDevicePropertyScopeInput,
+                                                     mElement: element)
+            guard AudioObjectHasProperty(deviceID, &address) else { continue }
+            var value: Float32 = 0
+            var size = UInt32(MemoryLayout<Float32>.size)
+            if AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value) == noErr {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func setInputVolume(_ volume: Float32, for deviceID: AudioObjectID) -> Bool {
+        var applied = false
+        for element in [kAudioObjectPropertyElementMain, 1, 2] {
+            var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyVolumeScalar,
+                                                     mScope: kAudioDevicePropertyScopeInput,
+                                                     mElement: element)
+            guard AudioObjectHasProperty(deviceID, &address) else { continue }
+            var settable = DarwinBoolean(false)
+            guard AudioObjectIsPropertySettable(deviceID, &address, &settable) == noErr,
+                  settable.boolValue else { continue }
+            var next = volume
+            if AudioObjectSetPropertyData(deviceID, &address, 0, nil,
+                                          UInt32(MemoryLayout<Float32>.size), &next) == noErr {
+                applied = true
+            }
+        }
+        return applied
     }
 
     @discardableResult

@@ -10,8 +10,8 @@ protocol PanelOrderItem: RawRepresentable, CaseIterable, Hashable where RawValue
 /// stable identifiers persisted in the saved order and the collapsed set, so
 /// renaming a case would orphan a user's stored layout — keep them stable.
 enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
-    case keepAwake, brightness, mixer, system, network, disk, power, fanControl, utilities, controls,
-         toggles
+    case keepAwake, awayLock, brightness, mixer, system, network, disk, power, fanControl, utilities, controls,
+         inputSourceAutomation, toggles
 
     var id: String { rawValue }
 
@@ -19,6 +19,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
     func title(_ s: Strings) -> String {
         switch self {
         case .keepAwake: return s.keepAwakeTitle
+        case .awayLock: return AwayLockStrings.current.title
         case .brightness: return FeatureStrings.brightness(L10n.shared.language).pageTitle
         case .mixer: return s.mixerSection
         case .system: return s.systemSection
@@ -28,6 +29,8 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
         case .fanControl: return FeatureStrings.fanControl(L10n.shared.language).title
         case .utilities: return s.utilitiesSection
         case .controls: return s.quickControlsSection
+        case .inputSourceAutomation:
+            return InputSourceAutomationStrings.current(L10n.shared.language).pageTitle
         case .toggles: return FeatureStrings.quickToggles(L10n.shared.language).pageTitle
         }
     }
@@ -35,6 +38,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
     var symbolName: String {
         switch self {
         case .keepAwake: return "moon.zzz.fill"
+        case .awayLock: return "lock.laptopcomputer"
         case .brightness: return "display.2"
         case .mixer: return "slider.horizontal.3"
         case .system: return "cpu"
@@ -44,6 +48,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
         case .fanControl: return "fanblades.fill"
         case .utilities: return "wrench.and.screwdriver.fill"
         case .controls: return "switch.2"
+        case .inputSourceAutomation: return "character.cursor.ibeam"
         case .toggles: return "togglepower"
         }
     }
@@ -54,6 +59,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
     var visibilityKey: String {
         switch self {
         case .keepAwake: return DefaultsKey.panelShowKeepAwake
+        case .awayLock: return DefaultsKey.panelShowAwayLock
         case .brightness: return DefaultsKey.panelShowBrightness
         case .mixer: return DefaultsKey.monitorShowMixer
         case .system: return DefaultsKey.monitorShowSystem
@@ -63,6 +69,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
         case .fanControl: return DefaultsKey.panelShowFanControl
         case .utilities: return DefaultsKey.panelShowUtilities
         case .controls: return DefaultsKey.panelShowControls
+        case .inputSourceAutomation: return DefaultsKey.panelShowInputSourceAutomation
         case .toggles: return DefaultsKey.panelShowToggles
         }
     }
@@ -77,6 +84,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
     var featureGate: [AppFeature] {
         switch self {
         case .keepAwake: return [.keepAwake]
+        case .awayLock: return [.awayLock]
         case .brightness: return [.brightness]
         case .mixer: return [.mixer]
         case .system: return [.monitorCPU, .monitorGPU, .monitorMemory]
@@ -93,6 +101,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
                                 .finderCutPaste, .autoQuit,
                                 .shelf, .windowMaximizer, .dockPreview, .keyboardDebounce, .dockClick,
                                 .middleClick, .textSnippets, .superKey, .radialMenu]
+        case .inputSourceAutomation: return [.inputSourceAutomation]
         case .toggles: return [.quickToggles, .micMute]
         }
     }
@@ -122,9 +131,14 @@ enum PanelLayout {
                 result.insert(id, at: networkIndex + 1)
             } else if id == .controls, let utilitiesIndex = result.firstIndex(of: .utilities) {
                 result.insert(id, at: utilitiesIndex + 1)
+            } else if id == .inputSourceAutomation,
+                      let controlsIndex = result.firstIndex(of: .controls) {
+                result.insert(id, at: controlsIndex + 1)
             } else if id == .brightness, let keepAwakeIndex = result.firstIndex(of: .keepAwake) {
                 // New in 3.1.13: saved orders predate it, so it slots in at
                 // its canonical place instead of the end.
+                result.insert(id, at: keepAwakeIndex + 1)
+            } else if id == .awayLock, let keepAwakeIndex = result.firstIndex(of: .keepAwake) {
                 result.insert(id, at: keepAwakeIndex + 1)
             } else {
                 result.append(id)

@@ -191,6 +191,7 @@ enum CommandBarCatalog {
         case .clipboardFiles: return hub.groupClipboardFiles
         case .sound: return hub.groupSound
         case .energyDisplay: return hub.groupEnergyDisplay
+        case .appManagement: return FeatureStrings.settingsCategories(L10n.shared.language).appManagement
         case .tools: return hub.groupTools
         case .monitor: return hub.groupMonitor
         }
@@ -691,19 +692,6 @@ enum CommandBarCatalog {
                     CommandBarService.shared.query = ""
                 }))
         }
-        let feedback = FeatureStrings.feedback(language)
-        entries.append(CommandBarEntry(
-            id: "action.feedback.bug",
-            title: feedback.commandBug,
-            subtitle: feedback.commandSubtitle,
-            icon: .symbol("ladybug"),
-            run: { _ in afterBeat { appDelegate()?.openFeedbackWindow(kind: .bug) } }))
-        entries.append(CommandBarEntry(
-            id: "action.feedback.feature",
-            title: feedback.commandFeature,
-            subtitle: feedback.commandSubtitle,
-            icon: .symbol("lightbulb"),
-            run: { _ in afterBeat { appDelegate()?.openFeedbackWindow(kind: .feature) } }))
         // What people try on day one: put the Mac to sleep, restart it, turn
         // Wi-Fi off. Everything but sleep confirms on the row first.
         for action in CommandBarExtras.PowerAction.allCases {

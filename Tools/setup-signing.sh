@@ -25,7 +25,7 @@ IDENTITY="Vorssaint Utils Signing"
 KC="$HOME/Library/Keychains/vorssaint-signing.keychain-db"
 KCPASS="vorssaint-signing"
 
-if security find-identity -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
+if security find-identity -v -p codesigning 2>/dev/null | grep -Fq "\"$IDENTITY\""; then
     echo "✓ Signing identity already installed."
     exit 0
 fi
@@ -55,13 +55,14 @@ security set-keychain-settings "$KC"            # no auto-lock
 security unlock-keychain -p "$KCPASS" "$KC"
 security import "$WORK/id.p12" -k "$KC" -P "$KCPASS" -T /usr/bin/codesign
 security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPASS" "$KC" >/dev/null 2>&1
+security add-trusted-cert -r trustRoot -p codeSign -k "$KC" "$WORK/cert.pem"
 EXISTING=$(security list-keychains -d user | sed 's/"//g' | xargs)
 security list-keychains -d user -s "$KC" ${=EXISTING}
 
 # Import succeeding is not evidence codesign can see it: read it back the same
 # way build.sh looks it up, so a broken search list fails here and not as a
 # silent ad-hoc fallback three builds later.
-security find-identity -p codesigning 2>/dev/null | grep -q "$IDENTITY" || {
+security find-identity -v -p codesigning 2>/dev/null | grep -Fq "\"$IDENTITY\"" || {
     echo "✗ Identity imported but codesign cannot find it; keychain search list may be off." >&2
     exit 1
 }

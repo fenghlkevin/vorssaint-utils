@@ -92,7 +92,8 @@ extension AppFeature {
         case .scrollInverter, .focusFollowsMouse, .smoothScroll, .windowMaximizer, .middleClick,
              .mouseNavigation, .mouseButtonShortcuts, .dockPreview, .dockClick, .shelf:
             return .mouse
-        case .switcher, .keyboardDebounce, .finderCutPaste, .finderRename, .superKey:
+        case .switcher, .keyboardDebounce, .finderCutPaste, .finderRename, .superKey,
+             .inputSourceAutomation:
             return .keyboard
         case .textSnippets, .autoQuit:
             return .inputs
@@ -106,7 +107,7 @@ extension AppFeature {
             return RadialMenuMouseTrigger.sanitized(
                 UserDefaults.standard.string(forKey: DefaultsKey.radialMenuMouseButton)) == .off
                 ? .idle : .mouse
-        case .clipboardHistory, .urlCleaner, .extraBrightness,
+        case .clipboardHistory, .urlCleaner, .extraBrightness, .awayLock,
              .monitorCPU, .monitorGPU, .monitorMemory,
              .monitorNetwork, .monitorDisk, .monitorPower:
             return .periodic
@@ -117,7 +118,7 @@ extension AppFeature {
              .musicBlock, .bluetoothSleep, .keepAwake, .brightness, .quickLauncher, .quickToggles, .colorPicker,
              .screenOCR, .cleaningMode, .mediaTools, .cleaner, .uninstaller, .homebrew, .screenshot,
              .cameraPreview, .scratchpad, .commandBar, .screenRecorder, .fanControl,
-             .diskImageInstaller, .killProcess:
+             .diskImageInstaller, .killProcess, .menuBarIcons:
             return .idle
         case .appUpdates:
             // The list is on demand; only a background schedule keeps a timer.

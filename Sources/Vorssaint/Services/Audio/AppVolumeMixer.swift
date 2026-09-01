@@ -79,6 +79,7 @@ final class AppVolumeMixer: ObservableObject {
     @Published private(set) var currentOutputDeviceUID: String?
     @Published private(set) var currentSystemSoundOutputDeviceUID: String?
     @Published private(set) var systemOutputVolume: Double?
+    @Published private(set) var systemSoundOutputVolume: Double?
     @Published private(set) var systemOutputMuted: Bool?
     @Published private(set) var outputSwitchError: String?
     /// Set when tap creation fails with a permission error, so the panel can
@@ -438,6 +439,20 @@ final class AppVolumeMixer: ObservableObject {
         if clamped > 0, systemOutputMuted == true { systemOutputMuted = false }
     }
 
+    func setCurrentSystemSoundOutputVolume(_ volume: Double) {
+        let clamped = min(max(volume, 0), 1)
+        guard let uid = currentSystemSoundOutputDeviceUID,
+              let device = outputDevices.first(where: { $0.uid == uid }),
+              Self.setOutputVolume(Float32(clamped), for: device.audioObjectID) else {
+            scheduleListenerRefresh()
+            return
+        }
+        if systemSoundOutputVolume != clamped { systemSoundOutputVolume = clamped }
+        if uid == currentOutputDeviceUID, systemOutputVolume != clamped {
+            systemOutputVolume = clamped
+        }
+    }
+
     /// 100% means bit-perfect passthrough (no tap). A value the UI would round to
     /// 100% counts as unity, so dragging near 100% or tapping reset both restore
     /// true passthrough; anything else (quieter or boosted) runs the gain engine.
@@ -759,6 +774,7 @@ final class AppVolumeMixer: ObservableObject {
         let outputDevices: [MixerOutputDevice]
         let defaultDeviceID: AudioObjectID?
         let systemOutputVolume: Double?
+        let systemSoundOutputVolume: Double?
         let systemOutputMuted: Bool?
         /// Nil where process taps do not exist (before macOS 14.4): the app
         /// list stays empty and no process object is looked at.
@@ -854,6 +870,9 @@ final class AppVolumeMixer: ObservableObject {
         if systemOutputVolume != snapshot.systemOutputVolume {
             systemOutputVolume = snapshot.systemOutputVolume
         }
+        if systemSoundOutputVolume != snapshot.systemSoundOutputVolume {
+            systemSoundOutputVolume = snapshot.systemSoundOutputVolume
+        }
         if systemOutputMuted != snapshot.systemOutputMuted {
             systemOutputMuted = snapshot.systemOutputMuted
         }
@@ -888,6 +907,7 @@ final class AppVolumeMixer: ObservableObject {
             selector: kAudioHardwarePropertyDefaultSystemOutputDevice)
         let nextOutputDevices = outputDevices(defaultUID: defaultUID)
         let defaultDevice = nextOutputDevices.first { $0.uid == defaultUID }
+        let systemSoundDevice = nextOutputDevices.first { $0.uid == systemSoundUID }
         let availableUIDs = Set(nextOutputDevices.map(\.uid))
         let lowered = loweringOutputVolumeIfHeadphonesDisconnected(
             state: request.lowered,
@@ -903,6 +923,11 @@ final class AppVolumeMixer: ObservableObject {
                 : nil
         }
         let systemOutputMuted = defaultDevice.flatMap { outputMuted(for: $0.audioObjectID) }
+        let systemSoundOutputVolume = systemSoundDevice.flatMap { device in
+            hasSettableOutputVolume(for: device.audioObjectID)
+                ? outputVolume(for: device.audioObjectID).map(Double.init)
+                : nil
+        }
 
         guard isSupported else {
             return RefreshSnapshot(defaultUID: defaultUID,
@@ -910,6 +935,7 @@ final class AppVolumeMixer: ObservableObject {
                                    outputDevices: nextOutputDevices,
                                    defaultDeviceID: defaultDevice?.audioObjectID,
                                    systemOutputVolume: systemOutputVolume,
+                                   systemSoundOutputVolume: systemSoundOutputVolume,
                                    systemOutputMuted: systemOutputMuted,
                                    apps: nil,
                                    processObjects: [],
@@ -1029,6 +1055,7 @@ final class AppVolumeMixer: ObservableObject {
                                outputDevices: nextOutputDevices,
                                defaultDeviceID: defaultDevice?.audioObjectID,
                                systemOutputVolume: systemOutputVolume,
+                               systemSoundOutputVolume: systemSoundOutputVolume,
                                systemOutputMuted: systemOutputMuted,
                                apps: next,
                                processObjects: processObjects,

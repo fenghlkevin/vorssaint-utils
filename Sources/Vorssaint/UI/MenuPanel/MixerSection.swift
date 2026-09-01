@@ -4,11 +4,30 @@
 import AppKit
 import SwiftUI
 
+private struct AudioDeviceCardModifier: ViewModifier {
+    let tint: Color
+    let colorScheme: ColorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .padding(10)
+            .background(
+                tint.opacity(colorScheme == .dark ? 0.055 : 0.028),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(tint.opacity(colorScheme == .dark ? 0.22 : 0.16), lineWidth: 0.75)
+            }
+    }
+}
+
 /// Per-app volume sliders, the mixer macOS never shipped. Shows every app
 /// holding an audio connection (a green dot marks the ones playing right now).
 /// 100% is untouched passthrough; below it attenuates and above it (up to 200%)
 /// boosts, with the slider and percentage turning amber in the boost range.
 struct MixerSection: View {
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var mixer = AppVolumeMixer.shared
     @ObservedObject private var inputManager = AudioInputDeviceManager.shared
@@ -121,16 +140,13 @@ struct MixerSection: View {
     }
 
     private var universalOutputPicker: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let tint = Color.blue
+        return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                Label {
-                    Text(l10n.s.mixerSystemOutputTitle)
-                        .font(.system(size: 11.5, weight: .medium))
-                } icon: {
-                    Image(systemName: "speaker.wave.2.fill")
-                        .font(.system(size: 10.5, weight: .semibold))
-                }
-                .foregroundStyle(.secondary)
+                deviceIdentity(systemImage: "speaker.wave.2.fill",
+                               title: l10n.s.mixerSystemOutputTitle,
+                               subtitle: outputSubtitle,
+                               tint: tint)
 
                 Spacer(minLength: 6)
 
@@ -158,35 +174,11 @@ struct MixerSection: View {
             }
 
             if let volume = mixer.systemOutputVolume {
-                HStack(spacing: 8) {
-                    Image(systemName: mixer.systemOutputMuted == true || volume <= 0.001
-                          ? "speaker.slash.fill"
-                          : "speaker.wave.2.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16)
-
-                    MixerVolumeSlider(value: systemOutputVolumeBinding,
-                                      normalTint: normalSliderTint,
-                                      boostTint: normalSliderTint,
-                                      isBoosting: false,
-                                      accentRevision: accentRevision,
-                                      maximum: 1,
-                                      accessibilityLabel: l10n.s.mixerSystemOutputTitle)
-
-                    EditableVolumePercent(currentPercent: Int((volume * 100).rounded()),
-                                          maximumPercent: 100,
-                                          width: 36,
-                                          editorID: "system-output",
-                                          editingID: $editingVolumeID,
-                                          accessibilityLabel: l10n.s.mixerSystemOutputTitle) {
-                        Text("\(Int((volume * 100).rounded()))%")
-                            .font(.system(size: 10.5, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    } onCommit: {
-                        mixer.setCurrentOutputVolume($0)
-                    }
+                deviceVolumeRow(volume: volume,
+                                binding: systemOutputVolumeBinding,
+                                editorID: "system-output",
+                                accessibilityLabel: l10n.s.mixerSystemOutputTitle) {
+                    mixer.setCurrentOutputVolume($0)
                 }
             }
 
@@ -194,19 +186,17 @@ struct MixerSection: View {
                 inputMessage(l10n.s.mixerSystemOutputNoDevices, systemImage: "speaker.slash")
             }
         }
+        .modifier(AudioDeviceCardModifier(tint: tint, colorScheme: colorScheme))
     }
 
     private var systemSoundOutputPicker: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let tint = Color.orange
+        return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                Label {
-                    Text(l10n.s.mixerSoundEffectsOutputTitle)
-                        .font(.system(size: 11.5, weight: .medium))
-                } icon: {
-                    Image(systemName: "bell.fill")
-                        .font(.system(size: 10.5, weight: .semibold))
-                }
-                .foregroundStyle(.secondary)
+                deviceIdentity(systemImage: "bell.fill",
+                               title: l10n.s.mixerSoundEffectsOutputTitle,
+                               subtitle: systemSoundSubtitle,
+                               tint: tint)
 
                 Spacer(minLength: 6)
 
@@ -234,10 +224,20 @@ struct MixerSection: View {
                 .help(l10n.s.mixerSoundEffectsOutputTooltip)
             }
 
+            if let volume = mixer.systemSoundOutputVolume {
+                deviceVolumeRow(volume: volume,
+                                binding: systemSoundOutputVolumeBinding,
+                                editorID: "system-sound-output",
+                                accessibilityLabel: l10n.s.mixerSoundEffectsOutputTitle) {
+                    mixer.setCurrentSystemSoundOutputVolume($0)
+                }
+            }
+
             if systemSoundOutputDevices.isEmpty {
                 inputMessage(l10n.s.mixerSystemOutputNoDevices, systemImage: "bell.slash")
             }
         }
+        .modifier(AudioDeviceCardModifier(tint: tint, colorScheme: colorScheme))
     }
 
     private var universalOutputDevices: [MixerOutputDevice] {
@@ -275,6 +275,13 @@ struct MixerSection: View {
                 guard selection != MixerRoutingSupport.systemDefaultSelectionID else { return }
                 mixer.setSystemSoundOutputDeviceUID(selection)
             }
+        )
+    }
+
+    private var systemSoundOutputVolumeBinding: Binding<Double> {
+        Binding(
+            get: { mixer.systemSoundOutputVolume ?? 0 },
+            set: { mixer.setCurrentSystemSoundOutputVolume($0) }
         )
     }
 
@@ -433,16 +440,13 @@ struct MixerSection: View {
     }
 
     private var microphonePicker: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let tint = Color.purple
+        return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                Label {
-                    Text(l10n.s.mixerInputTitle)
-                        .font(.system(size: 11.5, weight: .medium))
-                } icon: {
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 10.5, weight: .semibold))
-                }
-                .foregroundStyle(.secondary)
+                deviceIdentity(systemImage: "mic.fill",
+                               title: l10n.s.mixerInputTitle,
+                               subtitle: microphoneSubtitle,
+                               tint: tint)
 
                 Spacer(minLength: 6)
 
@@ -467,6 +471,15 @@ struct MixerSection: View {
                 .help(l10n.s.mixerInputTooltip)
             }
 
+            if let volume = inputManager.currentInputVolume {
+                deviceVolumeRow(volume: volume,
+                                binding: inputVolumeBinding,
+                                editorID: "microphone-input",
+                                accessibilityLabel: l10n.s.mixerInputTitle) {
+                    inputManager.setCurrentInputVolume($0)
+                }
+            }
+
             if inputManager.inputDevices.isEmpty {
                 inputMessage(l10n.s.mixerInputNoDevices, systemImage: "mic.slash")
             } else if inputManager.preferredUnavailable {
@@ -476,6 +489,7 @@ struct MixerSection: View {
                              systemImage: "exclamationmark.triangle")
             }
         }
+        .modifier(AudioDeviceCardModifier(tint: tint, colorScheme: colorScheme))
     }
 
     private var inputSelectionBinding: Binding<String> {
@@ -486,6 +500,77 @@ struct MixerSection: View {
                     selection == MixerRoutingSupport.systemDefaultSelectionID ? nil : selection)
             }
         )
+    }
+
+    private var inputVolumeBinding: Binding<Double> {
+        Binding(
+            get: { inputManager.currentInputVolume ?? 0 },
+            set: { inputManager.setCurrentInputVolume($0) }
+        )
+    }
+
+    private func deviceVolumeRow(volume: Double,
+                                 binding: Binding<Double>,
+                                 editorID: String,
+                                 accessibilityLabel: String,
+                                 onCommit: @escaping (Double) -> Void) -> some View {
+        HStack(spacing: 8) {
+            MixerVolumeSlider(value: binding,
+                              normalTint: normalSliderTint,
+                              boostTint: normalSliderTint,
+                              isBoosting: false,
+                              accentRevision: accentRevision,
+                              maximum: 1,
+                              accessibilityLabel: accessibilityLabel)
+
+            EditableVolumePercent(currentPercent: Int((volume * 100).rounded()),
+                                  maximumPercent: 100,
+                                  width: 36,
+                                  editorID: editorID,
+                                  editingID: $editingVolumeID,
+                                  accessibilityLabel: accessibilityLabel) {
+                Text("\(Int((volume * 100).rounded()))%")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            } onCommit: { onCommit($0) }
+        }
+    }
+
+    private func deviceIdentity(systemImage: String,
+                                title: String,
+                                subtitle: String,
+                                tint: Color) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 30, height: 30)
+                .background(tint.opacity(colorScheme == .dark ? 0.18 : 0.09), in: Circle())
+                .overlay(Circle().stroke(tint.opacity(0.18), lineWidth: 0.7))
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text(subtitle)
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var outputSubtitle: String {
+        [.zhHans, .zhTW, .zhHK].contains(l10n.language) ? "媒体与应用音频" : "Media and app audio"
+    }
+
+    private var systemSoundSubtitle: String {
+        [.zhHans, .zhTW, .zhHK].contains(l10n.language) ? "提醒与界面音效" : "Alerts and interface sounds"
+    }
+
+    private var microphoneSubtitle: String {
+        [.zhHans, .zhTW, .zhHK].contains(l10n.language) ? "输入音量" : "Input volume"
     }
 
     /// One entry per app the list knows about: visible rows checked, hidden
@@ -647,10 +732,11 @@ struct MixerSection: View {
 
     @ViewBuilder
     private var rowList: some View {
-        ForEach(visibleApps) { app in
+        ForEach(Array(visibleApps.enumerated()), id: \.element.id) { index, app in
             MixerRow(app: app,
                      normalTint: normalSliderTint,
                      accentRevision: accentRevision,
+                     usesAlternateBackground: index.isMultiple(of: 2),
                      editingVolumeID: $editingVolumeID)
         }
     }
@@ -701,6 +787,7 @@ private struct MixerRow: View {
     let app: MixerApp
     let normalTint: Color
     let accentRevision: Int
+    let usesAlternateBackground: Bool
     @Binding var editingVolumeID: String?
 
     /// Warm accent to flag the boost range, darkened in Light Mode for contrast.
@@ -710,12 +797,10 @@ private struct MixerRow: View {
     private var isBoosting: Bool { (app.volume * 100).rounded() > 100 }
     private var isAtUnity: Bool { (app.volume * 100).rounded() == 100 }
 
-    /// SoundSource-sized icon spanning the row's two lines (issue #166); the
-    /// bitmap must be requested at this size or the upscale looks blurry.
-    private static let iconPointSize: CGFloat = 32
+    private static let iconPointSize: CGFloat = 30
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 6) {
             ZStack(alignment: .bottomTrailing) {
                 Image(nsImage: ResponsibleProcess.icon(for: app.ownerPid,
                                                        pointSize: Self.iconPointSize))
@@ -730,97 +815,84 @@ private struct MixerRow: View {
                 }
             }
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
-                    Text(app.name)
-                        .font(.system(size: 11.5, weight: .medium))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+            Text(app.name)
+                .font(.system(size: 11.5, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(minWidth: 52, idealWidth: 68, maxWidth: 74, alignment: .leading)
 
-                    Spacer(minLength: 4)
+            if app.isBypassed {
+                Text(l10n.s.mixerBypassedCaption)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            } else {
+                MixerVolumeSlider(value: volumeBinding,
+                                  normalTint: normalTint,
+                                  boostTint: boostColor,
+                                  isBoosting: isBoosting,
+                                  accentRevision: accentRevision,
+                                  maximum: AppVolumeMixer.maxVolume,
+                                  accessibilityLabel: app.name)
+                    .frame(minWidth: 44)
 
-                    if !app.isBypassed {
-                        outputPicker
+                EditableVolumePercent(currentPercent: Int((app.volume * 100).rounded()),
+                                      maximumPercent: Int(AppVolumeMixer.maxVolume * 100),
+                                      width: 48,
+                                      editorID: "app:\(app.id)",
+                                      editingID: $editingVolumeID,
+                                      accessibilityLabel: app.name) {
+                    HStack(spacing: 2) {
+                        if isBoosting {
+                            Image(systemName: "bolt.fill")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(boostColor)
+                        }
+                        Text("\(Int((app.volume * 100).rounded()))%")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(isBoosting ? boostColor : Color.secondary)
                     }
+                } onCommit: {
+                    mixer.setVolume($0, for: app)
                 }
 
-                if app.isBypassed {
-                    // Zoom and pro audio apps are listed but never tapped
-                    // (issue #177): the row explains itself instead of the
-                    // app silently missing from the mixer.
-                    Text(l10n.s.mixerBypassedCaption)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    HStack(spacing: 8) {
-                        MixerVolumeSlider(value: volumeBinding,
-                                          normalTint: normalTint,
-                                          boostTint: boostColor,
-                                          isBoosting: isBoosting,
-                                          accentRevision: accentRevision,
-                                          maximum: AppVolumeMixer.maxVolume,
-                                          accessibilityLabel: app.name)
-
-                        EditableVolumePercent(currentPercent: Int((app.volume * 100).rounded()),
-                                              maximumPercent: Int(AppVolumeMixer.maxVolume * 100),
-                                              width: 42,
-                                              editorID: "app:\(app.id)",
-                                              editingID: $editingVolumeID,
-                                              accessibilityLabel: app.name) {
-                            HStack(spacing: 2) {
-                                if isBoosting {
-                                    Image(systemName: "bolt.fill")
-                                        .font(.system(size: 8, weight: .bold))
-                                        .foregroundStyle(boostColor)
-                                }
-                                Text("\(Int((app.volume * 100).rounded()))%")
-                                    .font(.system(size: 10.5, weight: .medium))
-                                    .monospacedDigit()
-                                    .foregroundStyle(isBoosting ? boostColor : Color.secondary)
-                            }
-                        } onCommit: {
-                            mixer.setVolume($0, for: app)
-                        }
-
-                        Button {
-                            mixer.setVolume(1, for: app)
-                        } label: {
-                            Image(systemName: "arrow.counterclockwise")
-                                .font(.system(size: 9.5, weight: .semibold))
-                                .foregroundStyle(isBoosting ? boostColor : Color.secondary)
-                                .frame(width: 14)
-                        }
-                        .buttonStyle(.plain)
-                        .help(l10n.s.mixerResetTooltip)
-                        .opacity(isAtUnity ? 0 : 1)
-                        .disabled(isAtUnity)
-
-                        Button {
-                            mixer.toggleMute(app)
-                        } label: {
-                            Image(systemName: app.volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                                .font(.system(size: 10))
-                                .foregroundStyle(app.volume <= 0.001
-                                                 ? PanelMetricColor.red(for: colorScheme)
-                                                 : Color.secondary)
-                                .frame(width: 16)
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    if app.outputDeviceUnavailable {
-                        Label(l10n.s.mixerOutputFallback, systemImage: "speaker.badge.exclamationmark")
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                Button {
+                    mixer.setVolume(1, for: app)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(isBoosting ? boostColor : Color.secondary)
+                        .frame(width: 12)
                 }
+                .buttonStyle(.plain)
+                .help(l10n.s.mixerResetTooltip)
+                .opacity(isAtUnity ? 0 : 1)
+                .disabled(isAtUnity)
+
+                outputPicker
+
+                Button {
+                    mixer.toggleMute(app)
+                } label: {
+                    Image(systemName: app.volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(app.volume <= 0.001
+                                         ? PanelMetricColor.red(for: colorScheme)
+                                         : Color.secondary)
+                        .frame(width: 16)
+                }
+                .buttonStyle(.plain)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 6)
+        .background(rowBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(rowBorder, lineWidth: 0.6)
+        }
         .contextMenu {
             // Same action as unchecking the app in the footer menu, one
             // right-click closer (issue #300).
@@ -830,6 +902,19 @@ private struct MixerRow: View {
                 }
             }
         }
+    }
+
+    private var rowBackground: Color {
+        if app.isPlaying {
+            return boostColor.opacity(colorScheme == .dark ? 0.10 : 0.055)
+        }
+        return Color.primary.opacity(usesAlternateBackground
+                                     ? (colorScheme == .dark ? 0.045 : 0.025)
+                                     : (colorScheme == .dark ? 0.025 : 0.012))
+    }
+
+    private var rowBorder: Color {
+        app.isPlaying ? boostColor.opacity(0.16) : Color.primary.opacity(0.055)
     }
 
     private var volumeBinding: Binding<Double> {
@@ -855,7 +940,7 @@ private struct MixerRow: View {
         .labelsHidden()
         .pickerStyle(.menu)
         .controlSize(.small)
-        .frame(width: 112)
+        .frame(width: 86)
         .help(l10n.s.mixerOutputTooltip)
     }
 
@@ -1137,6 +1222,7 @@ private struct MixerVolumeSlider: View {
                 .accessibilityLabel(accessibilityLabel)
                 .accessibilityValue("\(percentage)%")
 #endif
+
         }
     }
 

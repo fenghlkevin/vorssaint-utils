@@ -8,7 +8,7 @@ import Foundation
 /// below and the unit tests can reason about pages without pulling UI in.
 enum SettingsPage: Hashable {
     case general, features, energy, monitor
-    case mouse, switcher, keyDebounce, superKey, cutPaste, autoQuit, cleaner, uninstaller, urlCleaner, homebrew, appUpdates, media, clipboard, windowLayout, shelf, quickTools, textSnippets, screenshot, radialMenu, commandBar, killProcess
+    case mouse, switcher, keyDebounce, superKey, inputSourceAutomation, cutPaste, autoQuit, cleaner, uninstaller, urlCleaner, homebrew, appUpdates, menuBarIcons, awayLock, media, clipboard, windowLayout, shelf, quickTools, textSnippets, screenshot, radialMenu, commandBar, killProcess
     case shortcuts, advanced, about, releaseNotes, support
 }
 
@@ -179,6 +179,7 @@ extension AppFeature {
         case .keyboardDebounce: return FeatureSettingsDestination(.keyDebounce)
         case .textSnippets: return FeatureSettingsDestination(.textSnippets)
         case .superKey: return FeatureSettingsDestination(.superKey)
+        case .inputSourceAutomation: return FeatureSettingsDestination(.inputSourceAutomation)
 
         case .clipboardHistory:
             return FeatureSettingsDestination(.clipboard, sectionAnchor: .clipboardHistory)
@@ -209,6 +210,7 @@ extension AppFeature {
             return FeatureSettingsDestination(.energy, sectionAnchor: .extraBrightness)
         case .bluetoothSleep:
             return FeatureSettingsDestination(.energy, sectionAnchor: .bluetoothSleep)
+        case .awayLock: return FeatureSettingsDestination(.awayLock)
 
         case .quickLauncher:
             return FeatureSettingsDestination(.quickTools, sectionAnchor: .quickLauncher)
@@ -226,6 +228,7 @@ extension AppFeature {
         case .killProcess: return FeatureSettingsDestination(.killProcess)
         case .homebrew: return FeatureSettingsDestination(.homebrew)
         case .appUpdates: return FeatureSettingsDestination(.appUpdates)
+        case .menuBarIcons: return FeatureSettingsDestination(.menuBarIcons)
         case .screenshot:
             return FeatureSettingsDestination(.screenshot, sectionAnchor: .screenshot)
         case .cameraPreview:
@@ -274,10 +277,13 @@ enum FeatureVisibilitySupport {
         case .cleaner: return [.cleaner]
         case .homebrew: return [.homebrew]
         case .appUpdates: return [.appUpdates]
+        case .menuBarIcons: return [.menuBarIcons]
+        case .awayLock: return [.awayLock]
         case .uninstaller: return [.uninstaller]
         case .killProcess: return [.killProcess]
         case .keyDebounce: return [.keyboardDebounce]
         case .superKey: return [.superKey]
+        case .inputSourceAutomation: return [.inputSourceAutomation]
         case .textSnippets: return [.textSnippets]
         case .screenshot: return [.screenshot, .screenRecorder, .screenOCR, .colorPicker]
         case .radialMenu: return [.radialMenu]

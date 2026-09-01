@@ -1109,6 +1109,8 @@ struct Strings {
     let uninstallerHomebrewPackageFormat: String
     let shelfEdgeToggle: String
     let shelfEdgeCaption: String
+    let shelfEdgeWidth: String
+    let shelfEdgeHeight: String
     let focusFollowsMouseName: String
     let focusFollowsMouseCaption: String
     let focusFollowsMouseDelay: String
@@ -2088,6 +2090,8 @@ extension Strings {
         uninstallerHomebrewPackageFormat: "%@ também será removido do Homebrew.",
         shelfEdgeToggle: "Abrir perto de uma borda da tela",
         shelfEdgeCaption: "Ao arrastar um arquivo para perto da borda da tela, a área espia para dentro. Solte ali, ou puxe de volta e ela recua.",
+        shelfEdgeWidth: "Largura lateral",
+        shelfEdgeHeight: "Altura lateral",
         focusFollowsMouseName: "Foco ao passar o mouse",
         focusFollowsMouseCaption: "Coloca em foco e traz para frente a janela sob o ponteiro após uma breve pausa.",
         focusFollowsMouseDelay: "Atraso ao passar o mouse",
@@ -3068,6 +3072,8 @@ extension Strings {
         uninstallerHomebrewPackageFormat: "%@ will also be removed from Homebrew.",
         shelfEdgeToggle: "Open near a screen edge",
         shelfEdgeCaption: "Drag a file toward the screen edge to peek the shelf in. Drop it there, or pull back and it retreats.",
+        shelfEdgeWidth: "Side width",
+        shelfEdgeHeight: "Side height",
         focusFollowsMouseName: "Focus follows mouse",
         focusFollowsMouseCaption: "Focuses and raises the window under the pointer after a short pause.",
         focusFollowsMouseDelay: "Hover delay",

@@ -917,6 +917,11 @@ private final class ScreenshotOverlayView: NSView {
             context.fill(bounds)
         }
 
+        if mouseIsOnThisScreen, !isCapturePending, !controller.spaceIsDown {
+            let point = isDragging ? lastDragPoint : hoverPoint
+            drawCoordinateGuides(context, at: point, pixelScale: panel.pixelScale)
+        }
+
         if controller.loupeEnabled, !controller.spaceIsDown,
            mouseIsOnThisScreen, let loupeImage {
             let point = isDragging ? lastDragPoint : hoverPoint
@@ -929,6 +934,26 @@ private final class ScreenshotOverlayView: NSView {
         if let ghostRect, dragOrigin == nil, selection == .zero {
             drawGhost(context, rect: ghostRect)
         }
+    }
+
+    private func drawCoordinateGuides(_ context: CGContext,
+                                      at point: CGPoint,
+                                      pixelScale: CGFloat) {
+        context.saveGState()
+        context.setStrokeColor(CGColor(srgbRed: 0.25, green: 0.55, blue: 1, alpha: 0.82))
+        context.setLineWidth(1)
+        context.beginPath()
+        context.move(to: CGPoint(x: bounds.minX, y: point.y))
+        context.addLine(to: CGPoint(x: bounds.maxX, y: point.y))
+        context.move(to: CGPoint(x: point.x, y: bounds.minY))
+        context.addLine(to: CGPoint(x: point.x, y: bounds.maxY))
+        context.strokePath()
+        context.restoreGState()
+
+        let pixelX = Int((point.x * pixelScale).rounded())
+        let pixelY = Int((point.y * pixelScale).rounded())
+        drawBadge("x: \(pixelX)   y: \(pixelY)",
+                  near: CGPoint(x: point.x, y: point.y + 14))
     }
 
     private func drawSelectionChrome(_ context: CGContext, pixelScale: CGFloat) {

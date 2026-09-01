@@ -965,6 +965,8 @@ extension Strings {
         uninstallerHomebrewPackageFormat: "%@ sera aussi retiré de Homebrew.",
         shelfEdgeToggle: "Ouvrir près d’un bord de l’écran",
         shelfEdgeCaption: "Faites glisser un fichier vers le bord de l’écran pour entrevoir l’étagère. Déposez-le là, ou reculez et elle se retire.",
+        shelfEdgeWidth: "Largeur latérale",
+        shelfEdgeHeight: "Hauteur latérale",
         focusFollowsMouseName: "Le focus suit la souris",
         focusFollowsMouseCaption: "Active et place au premier plan la fenêtre sous le pointeur après une courte pause.",
         focusFollowsMouseDelay: "Délai de survol",

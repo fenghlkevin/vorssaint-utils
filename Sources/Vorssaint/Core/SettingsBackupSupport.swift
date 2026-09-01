@@ -80,6 +80,9 @@ enum SettingsBackupSupport {
         // Levels and device ids belong to the microphones of one Mac.
         DefaultsKey.micMuteSavedVolumes,
         DefaultsKey.micMuteMutedDevices,
+        // A collapsed divider depends on the physical ordering of this Mac's
+        // status items. The feature choice is portable; its live state is not.
+        DefaultsKey.menuBarIconsCollapsed,
         DefaultsKey.cleanerLastAutoRun,
         // When the last check ran and what it found belong to one Mac.
         DefaultsKey.appUpdatesLastCheck,

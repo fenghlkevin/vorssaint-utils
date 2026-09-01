@@ -40,6 +40,32 @@ struct MetricsTests {
             if actual != expected { failures.append("\(label): got \(actual), expected \(expected)") }
         }
 
+        // MARK: Menu bar icon divider placement
+
+        let dividerFrame = CGRect(x: 900, y: 1000, width: 24, height: 24)
+        let mainMenuFrame = CGRect(x: 930, y: 1000, width: 28, height: 24)
+        expect(MenuBarIconCollapserSupport.hasSafePlacement(mainFrame: mainMenuFrame,
+                                                            dividerFrame: dividerFrame),
+               "menu bar divider is safe immediately left of Vorssaint")
+        expect(!MenuBarIconCollapserSupport.hasSafePlacement(mainFrame: dividerFrame,
+                                                             dividerFrame: mainMenuFrame),
+               "menu bar divider rejects placement to the right of Vorssaint")
+        expect(!MenuBarIconCollapserSupport.hasSafePlacement(
+            mainFrame: mainMenuFrame,
+            dividerFrame: CGRect(x: 900, y: 600, width: 24, height: 24)),
+               "menu bar divider rejects another display row")
+        expect(!MenuBarIconCollapserSupport.hasSafePlacement(mainFrame: nil,
+                                                             dividerFrame: dividerFrame),
+               "menu bar divider waits for the status item frames")
+        expect(MenuBarIconCollapserSupport.collapsedLength >= 10_000,
+               "collapsed divider reserves enough space to move hidden icons out")
+        expect(MenuBarIconCollapserSupport.sanitizedDelay(15) == 15,
+               "menu bar divider keeps an allowed automatic collapse delay")
+        expect(MenuBarIconCollapserSupport.sanitizedDelay(7) == 0,
+               "menu bar divider rejects an unsupported automatic collapse delay")
+        expect(MenuBarIconCollapserSupport.allowedDelays == [0, 5, 10, 15, 30, 60],
+               "menu bar divider exposes the documented automatic collapse choices")
+
         // MARK: Byte / rate formatting
 
         expectEqual(MetricFormat.bytes(0), "0 B", "bytes zero")
@@ -2882,6 +2908,10 @@ struct MetricsTests {
                "shelf shake opens by default once shelf is enabled")
         expect(registeredDefaults[DefaultsKey.shelfEdgeDragEnabled] as? Bool == false,
                "new shelf edge opening stays off by default")
+        expect(registeredDefaults[DefaultsKey.shelfEdgePanelWidth] as? Double == 360.0,
+               "the side shelf starts wider than the compact floating card")
+        expect(registeredDefaults[DefaultsKey.shelfEdgePanelHeightRatio] as? Double == 0.90,
+               "the side shelf starts as a near-full-height vertical strip")
         expect(registeredDefaults[DefaultsKey.shelfCloseAfterDrop] as? Bool == false,
                "closing after a drop is new behavior and must arrive off in an update")
         expect(registeredDefaults[DefaultsKey.shelfRemoveAfterDrop] as? Bool == true,
@@ -3297,6 +3327,10 @@ struct MetricsTests {
                "Utilities panel section is shown by default")
         expect(registeredDefaults[DefaultsKey.panelShowControls] as? Bool == true,
                "Quick Controls panel section is shown by default")
+        expect(registeredDefaults[DefaultsKey.panelShowInputSourceAutomation] as? Bool == true,
+               "Input source automation panel tab is shown by default")
+        expect((registeredDefaults[DefaultsKey.inputSourceLastUsedSources] as? [String: String])?.isEmpty == true,
+               "input source last-used contexts start empty")
         expect(registeredDefaults[DefaultsKey.panelShowToggles] as? Bool == true,
                "Quick toggles panel section is shown by default")
         expect([DefaultsKey.panelToggleDarkMode, DefaultsKey.panelToggleKeyboardLight,
@@ -7240,8 +7274,13 @@ struct MetricsTests {
                           ShelfEdgeScreen(frame: CGRect(x: 1920, y: 0, width: 1920, height: 1080),
                                           visibleFrame: CGRect(x: 1920, y: 0, width: 1920, height: 1080))]
         expect(ShelfEdgeDragSupport.match(at: CGPoint(x: 1918, y: 500), screens: sideBySide,
-                                          distance: 24) == nil,
-               "a seam shared by two adjacent screens counts as neither screen's own edge")
+                                          distance: 24)
+               == ShelfEdgeMatch(edge: .right, screen: sideBySide[0].frame),
+               "approaching a shared seam from the left resolves the left display's right edge")
+        expect(ShelfEdgeDragSupport.match(at: CGPoint(x: 1922, y: 500), screens: sideBySide,
+                                          distance: 24)
+               == ShelfEdgeMatch(edge: .left, screen: sideBySide[1].frame),
+               "approaching a shared seam from the right resolves the right display's left edge")
         expect(ShelfEdgeDragSupport.match(at: CGPoint(x: 10, y: 500), screens: sideBySide,
                                           distance: 24)?.edge == .left,
                "the true outer left edge of the first screen still matches with a second screen present")
@@ -7288,16 +7327,46 @@ struct MetricsTests {
                && ShelfEdgeDragSupport.dwell == 0.15,
                "the shipped trigger distance, retreat distance, and dwell are pinned, so a future retune has to update this test")
         expect(ShelfEdgeDragSupport.match(at: CGPoint(x: 1918, y: 500), screens: sideBySide,
-                                          distance: ShelfEdgeDragSupport.triggerDistance) == nil,
-               "the seam stays safe at the shipped trigger distance, not just the smaller distance the earlier cases use")
+                                          distance: ShelfEdgeDragSupport.triggerDistance)?.edge == .right,
+               "the shared seam remains available at the shipped trigger distance")
         let shippedLeftMatch = ShelfEdgeMatch(edge: .left, screen: CGRect(x: 0, y: 0, width: 1920, height: 1080))
-        // x: 100 sits safely inside the peeking panel's own on-screen strip
-        // (ShelfView.panelWidth / 3, rounded: 304 / 3 ≈ 101), which the
-        // retreat check relies on covering instead of a separate panel-frame
-        // check.
+        // x: 100 sits safely inside the default peeking strip (360 / 3 = 120),
+        // which the retreat check covers without a separate frame test.
         expect(ShelfEdgeDragSupport.stillNear(shippedLeftMatch, point: CGPoint(x: 100, y: 500),
                                               distance: ShelfEdgeDragSupport.retreatDistance),
                "the shipped retreat distance comfortably covers the peeking panel's own on-screen strip")
+
+        let edgeVisible = CGRect(x: 0, y: 0, width: 1440, height: 1000)
+        let edgeSize = ShelfEdgePanelSupport.size(
+            in: edgeVisible,
+            preferredWidth: ShelfEdgePanelSupport.defaultWidth,
+            heightRatio: ShelfEdgePanelSupport.defaultHeightRatio
+        )
+        expect(edgeSize == CGSize(width: 360, height: 900),
+               "the default side shelf is a tall strip rather than the compact card")
+        expect(ShelfEdgePanelSupport.frame(edge: .left,
+                                           visibleFrame: edgeVisible,
+                                           size: edgeSize,
+                                           peeking: false)
+               == CGRect(x: 8, y: 50, width: 360, height: 900),
+               "a revealed left shelf is centered vertically and inset from the usable edge")
+        expect(ShelfEdgePanelSupport.frame(edge: .right,
+                                           visibleFrame: edgeVisible,
+                                           size: edgeSize,
+                                           peeking: true)
+               == CGRect(x: 1320, y: 50, width: 120, height: 900),
+               "a right shelf peek is a narrow drop strip that never spills onto a neighboring display")
+        expect(ShelfEdgePanelSupport.frame(edge: .left,
+                                           visibleFrame: CGRect(x: 1920, y: 0, width: 1440, height: 1000),
+                                           size: edgeSize,
+                                           peeking: true)
+               == CGRect(x: 1920, y: 50, width: 120, height: 900),
+               "a left shelf peek stays wholly inside its target display at a shared seam")
+        expect(ShelfEdgePanelSupport.size(in: CGRect(x: 0, y: 0, width: 500, height: 400),
+                                          preferredWidth: 900,
+                                          heightRatio: 2)
+               == CGSize(width: 484, height: 384),
+               "side shelf preferences clamp to the display's usable dimensions")
 
         let shelfFile = ShelfPersistedItem(id: UUID(), kind: .file, title: "notes.pdf",
                                            path: "/tmp/notes.pdf")
@@ -8068,7 +8137,7 @@ struct MetricsTests {
 
         let freshSize = SettingsWindowSupport.initialContentSize(savedWidth: 0, savedHeight: 0,
                                                                  availableHeight: 1200)
-        expect(freshSize.width == 772 && freshSize.height == 838,
+        expect(freshSize.width == 920 && freshSize.height == 838,
                "settings window opens at the tall default when nothing is saved")
         let clampedSize = SettingsWindowSupport.initialContentSize(savedWidth: 0, savedHeight: 0,
                                                                    availableHeight: 700)
@@ -8078,17 +8147,17 @@ struct MetricsTests {
                                                                   availableHeight: 400)
         expect(tinyScreen.height == 528,
                "the default never goes below the design height")
-        let savedSize = SettingsWindowSupport.initialContentSize(savedWidth: 900, savedHeight: 950,
+        let savedSize = SettingsWindowSupport.initialContentSize(savedWidth: 960, savedHeight: 950,
                                                                  availableHeight: 700)
-        expect(savedSize.width == 900 && savedSize.height == 950,
+        expect(savedSize.width == 960 && savedSize.height == 950,
                "a user-chosen size is restored as is")
         let bogusSaved = SettingsWindowSupport.initialContentSize(savedWidth: 300, savedHeight: 200,
                                                                   availableHeight: 1200)
-        expect(bogusSaved.width == 772 && bogusSaved.height == 838,
+        expect(bogusSaved.width == 920 && bogusSaved.height == 838,
                "a saved size below the minimum falls back to the default")
         expect(!SettingsWindowSupport.isValidContentSize(width: 300, height: 200),
                "sub-minimum sizes are rejected by isValidContentSize")
-        expect(SettingsWindowSupport.isValidContentSize(width: 772, height: 528),
+        expect(SettingsWindowSupport.isValidContentSize(width: 920, height: 528),
                "exact minimum size is valid")
         expect(SettingsWindowSupport.isValidContentSize(width: 1000, height: 800),
                "larger size is valid")
@@ -11802,20 +11871,73 @@ struct MetricsTests {
 
         // MARK: Features hub catalog
 
-        expect(AppFeature.allCases.count == 54, "feature catalog has 54 features")
+        expect(AwayLockSupport.median([-80, -60, -70]) == -70
+                && AwayLockSupport.median([-80, -60]) == -70,
+               "away lock smooths odd and even RSSI samples with a median")
+        expect(AwayLockSupport.isNear(rssi: -74, threshold: -74, returnMargin: 5, wasNear: true)
+                && !AwayLockSupport.isNear(rssi: -74, threshold: -74, returnMargin: 5, wasNear: false),
+               "away lock applies return hysteresis after a device moves away")
+        expect(AwayLockSupport.shouldStartCountdown(weakSince: Date(timeIntervalSince1970: 10),
+                                                    now: Date(timeIntervalSince1970: 22),
+                                                    requiredSeconds: 12),
+               "away lock starts its countdown only after sustained weak signal")
+        expect(!AwayLockSupport.canInferDepartureFromSilence(
+                    firstSeen: Date(timeIntervalSince1970: 10),
+                    lastSeen: Date(timeIntervalSince1970: 20),
+                    requiredObservationSeconds: 25),
+               "away lock does not infer departure from a brief discovery burst")
+        expect(AwayLockSupport.canInferDepartureFromSilence(
+                    firstSeen: Date(timeIntervalSince1970: 10),
+                    lastSeen: Date(timeIntervalSince1970: 35),
+                    requiredObservationSeconds: 25),
+               "away lock may use silence after a complete stable observation window")
+
+        expect(InputSourceRuleSupport.normalizedDomain(" HTTPS://WWW.Example.COM/path ") == "example.com",
+               "input source domain normalization removes scheme, path and www")
+        expect(InputSourceRuleSupport.normalizedDomain("sub.example.com") == "sub.example.com",
+               "input source domain normalization accepts a host without a scheme")
+        let domainRules = [
+            InputSourceDomainRule(domain: "example.com", sourceID: "base"),
+            InputSourceDomainRule(domain: "docs.example.com", sourceID: "docs"),
+        ]
+        expect(InputSourceRuleSupport.matchingRule(for: "a.docs.example.com", rules: domainRules)?.sourceID == "docs",
+               "the most specific input source website rule wins")
+        expect(InputSourceRuleSupport.matchingRule(for: "notexample.com", rules: domainRules) == nil,
+               "input source website rules respect domain boundaries")
+        expect(InputSourceRuleSupport.isFollowLastUsed(InputSourceRuleSupport.followLastUsedSourceID)
+                && !InputSourceRuleSupport.isFollowLastUsed("com.apple.keylayout.ABC"),
+               "input source rules distinguish follow-last-used from a fixed source")
+        let inputMemorySuite = "com.vorssaint.tests.inputSourceMemory"
+        if let inputMemoryDefaults = UserDefaults(suiteName: inputMemorySuite) {
+            inputMemoryDefaults.removePersistentDomain(forName: inputMemorySuite)
+            InputSourceRuleStore.shared.rememberSource("source.zh", for: "app|example",
+                                                        defaults: inputMemoryDefaults)
+            expect(InputSourceRuleStore.shared.rememberedSource(for: "app|example",
+                                                                 defaults: inputMemoryDefaults) == "source.zh",
+                   "input source automation remembers the last manual source per context")
+            InputSourceRuleStore.shared.rememberSource(InputSourceRuleSupport.followLastUsedSourceID,
+                                                        for: "app|example", defaults: inputMemoryDefaults)
+            expect(InputSourceRuleStore.shared.rememberedSource(for: "app|example",
+                                                                 defaults: inputMemoryDefaults) == "source.zh",
+                   "the follow-last-used sentinel is never persisted as an actual source")
+            inputMemoryDefaults.removePersistentDomain(forName: inputMemorySuite)
+        }
+
+        expect(AppFeature.allCases.count == 57, "feature catalog has 57 features")
         expect(Set(AppFeature.allCases.map(\.rawValue)).count == AppFeature.allCases.count,
                "feature ids are unique")
         expect(AppFeature.allCases.map(\.rawValue) == [
             "switcher", "dockPreview", "dockClick", "windowMaximizer", "windowLayout", "autoQuit",
             "scrollInverter", "focusFollowsMouse", "smoothScroll", "mouseNavigation", "mouseButtonShortcuts", "middleClick",
-            "keyboardDebounce", "textSnippets", "superKey",
+            "keyboardDebounce", "textSnippets", "superKey", "inputSourceAutomation",
             "clipboardHistory", "pastePlain", "finderCutPaste", "finderRename", "shelf", "urlCleaner",
             "diskImageInstaller",
             "mixer", "soundOutputSwitcher", "micMute", "musicBlock",
-            "keepAwake", "brightness", "extraBrightness", "bluetoothSleep",
+            "keepAwake", "brightness", "extraBrightness", "bluetoothSleep", "awayLock",
             "quickLauncher", "quickToggles", "colorPicker", "screenOCR", "cleaningMode", "mediaTools",
             "cleaner", "uninstaller", "homebrew", "appUpdates", "screenshot", "cameraPreview",
             "radialMenu", "scratchpad", "commandBar", "screenRecorder", "killProcess",
+            "menuBarIcons",
             "monitorCPU", "monitorGPU", "monitorMemory", "monitorNetwork", "monitorDisk", "monitorPower",
             "fanControl",
         ], "feature ids are stable (they persist inside availability keys)")
@@ -11826,9 +11948,11 @@ struct MetricsTests {
                 && (AppFeature.availabilityDefaults[AppFeature.diskImageInstaller.availabilityKey] as? Bool) == false
                 && (AppFeature.availabilityDefaults[AppFeature.focusFollowsMouse.availabilityKey] as? Bool) == false
                 && (AppFeature.availabilityDefaults[AppFeature.killProcess.availabilityKey] as? Bool) == false
+                && (AppFeature.availabilityDefaults[AppFeature.menuBarIcons.availabilityKey] as? Bool) == false
+                && (AppFeature.availabilityDefaults[AppFeature.awayLock.availabilityKey] as? Bool) == false
                 && AppFeature.allCases.filter {
                     $0 != .focusFollowsMouse && $0 != .fanControl && $0 != .diskImageInstaller
-                        && $0 != .killProcess
+                        && $0 != .killProcess && $0 != .menuBarIcons && $0 != .awayLock
                 }.allSatisfy {
                     (AppFeature.availabilityDefaults[$0.availabilityKey] as? Bool) == true
                 },
