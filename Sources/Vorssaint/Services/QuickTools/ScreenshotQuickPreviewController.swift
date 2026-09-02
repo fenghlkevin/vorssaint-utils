@@ -66,6 +66,7 @@ final class ScreenshotQuickPreviewController {
 
     func show() {
         guard panel == nil, !closed else { return }
+        capture.trace?.event("result-thumbnail-source", image: capture.image)
         let content = ScreenshotQuickPreviewView(
             image: Self.thumbnail(for: capture.image),
             strings: strings,
@@ -294,17 +295,10 @@ final class ScreenshotQuickPreviewController {
             pointer: pointer,
             screens: screens,
             fallback: NSScreen.pointerVisibleFrame)
-        let storedPosition = UserDefaults.standard.string(
-            forKey: DefaultsKey.screenshotPreviewPosition) ?? ""
-        let position = ScreenshotSupport.QuickPreviewPosition(rawValue: storedPosition)
-            ?? .automatic
-        // With an after-capture action the preview is just a confirmation,
-        // so it sits quietly in the corner and leaves sooner, instead of
-        // popping up next to the selection and waiting.
-        let effectivePosition: ScreenshotSupport.QuickPreviewPosition =
-            position == .automatic && defaultAction != .none
-                ? .bottomRight
-                : position
+        // The completion card has a stable home: the top-right corner of the
+        // display that owns the capture. It must not float beside the selected
+        // region or cover the content the person just captured.
+        let effectivePosition: ScreenshotSupport.QuickPreviewPosition = .topRight
         return ScreenshotSupport.quickPreviewFrame(
             size: size,
             anchor: capture.anchorRect,
@@ -418,7 +412,7 @@ private struct ScreenshotQuickPreviewView: View {
                 Button {
                     perform(.discard)
                 } label: {
-                    Image(systemName: "trash")
+                    ScreenshotToolIcon(symbol: "trash")
                         .frame(width: 22, height: 18)
                 }
                 .buttonStyle(.bordered)
@@ -445,12 +439,16 @@ private struct ScreenshotQuickPreviewView: View {
                     shareMenu
                 }
                 Spacer(minLength: 4)
-                Button(strings.editButton) {
+                Button {
                     perform(.edit)
+                } label: {
+                    ScreenshotToolIcon(symbol: "pencil.tip.crop.circle")
+                        .frame(width: 22, height: 18)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
                 .controlSize(.small)
                 .screenshotSafeHelp("⏎")
+                .accessibilityLabel(strings.editButton)
             }
         }
         .padding(10)
@@ -521,12 +519,11 @@ private struct ScreenshotQuickPreviewView: View {
     /// A code was found: open the result panel that spells out its content.
     private var qrControl: some View {
         Button(action: showQR) {
-            Image(systemName: "qrcode")
+            ScreenshotToolIcon(symbol: "qrcode")
                 .frame(width: 22, height: 18)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .tint(.accentColor)
         .screenshotSafeHelp(L10n.shared.s.qrResultTitle)
         .accessibilityLabel(L10n.shared.s.qrResultTitle)
     }
@@ -542,7 +539,7 @@ private struct ScreenshotQuickPreviewView: View {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    Image(systemName: "link")
+                    ScreenshotToolIcon(symbol: "link")
                 }
             }
             .frame(width: 22, height: 18)
@@ -561,10 +558,8 @@ private struct ScreenshotQuickPreviewView: View {
                               disabled: Bool = false,
                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Label(title, systemImage: symbol)
-                .font(.system(size: 11, weight: .medium))
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
+            ScreenshotToolIcon(symbol: symbol)
+                .frame(width: 22, height: 18)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)

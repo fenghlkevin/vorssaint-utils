@@ -67,6 +67,10 @@ FAN_HELPER_ID="$APP_BUNDLE_ID.fan-control"
 TARGET="arm64-apple-macosx14.0"
 ENTITLEMENTS="Resources/Vorssaint.entitlements"
 LEGACY_IDENTITY="Vorssaint Utils Signing"
+# Local development normally uses the stable self-signed identity, but an
+# existing Apple Development grant can be preserved by explicitly selecting
+# that certificate for both the staged and installed bundle.
+DEV_SIGNING_IDENTITY="${VORSSAINT_DEV_SIGNING_IDENTITY:-$LEGACY_IDENTITY}"
 
 developer_id_identity() {
     security find-identity -v -p codesigning 2>/dev/null \
@@ -77,7 +81,7 @@ developer_id_identity() {
 
 fixed_dev_identity_available() {
     security find-identity -v -p codesigning 2>/dev/null \
-        | grep -Fq "\"$LEGACY_IDENTITY\""
+        | grep -Fq "\"$DEV_SIGNING_IDENTITY\""
 }
 
 # The Developer build exists for iterative local work, where an ad-hoc
@@ -91,8 +95,7 @@ if (( DEV && ! INSTALL_EXISTING )) && ! fixed_dev_identity_available; then
     ./Tools/setup-signing.sh
 fi
 if (( DEV )) && ! fixed_dev_identity_available; then
-    echo "✗ Developer builds require the fixed '$LEGACY_IDENTITY' identity." >&2
-    echo "  Refusing to switch to Apple Development or ad-hoc signing." >&2
+    echo "✗ Developer builds require the selected '$DEV_SIGNING_IDENTITY' identity." >&2
     exit 1
 fi
 
@@ -138,7 +141,11 @@ finalize_installed_bundle_after_child() {
     local bundle="$1"
     local helper="$bundle/Contents/Library/LaunchServices/$FAN_HELPER_ID"
     local devid
-    if (( DEV )); then devid=""; else devid="$(developer_id_identity)"; fi
+    if (( DEV )); then
+        [[ "$DEV_SIGNING_IDENTITY" == "$LEGACY_IDENTITY" ]] && devid="" || devid="$DEV_SIGNING_IDENTITY"
+    else
+        devid="$(developer_id_identity)"
+    fi
 
     echo "▸ Finalizing installed signature…"
     sleep 3
@@ -413,6 +420,7 @@ if (( TEST )); then
         Sources/Vorssaint/Services/QuickTools/QuickTogglesSupport.swift \
         Sources/Vorssaint/Services/QuickTools/ScreenshotCapturePolicy.swift \
         Sources/Vorssaint/Services/QuickTools/ScreenshotSupport.swift \
+        Sources/Vorssaint/Services/QuickTools/ScreenshotRenderer.swift \
         Sources/Vorssaint/Services/QuickTools/ScreenshotSharingSupport.swift \
         Sources/Vorssaint/Services/QuickTools/WindowActivationPolicy.swift \
         Sources/Vorssaint/Services/KeyboardDebounce/KeyboardDebounceSupport.swift \
@@ -458,6 +466,14 @@ if (( TEST )); then
     # `set -e` would end the script on a failing run before the sweep below.
     test_status=0
     ./build/metrics-tests || test_status=$?
+    # Exercise the real scrolling compositor independently of app/UI services.
+    swiftc -Onone -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" \
+        Sources/Vorssaint/Services/QuickTools/ScrollingImageStitcher.swift \
+        Sources/Vorssaint/Services/QuickTools/ScreenshotScrollAxisController.swift \
+        Tests/ScrollingImageStitcherTests.swift -o build/scrolling-stitch-tests || test_status=1
+    if (( test_status == 0 )); then
+        ./build/scrolling-stitch-tests || test_status=$?
+    fi
     discard_test_preferences || test_status=1
     exit $test_status
 fi
@@ -595,7 +611,11 @@ xattr -c -r "$STAGE" 2>/dev/null || true
 #      as a fallback so contributors without a Developer ID still get a constant
 #      designated requirement across their local builds.
 #   3. Ad-hoc — fresh clone with no identity at all.
-if (( DEV )); then DEVID=""; else DEVID="$(developer_id_identity)"; fi
+if (( DEV )); then
+    [[ "$DEV_SIGNING_IDENTITY" == "$LEGACY_IDENTITY" ]] && DEVID="" || DEVID="$DEV_SIGNING_IDENTITY"
+else
+    DEVID="$(developer_id_identity)"
+fi
 codesign_app() {
     local target="$1"
     if [[ -n "$DEVID" ]]; then

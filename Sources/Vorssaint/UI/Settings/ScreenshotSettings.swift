@@ -5,6 +5,8 @@ import SwiftUI
 
 /// Screenshot-specific sections inside the shared screen-capture page.
 struct ScreenshotCaptureSettings: View {
+    @AppStorage(ScreenshotCaptureTrace.enabledKey) private var diagnosticsEnabled = false
+    @State private var directoryError: String?
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var permissions = Permissions.shared
     @ObservedObject private var service = ScreenshotService.shared
@@ -41,158 +43,22 @@ struct ScreenshotCaptureSettings: View {
     }
 
     var body: some View {
-        Group {
-            Section {
-                HStack(spacing: 10) {
-                    Button {
-                        ScreenshotService.shared.capture()
-                    } label: {
-                        Label(strings.captureButton, systemImage: "camera.viewfinder")
-                            .frame(maxWidth: .infinity)
-                    }
-                    Button {
-                        ScreenshotService.shared.captureScrolling()
-                    } label: {
-                        Label(strings.scrollingCaptureButton, systemImage: "rectangle.stack")
-                            .frame(maxWidth: .infinity)
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                Text(strings.panelCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle(strings.fullScreenShortcutTitle, isOn: $fullScreenShortcutEnabled)
-                    .onChange(of: fullScreenShortcutEnabled) { _, _ in
-                        ScreenshotService.shared.syncWithPreferences()
-                    }
-                ShortcutPreferenceRow(role: .screenshotFullScreen,
-                                      isEnabled: fullScreenShortcutEnabled) {
-                    ScreenshotService.shared.syncWithPreferences()
-                }
-                if fullScreenShortcutEnabled, service.fullScreenShortcutRegistrationFailed {
-                    Text(l10n.s.shortcutUnavailable)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                Toggle(strings.editLastCapture, isOn: $lastCaptureShortcutEnabled)
-                    .onChange(of: lastCaptureShortcutEnabled) { _, _ in
-                        ScreenshotService.shared.syncWithPreferences()
-                    }
-                ShortcutPreferenceRow(role: .screenshotLastCapture,
-                                      isEnabled: lastCaptureShortcutEnabled) {
-                    ScreenshotService.shared.syncWithPreferences()
-                }
-                if lastCaptureShortcutEnabled,
-                   service.lastCaptureShortcutRegistrationFailed {
-                    Text(l10n.s.shortcutUnavailable)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                Toggle(strings.editClipboardImage, isOn: $clipboardShortcutEnabled)
-                    .onChange(of: clipboardShortcutEnabled) { _, _ in
-                        ScreenshotService.shared.syncWithPreferences()
-                    }
-                ShortcutPreferenceRow(role: .screenshotClipboard,
-                                      isEnabled: clipboardShortcutEnabled) {
-                    ScreenshotService.shared.syncWithPreferences()
-                }
-                if clipboardShortcutEnabled, service.clipboardShortcutRegistrationFailed {
-                    Text(l10n.s.shortcutUnavailable)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                if !permissions.screenRecording {
-                    PermissionRow(kind: .screenRecording)
-                }
-            } header: {
-                Text(strings.pageTitle)
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("截图诊断日志", isOn: $diagnosticsEnabled)
+            Text("记录滚动原始帧、合并预览、完成截图及编辑交接。包含实际屏幕内容，仅保存在本机，不上传；单次会话图片上限 2 GiB，可能影响截图速度。关闭后停止新增记录，已有日志保留。")
+                .font(.caption).foregroundStyle(.secondary)
+            Text(ScreenshotCaptureTrace.rootDirectory.path)
+                .font(.caption.monospaced()).textSelection(.enabled)
+            Button("打开日志目录") {
+                do {
+                    try FileManager.default.createDirectory(at: ScreenshotCaptureTrace.rootDirectory,
+                        withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                    NSWorkspace.shared.open(ScreenshotCaptureTrace.rootDirectory)
+                } catch { directoryError = error.localizedDescription }
             }
-            .settingsSectionAnchor(.screenshot)
-
-            Section {
-                Toggle(strings.freezeToggle, isOn: $freeze)
-                Text(strings.freezeCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle(strings.hideVorssaintWindowsToggle, isOn: $hideVorssaintWindows)
-                Picker(strings.delayLabel, selection: $delay) {
-                    ForEach(ScreenshotSupport.allowedDelays, id: \.self) { seconds in
-                        if seconds == 0 {
-                            Text(strings.delayOff).tag(0)
-                        } else {
-                            Text(String(format: strings.delaySecondsFormat, seconds)).tag(seconds)
-                        }
-                    }
-                }
-                .pickerStyle(.segmented)
-                Toggle(strings.pointerToggle, isOn: $includePointer)
-                Toggle(strings.lastRegionToggle, isOn: $showLastRegion)
-                previewPositionRow
-                defaultActionRow
-            }
-
-            Section {
-                Toggle(strings.autoCopyToggle, isOn: $copyToClipboard)
-                Text(strings.autoCopyCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                folderRow
-                subfolderRow
-                fileNameRow
-                Toggle(strings.downscaleToggle, isOn: $downscale)
-                Text(strings.downscaleCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                ScreenshotToolOrderControls(orderRaw: $toolOrderRaw,
-                                            shortcutsEnabled: $toolShortcutsEnabled,
-                                            showsTitle: false)
-            } header: {
-                Text(strings.toolShortcutsTitle)
-            }
-
-            Section {
-                Toggle(strings.shareEnabledToggle, isOn: $sharingEnabled)
-                if sharingEnabled {
-                    Text(strings.shareCaption)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Button {
-                    showingSharePrivacy = true
-                } label: {
-                    Label(strings.sharePrivacyButton, systemImage: "hand.raised")
-                }
-                if !sharing.records.isEmpty {
-                    Button {
-                        showingSharedLinks = true
-                    } label: {
-                        HStack {
-                            Label(strings.sharedLinksTitle, systemImage: "link")
-                            Spacer()
-                            Text("\(sharing.records.count)")
-                                .foregroundStyle(.secondary)
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            } header: {
-                Text(strings.shareSectionTitle)
-            }
+            if let directoryError { Text(directoryError).font(.caption).foregroundStyle(.red) }
         }
-        .onAppear { sharing.refresh() }
-        .sheet(isPresented: $showingSharedLinks) {
-            ScreenshotSharedLinksView()
-        }
-        .sheet(isPresented: $showingSharePrivacy) {
-            ScreenshotSharePrivacyView()
-        }
+        .padding(12)
     }
 
     private var defaultActionRow: some View {

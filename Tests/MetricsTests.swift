@@ -14788,6 +14788,88 @@ struct MetricsTests {
                 && !ScreenshotSupport.isClick(from: .zero, to: CGPoint(x: 12, y: 0)),
                "a tiny drag is a click, a real drag is not")
 
+        let overlayAnnotation = ScreenshotSupport.Annotation(
+            tool: .arrow,
+            rect: CGRect(x: 120, y: 80, width: 40, height: 30),
+            points: [CGPoint(x: 120, y: 80), CGPoint(x: 180, y: 140)],
+            color: .blue,
+            stroke: .large,
+            lineStyle: .dashed,
+            filled: true,
+            arrowStyle: .double)
+        let localAnnotation = ScreenshotSupport.captureLocalAnnotation(
+            overlayAnnotation,
+            selection: CGRect(x: 100, y: 60, width: 300, height: 200),
+            scale: 2)
+        expect(localAnnotation.rect == CGRect(x: 40, y: 40, width: 80, height: 60)
+                && localAnnotation.points == [CGPoint(x: 40, y: 40), CGPoint(x: 160, y: 160)],
+               "inline annotations convert from display points to capture-local Retina pixels")
+        expect(localAnnotation.lineStyle == .dashed && localAnnotation.filled
+                && localAnnotation.arrowStyle == .double,
+               "inline annotation conversion preserves drawing styles")
+        expect(ScreenshotSupport.LineStyle.allCases.map(\.rawValue)
+                == ["solid", "dashed", "dotted"]
+                && ScreenshotSupport.ArrowStyle.allCases.map(\.rawValue)
+                == ["filled", "open", "double"]
+                && ScreenshotSupport.MosaicMode.allCases.map(\.rawValue)
+                == ["rectangle", "brush"]
+                && ScreenshotSupport.MagnifierShape.allCases.map(\.rawValue)
+                == ["circle", "rectangle"],
+               "inline drawing option ids remain stable")
+        let counterImageSize = CGSize(width: 1_920, height: 1_080)
+        let smallCounter = ScreenshotSupport.counterDiameter(
+            for: counterImageSize, scale: 1, stroke: .small)
+        let mediumCounter = ScreenshotSupport.counterDiameter(
+            for: counterImageSize, scale: 1, stroke: .medium)
+        let largeCounter = ScreenshotSupport.counterDiameter(
+            for: counterImageSize, scale: 1, stroke: .large)
+        expect(smallCounter == 16 && mediumCounter == 22 && largeCounter == 30,
+               "inline counter defaults stay compact and all three size choices are distinct")
+
+        if let rendererBase = syntheticCapture({ context, size in
+            context.setFillColor(CGColor(red: 0.92, green: 0.94, blue: 0.97, alpha: 1))
+            context.fill(CGRect(origin: .zero, size: size))
+            context.setFillColor(CGColor(red: 0.15, green: 0.35, blue: 0.65, alpha: 1))
+            context.fill(CGRect(x: 80, y: 45, width: 95, height: 70))
+        }) {
+            let rendererAnnotations: [ScreenshotSupport.Annotation] = [
+                .init(tool: .rect, rect: CGRect(x: 12, y: 12, width: 70, height: 45),
+                      color: .red, stroke: .medium, lineStyle: .dashed, filled: true),
+                .init(tool: .ellipse, rect: CGRect(x: 95, y: 15, width: 62, height: 42),
+                      color: .green, stroke: .small, lineStyle: .dotted, filled: true),
+                .init(tool: .line, points: [CGPoint(x: 15, y: 75), CGPoint(x: 145, y: 110)],
+                      color: .blue, stroke: .large, lineStyle: .dashed),
+                .init(tool: .arrow, points: [CGPoint(x: 180, y: 25), CGPoint(x: 290, y: 90)],
+                      color: .black, stroke: .medium, arrowStyle: .double),
+                .init(tool: .freehand,
+                      points: [CGPoint(x: 20, y: 145), CGPoint(x: 70, y: 125),
+                               CGPoint(x: 125, y: 165), CGPoint(x: 180, y: 135)],
+                      color: .red, stroke: .medium, lineStyle: .dotted),
+                .init(tool: .highlight,
+                      points: [CGPoint(x: 25, y: 185), CGPoint(x: 110, y: 178),
+                               CGPoint(x: 205, y: 190)],
+                      color: .yellow, stroke: .medium),
+                .init(tool: .counter, rect: CGRect(x: 235, y: 130, width: 30, height: 30),
+                      color: .red, stroke: .medium, number: 3),
+                .init(tool: .pixelate, rect: CGRect(x: 78, y: 42, width: 100, height: 76),
+                      points: [CGPoint(x: 82, y: 48), CGPoint(x: 170, y: 108)],
+                      color: .black, stroke: .large),
+            ]
+            let rendered = ScreenshotRenderer.renderExport(
+                baseImage: rendererBase,
+                annotations: rendererAnnotations,
+                pixelated: ScreenshotRenderer.pixelatedImage(from: rendererBase),
+                scale: 1,
+                annotationShadowsEnabled: false,
+                style: ScreenshotSupport.BackdropStyle(),
+                fill: .none,
+                downscaleTo1x: false)
+            expect(rendered?.width == rendererBase.width && rendered?.height == rendererBase.height,
+                   "inline drawing styles, counter and brush mosaic flatten into the captured image")
+        } else {
+            expect(false, "the inline renderer test image is available")
+        }
+
         // The crop chrome, the loupe cross and the image applyCrop produces are
         // three drawings of one edge. They agree only while pixelSnappedCropRect
         // is the single thing deciding where that edge is.

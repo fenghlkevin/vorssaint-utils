@@ -57,6 +57,7 @@ final class ScreenshotService: ObservableObject {
         if let number = QuickToolHUD.currentScrollingWindowNumber, number > 0 {
             ids.insert(CGWindowID(number))
         }
+        ids.formUnion(QuickToolHUD.currentScrollingWindowNumbers)
         return ids
     }
 
@@ -307,13 +308,20 @@ final class ScreenshotService: ObservableObject {
 
     private func captureScrolling(_ region: RecorderSupport.Region) {
         guard scrollingTask == nil else { return }
+        let trace = ScreenshotCaptureTrace()
+        let axisController = ScreenshotScrollAxisController()
         let finishSignal = ScreenshotScrollingCapture.FinishSignal()
         scrollingFinishSignal = finishSignal
         QuickToolHUD.showScrollingCapture(
             message: strings.scrollingCaptureProgressHUD,
             finishTitle: strings.done,
             cancelTitle: strings.cancel,
-            onFinish: { finishSignal.request() },
+            anchorRect: region.anchorRect,
+            onAxisChange: { axisController.axis = $0 },
+            onFinish: {
+                trace.event("finish-button-clicked")
+                finishSignal.request()
+            },
             onCancel: { [weak self] in self?.scrollingTask?.cancel() })
         // Read after the controls are on screen so their window is protected,
         // and once for the whole run: the picture must not change halfway.
@@ -323,15 +331,30 @@ final class ScreenshotService: ObservableObject {
         scrollingCaptureID = captureID
         scrollingTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            guard axisController.start(anchorRect: region.anchorRect,
+                toolbarRect: QuickToolHUD.scrollingToolbarFrame,
+                onFinish: { finishSignal.request() },
+                onCancel: { [weak self] in self?.scrollingTask?.cancel() }) else {
+                self.scrollingTask = nil
+                self.scrollingCaptureID = nil
+                self.scrollingFinishSignal = nil
+                QuickToolHUD.dismissScrollingCapture()
+                QuickToolHUD.show(icon: "lock.shield", message: "滚动方向限制需要辅助功能权限，请在系统设置中允许 Vorssaint 后重试。")
+                return
+            }
+            defer { axisController.stop() }
             let result = await ScreenshotScrollingCapture.capture(
                 region: region,
                 includePointer: false,
                 hideVorssaintWindows: hideWindows,
                 protectedWindowIDs: protectedIDs,
                 finishSignal: finishSignal,
-                onProgress: { height in
-                    QuickToolHUD.updateScrollingCapture(height: height)
+                trace: trace,
+                axisController: axisController,
+                onProgress: { progress in
+                    QuickToolHUD.updateScrollingCapture(progress: progress)
                 })
+            axisController.stop()
             guard self.scrollingCaptureID == captureID else { return }
             self.scrollingCaptureID = nil
             self.scrollingTask = nil
@@ -373,11 +396,23 @@ final class ScreenshotService: ObservableObject {
     /// the captures that open straight in the editor, where no preview button
     /// exists to reach for.
     private func route(_ capture: ScreenshotSelectionController.Capture) {
+        capture.trace?.event("route-result", image: capture.image, details: "delivery=\(capture.delivery) defaultAction=\(ScreenshotDefaultAction.current)")
         preview?.close()
         RecentCaptureService.shared.recordScreenshot(capture)
         if UserDefaults.standard.bool(
             forKey: DefaultsKey.screenshotLastCaptureShortcutEnabled) {
             ScreenshotLastCaptureStore.save(capture)
+        }
+        switch capture.delivery {
+        case .copy:
+            _ = copyDirect(capture)
+            presentPreview(capture, defaultAction: .none)
+            return
+        case .saveToDownloads:
+            _ = saveToDownloads(capture)
+            return
+        case .standard:
+            break
         }
         if UserDefaults.standard.bool(forKey: DefaultsKey.screenshotCopyToClipboard) {
             autoCopy(capture)
@@ -407,7 +442,7 @@ final class ScreenshotService: ObservableObject {
                 guard let self else { return [] }
                 switch action {
                 case .edit:
-                    self.openEditor(with: capture)
+                    self.openInlineEditor(with: capture)
                     return [.edit]
                 case .copy:
                     return self.copyDirect(capture) ? [.copy] : []
@@ -448,10 +483,36 @@ final class ScreenshotService: ObservableObject {
     }
 
     func openEditor(with capture: ScreenshotSelectionController.Capture) {
+        capture.trace?.event("standalone-editor-input", image: capture.image, details: "scale=\(capture.scale)")
         WindowActivationPolicy.retain()
         let editor = ScreenshotEditorController(capture: capture)
         editors.append(editor)
         editor.show()
+    }
+
+    private func openInlineEditor(with capture: ScreenshotSelectionController.Capture) {
+        capture.trace?.event("edit-button-clicked", image: capture.image, details: "sessionBusy=\(session != nil) onScreen=\(ScreenshotSelectionController.isSessionOnScreen)")
+        guard session == nil, !ScreenshotSelectionController.isSessionOnScreen else { return }
+        let controller = ScreenshotSelectionController(
+            freeze: true,
+            includePointer: false,
+            showLastRegion: false,
+            hideVorssaintWindows: false,
+            protectedWindowIDs: { [weak self] in self?.protectedWindowIDs ?? [] },
+            mode: .image,
+            supportsScrollingCapture: false)
+        session = controller
+        controller.beginEditing(capture: capture) { [weak self] outcome in
+            guard let self else { return }
+            self.session = nil
+            switch outcome {
+            case .captured(let edited): self.route(edited)
+            case .cancelled: self.restorePreview(capture)
+            case .failed:
+                QuickToolHUD.show(icon: "camera.viewfinder", message: self.strings.captureFailed)
+            default: break
+            }
+        }
     }
 
     private func openLastCapture() {
@@ -629,6 +690,33 @@ final class ScreenshotService: ObservableObject {
             if let consumedNumber {
                 Self.rewindNumberSequence(toReuse: consumedNumber)
             }
+            NSSound.beep()
+            return nil
+        }
+    }
+
+    /// The inline toolbar's Save button has an intentionally fixed target:
+    /// the user's standard Downloads directory, independent of the configurable
+    /// destination used by the floating preview and the full editor.
+    private func saveToDownloads(_ capture: ScreenshotSelectionController.Capture) -> URL? {
+        guard let image = flatten(capture),
+              let data = ScreenshotRenderer.pngData(from: image),
+              let downloads = FileManager.default.urls(
+                for: .downloadsDirectory, in: .userDomainMask).first
+        else { return nil }
+        let baseName = ScreenshotSupport.fileName(prefix: strings.fileNamePrefix, date: Date())
+        let uniqueName = ScreenshotSupport.uniqueFileName(baseName) { candidate in
+            FileManager.default.fileExists(
+                atPath: downloads.appendingPathComponent(candidate).path)
+        }
+        let url = downloads.appendingPathComponent(uniqueName)
+        do {
+            try data.write(to: url, options: .atomic)
+            QuickToolHUD.show(icon: "square.and.arrow.down",
+                              message: String(format: strings.savedHUDFormat,
+                                              downloads.lastPathComponent))
+            return url
+        } catch {
             NSSound.beep()
             return nil
         }

@@ -58,22 +58,42 @@ enum ScreenshotRenderer {
         for annotation in annotations {
             switch annotation.tool {
             case .pixelate:
-                drawPixelate(annotation, in: context, pixelated: pixelated, imageSize: imageSize)
+                drawPixelate(annotation, in: context, pixelated: pixelated,
+                             imageSize: imageSize, scale: scale)
             case .redact:
                 context.setFillColor(color(annotation.color))
                 context.fill(annotation.rect)
             case .highlight:
                 context.saveGState()
                 context.setBlendMode(.multiply)
-                context.setFillColor(color(annotation.color, alpha: 0.42))
-                context.fill(annotation.rect)
+                if annotation.points.count > 1 {
+                    context.setStrokeColor(color(annotation.color, alpha: 0.38))
+                    context.setLineWidth(max(10 * scale, annotation.stroke.width * 5 * scale))
+                    context.setLineCap(.round)
+                    context.setLineJoin(.round)
+                    context.beginPath()
+                    context.move(to: annotation.points[0])
+                    for point in annotation.points.dropFirst() { context.addLine(to: point) }
+                    context.strokePath()
+                } else {
+                    context.setFillColor(color(annotation.color, alpha: 0.36))
+                    context.fill(annotation.rect)
+                }
                 context.restoreGState()
             case .rect:
+                if annotation.filled {
+                    context.setFillColor(color(annotation.color, alpha: 0.18))
+                    context.fill(annotation.rect)
+                }
                 strokeShape(in: context, annotation: annotation, scale: scale,
                             shadowsEnabled: annotationShadowsEnabled) {
                     context.stroke(annotation.rect)
                 }
             case .ellipse:
+                if annotation.filled {
+                    context.setFillColor(color(annotation.color, alpha: 0.18))
+                    context.fillEllipse(in: annotation.rect)
+                }
                 strokeShape(in: context, annotation: annotation, scale: scale,
                             shadowsEnabled: annotationShadowsEnabled) {
                     context.strokeEllipse(in: annotation.rect)
@@ -115,6 +135,7 @@ enum ScreenshotRenderer {
         context.setLineWidth(annotation.stroke.width * scale)
         context.setLineJoin(.round)
         context.setLineCap(.round)
+        applyLineStyle(annotation.lineStyle, to: context, width: annotation.stroke.width * scale)
         stroke()
         context.restoreGState()
     }
@@ -130,6 +151,7 @@ enum ScreenshotRenderer {
         let width = annotation.stroke.width * scale
         context.saveGState()
         applyShadow(context, scale: scale, enabled: shadowsEnabled)
+        applyLineStyle(annotation.lineStyle, to: context, width: width)
 
         guard arrow else {
             context.setStrokeColor(color(annotation.color))
@@ -143,11 +165,22 @@ enum ScreenshotRenderer {
             return
         }
 
-        context.setFillColor(color(annotation.color))
-        context.addPath(ScreenshotSupport.arrowSilhouette(from: start,
-                                                          to: end,
-                                                          strokeWidth: width))
-        context.fillPath()
+        if annotation.arrowStyle == .filled {
+            context.setFillColor(color(annotation.color))
+            context.addPath(ScreenshotSupport.arrowSilhouette(from: start,
+                                                              to: end,
+                                                              strokeWidth: width))
+            context.fillPath()
+        } else {
+            context.setStrokeColor(color(annotation.color))
+            context.setLineWidth(width)
+            context.setLineCap(.round)
+            context.move(to: start); context.addLine(to: end); context.strokePath()
+            drawOpenArrowHead(in: context, from: start, to: end, width: width)
+            if annotation.arrowStyle == .double {
+                drawOpenArrowHead(in: context, from: end, to: start, width: width)
+            }
+        }
         context.restoreGState()
     }
 
@@ -162,6 +195,7 @@ enum ScreenshotRenderer {
         context.setLineWidth(annotation.stroke.width * scale)
         context.setLineJoin(.round)
         context.setLineCap(.round)
+        applyLineStyle(annotation.lineStyle, to: context, width: annotation.stroke.width * scale)
         context.beginPath()
         context.move(to: annotation.points[0])
         // Quadratic curves through midpoints smooth hand jitter without
@@ -177,6 +211,31 @@ enum ScreenshotRenderer {
         }
         context.strokePath()
         context.restoreGState()
+    }
+
+    private static func applyLineStyle(_ style: ScreenshotSupport.LineStyle,
+                                       to context: CGContext,
+                                       width: CGFloat) {
+        switch style {
+        case .solid: context.setLineDash(phase: 0, lengths: [])
+        case .dashed: context.setLineDash(phase: 0, lengths: [width * 3, width * 2])
+        case .dotted: context.setLineDash(phase: 0, lengths: [width * 0.5, width * 1.8])
+        }
+    }
+
+    private static func drawOpenArrowHead(in context: CGContext,
+                                          from start: CGPoint,
+                                          to end: CGPoint,
+                                          width: CGFloat) {
+        let angle = atan2(end.y - start.y, end.x - start.x)
+        let length = max(10, width * 4)
+        let spread = CGFloat.pi / 6
+        let left = CGPoint(x: end.x - cos(angle - spread) * length,
+                           y: end.y - sin(angle - spread) * length)
+        let right = CGPoint(x: end.x - cos(angle + spread) * length,
+                            y: end.y - sin(angle + spread) * length)
+        context.beginPath(); context.move(to: left); context.addLine(to: end)
+        context.addLine(to: right); context.strokePath()
     }
 
     private static func drawText(_ annotation: ScreenshotSupport.Annotation,
@@ -212,7 +271,12 @@ enum ScreenshotRenderer {
                                     imageSize: CGSize,
                                     scale: CGFloat,
                                     shadowsEnabled: Bool) {
-        let diameter = ScreenshotSupport.counterDiameter(for: imageSize, scale: 1)
+        let defaultDiameter = ScreenshotSupport.counterDiameter(for: imageSize,
+                                                                 scale: scale,
+                                                                 stroke: annotation.stroke)
+        let requestedDiameter = max(annotation.rect.width, annotation.rect.height)
+        let diameter = min(min(imageSize.width, imageSize.height),
+                           requestedDiameter >= 6 ? requestedDiameter : defaultDiameter)
         let rect = CGRect(x: annotation.rect.midX - diameter / 2,
                           y: annotation.rect.midY - diameter / 2,
                           width: diameter,
@@ -268,10 +332,22 @@ enum ScreenshotRenderer {
     private static func drawPixelate(_ annotation: ScreenshotSupport.Annotation,
                                      in context: CGContext,
                                      pixelated: CGImage?,
-                                     imageSize: CGSize) {
+                                     imageSize: CGSize,
+                                     scale: CGFloat) {
         guard let pixelated else { return }
         context.saveGState()
-        context.clip(to: annotation.rect)
+        if annotation.points.count > 1 {
+            context.beginPath()
+            context.move(to: annotation.points[0])
+            for point in annotation.points.dropFirst() { context.addLine(to: point) }
+            context.setLineWidth(max(14 * scale, annotation.stroke.width * 5 * scale))
+            context.setLineCap(.round)
+            context.setLineJoin(.round)
+            context.replacePathWithStrokedPath()
+            context.clip()
+        } else {
+            context.clip(to: annotation.rect)
+        }
         // The pixelated twin is drawn full-size under the clip; flip locally
         // because CGContext.draw expects an unflipped space.
         context.translateBy(x: 0, y: imageSize.height)

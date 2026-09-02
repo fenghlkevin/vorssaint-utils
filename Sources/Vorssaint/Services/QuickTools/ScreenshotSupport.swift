@@ -1235,6 +1235,11 @@ enum ScreenshotSupport {
         }
     }
 
+    enum LineStyle: String, CaseIterable { case solid, dashed, dotted }
+    enum ArrowStyle: String, CaseIterable { case filled, open, double }
+    enum MosaicMode: String, CaseIterable { case rectangle, brush }
+    enum MagnifierShape: String, CaseIterable { case circle, rectangle }
+
     enum StickerID: String, CaseIterable {
         case check, cross, star, heart, thumbsUp, thumbsDown,
              smile, laugh, party, fire, warning, eyes
@@ -1290,6 +1295,9 @@ enum ScreenshotSupport {
         var color: ColorID
         var stroke: StrokeID
         var number: Int
+        var lineStyle: LineStyle
+        var filled: Bool
+        var arrowStyle: ArrowStyle
 
         init(id: UUID = UUID(),
              tool: Tool,
@@ -1298,7 +1306,10 @@ enum ScreenshotSupport {
              text: String = "",
              color: ColorID = .red,
              stroke: StrokeID = .medium,
-             number: Int = 0) {
+             number: Int = 0,
+             lineStyle: LineStyle = .solid,
+             filled: Bool = false,
+             arrowStyle: ArrowStyle = .filled) {
             self.id = id
             self.tool = tool
             self.rect = rect
@@ -1307,7 +1318,29 @@ enum ScreenshotSupport {
             self.color = color
             self.stroke = stroke
             self.number = number
+            self.lineStyle = lineStyle
+            self.filled = filled
+            self.arrowStyle = arrowStyle
         }
+    }
+
+    /// Moves an overlay annotation from display-point coordinates into the
+    /// selected capture's pixel coordinates. The inline preview and final
+    /// renderer share this conversion so Retina output lands exactly where
+    /// the mark was drawn on screen.
+    static func captureLocalAnnotation(_ annotation: Annotation,
+                                       selection: CGRect,
+                                       scale: CGFloat) -> Annotation {
+        var result = annotation
+        result.rect = CGRect(x: (annotation.rect.minX - selection.minX) * scale,
+                             y: (annotation.rect.minY - selection.minY) * scale,
+                             width: annotation.rect.width * scale,
+                             height: annotation.rect.height * scale)
+        result.points = annotation.points.map {
+            CGPoint(x: ($0.x - selection.minX) * scale,
+                    y: ($0.y - selection.minY) * scale)
+        }
+        return result
     }
 
     /// Which way a selected annotation moves through the drawing order.
@@ -1354,8 +1387,17 @@ enum ScreenshotSupport {
 
     /// Counter badge diameter for an image, scaling with capture resolution
     /// so badges stay readable without swallowing small screenshots.
-    static func counterDiameter(for imageSize: CGSize, scale: CGFloat) -> CGFloat {
-        max(22, min(imageSize.width, imageSize.height) / 24) * scale
+    static func counterDiameter(for imageSize: CGSize,
+                                scale: CGFloat,
+                                stroke: StrokeID = .medium) -> CGFloat {
+        let pointSize: CGFloat
+        switch stroke {
+        case .small: pointSize = 16
+        case .medium: pointSize = 22
+        case .large: pointSize = 30
+        }
+        return max(10, min(pointSize * scale,
+                           min(imageSize.width, imageSize.height) * 0.25))
     }
 
     // MARK: - Selection handles
