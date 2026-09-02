@@ -198,7 +198,12 @@ struct AwayLockSettings: View {
                                 Spacer(minLength: 0)
                             }.font(.caption).textSelection(.enabled)
                         }
-                        Button("清空事件") { service.clearEvents() }.disabled(service.events.isEmpty)
+                        HStack {
+                            Button("复制全部日志") { service.copyEvents() }.disabled(service.events.isEmpty)
+                            Button("清空事件") { service.clearEvents() }.disabled(service.events.isEmpty)
+                            Text("显示最近 20 条，共 \(service.events.count) 条（最多保留 1000 条）")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
                 }
             }

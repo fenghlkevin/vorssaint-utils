@@ -81,12 +81,34 @@ final class AwayLockService: NSObject, ObservableObject {
     private var wakeOnReturnArmed = false
     private var lastDisplayWakeAt = Date.distantPast
     private let displayWakeCooldown: TimeInterval = 120
+    private let diagnosticSession = String(UUID().uuidString.prefix(8))
+    private var diagnosticSequence = 0
+    private var wakeRequestCount = 0
+    private var lastLockRequestAt: Date?
+    private var observedDisplayState = "未知（尚未收到系统通知）"
     private nonisolated let advertisementThrottle = AwayLockAdvertisementThrottle()
 
     private override init() {
         super.init(); loadState()
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
-            object: nil, queue: .main) { [weak self] _ in Task { @MainActor in self?.syncWithPreferences() } }
+            object: nil, queue: .main) { [weak self] _ in Task { @MainActor in
+                self?.logSystemEvent("系统从睡眠中唤醒")
+                self?.syncWithPreferences()
+            } }
+        let lifecycleEvents: [(Notification.Name, String, String?)] = [
+            (NSWorkspace.willSleepNotification, "系统即将睡眠", nil),
+            (NSWorkspace.screensDidSleepNotification, "显示器进入休眠", "休眠"),
+            (NSWorkspace.screensDidWakeNotification, "显示器退出休眠", "唤醒")
+        ]
+        for (name, message, displayState) in lifecycleEvents {
+            NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if let displayState { self.observedDisplayState = displayState }
+                    self.logSystemEvent(message)
+                }
+            }
+        }
     }
     var selectedIDs: Set<String> {
         Set(UserDefaults.standard.stringArray(forKey: DefaultsKey.awayLockSelectedIDs) ?? [])
@@ -215,6 +237,13 @@ final class AwayLockService: NSObject, ObservableObject {
         w[id.uuidString] = currentWiFiName; p[id.uuidString] = currentPowerName; d.set(w, forKey: DefaultsKey.awayLockWiFiRules); d.set(p, forKey: DefaultsKey.awayLockPowerRules)
     }
     func clearEvents() { events.removeAll(); saveEvents() }
+    func copyEvents() {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let text = events.reversed().map { "\(formatter.string(from: $0.date)) \($0.message)" }.joined(separator: "\n")
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
 
     private func startIfPossible() {
         guard AppFeature.awayLock.isAvailable, bool(DefaultsKey.awayLockEnabled) else { return }
@@ -263,8 +292,10 @@ final class AwayLockService: NSObject, ObservableObject {
             if returned {
                 logCondition("returned", "设备已返回：\(summary)")
                 let shouldWake = wakeOnReturnArmed
+                log("返回唤醒检查：\(diagnosticContext)；设备详情：\(summary)")
                 wakeOnReturnArmed = false
                 if shouldWake { wakeDisplay(now: now) }
+                else { log("返回唤醒跳过：没有本功能锁屏请求授予的唤醒资格") }
                 notify("设备已返回", "目标蓝牙设备重新靠近 Mac")
             } else if wasSuspectedAway {
                 logCondition("nearby", "锁屏已取消，设备恢复到附近：\(summary)")
@@ -305,7 +336,12 @@ final class AwayLockService: NSObject, ObservableObject {
             remaining -= 1; if remaining <= 0 { timer.invalidate(); self.countdownTimer = nil; AwayLockCountdownOverlay.shared.hide()
                 let didRequestLock = self.bool(DefaultsKey.awayLockAutomaticLock)
                 self.wakeOnReturnArmed = didRequestLock
-                if didRequestLock { QuickTogglesService.shared.lockScreen(); self.log("倒计时结束，Mac 已自动锁定；仅下一次设备返回可唤醒显示器") }
+                if didRequestLock {
+                    self.log("即将发送自动锁屏请求：\(self.diagnosticContext)")
+                    self.lastLockRequestAt = Date()
+                    QuickTogglesService.shared.lockScreen()
+                    self.log("自动锁屏调用已返回（不代表系统已确认锁定）；下一次设备返回具有唤醒资格")
+                }
                 else { self.log("倒计时结束，但自动锁屏已关闭，未执行锁定，也不会在设备返回时唤醒显示器") }
                 self.waitingForReturn = true; self.weakSince = nil
             } else { self.state = .countdown(remaining); AwayLockCountdownOverlay.shared.update(seconds: remaining) }
@@ -370,17 +406,35 @@ final class AwayLockService: NSObject, ObservableObject {
             return
         }
         var id: IOPMAssertionID = 0
+        wakeRequestCount += 1
+        log("发送显示器唤醒请求 #\(wakeRequestCount)：\(diagnosticContext)")
         let result = IOPMAssertionDeclareUserActivity("Vorssaint Away Lock" as CFString, kIOPMUserActiveLocal, &id)
+        log("显示器唤醒请求 #\(wakeRequestCount) 返回：IOKit=\(result)，assertionID=\(id)；接口返回不等于屏幕已稳定点亮")
         if result == kIOReturnSuccess {
             lastDisplayWakeAt = now
-            log("设备返回且此前由离开锁屏完成过自动锁定，已请求唤醒显示器（120 秒内不再重复唤醒）")
+            log("显示器唤醒请求已接受（120 秒内不再重复唤醒）；等待系统显示器状态通知")
         } else {
             log("设备返回后的显示器唤醒请求失败（IOKit 错误 \(result)）")
         }
     }
     private func notify(_ title: String, _ body: String) { guard bool(DefaultsKey.awayLockNotifications) else { return }; let c = UNMutableNotificationContent(); c.title = title; c.body = body; UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil)) }
     private func setPause(_ date: Date) { UserDefaults.standard.set(date.timeIntervalSince1970, forKey: DefaultsKey.awayLockPauseUntil); cancelCountdown(); objectWillChange.send() }
-    private func log(_ message: String) { events.insert(AwayLockEvent(message), at: 0); if events.count > 200 { events.removeLast() }; saveEvents() }
+    private var diagnosticContext: String {
+        let now = Date()
+        let lockAge = lastLockRequestAt.map { String(format: "%.1f 秒", now.timeIntervalSince($0)) } ?? "本次运行未请求"
+        let wakeAge = lastDisplayWakeAt == .distantPast ? "本次运行未成功请求" : String(format: "%.1f 秒", now.timeIntervalSince(lastDisplayWakeAt))
+        return "显示器=\(observedDisplayState)，状态=\(state)，等待返回=\(waitingForReturn)，唤醒资格=\(wakeOnReturnArmed)，唤醒开关=\(bool(DefaultsKey.awayLockWakeOnReturn))，倒计时运行=\(countdownTimer != nil)，扫描中=\(central?.isScanning == true)，距锁屏请求=\(lockAge)，距唤醒请求=\(wakeAge)"
+    }
+    private func logSystemEvent(_ message: String) {
+        guard monitoringWasActive || bool(DefaultsKey.awayLockEnabled) else { return }
+        log("系统事件：\(message)；\(diagnosticContext)（系统通知不能证明由本功能触发）")
+    }
+    private func log(_ message: String) {
+        diagnosticSequence += 1
+        events.insert(AwayLockEvent("[\(diagnosticSession)/\(diagnosticSequence)] \(message)"), at: 0)
+        if events.count > 1000 { events.removeLast(events.count - 1000) }
+        saveEvents()
+    }
     private func logCondition(_ condition: String, _ message: String) {
         guard lastDiagnosticCondition != condition else { return }
         lastDiagnosticCondition = condition; log(message)
