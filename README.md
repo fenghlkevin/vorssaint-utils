@@ -98,12 +98,6 @@ Vorssaint 默认在本机处理数据，不要求账号，不内置分析或跟�
 VORSSAINT_DEV_SIGNING_IDENTITY='你的开发签名身份' ./build.sh --dev --install
 ```
 
-## 文档与支持
-
-[翻译指南](docs/TRANSLATION.md) · [隐私说明](docs/PRIVACY.md) · [权限指南](docs/PERMISSIONS.md) · [故障排除](docs/TROUBLESHOOTING.md) · [贡献指南](CONTRIBUTING.md) · [更新日志](CHANGELOG.md)
-
-欢迎提交 Bug、功能建议、翻译和 Pull Request。私密问题或合作事宜可发送邮件至 [hello@vorssaint.com](mailto:hello@vorssaint.com)，也可以加入 [Discord 社区](https://discord.gg/M6BwWH4BJp)。
-
 ## 许可证与初始程序来源
 
 源代码采用 [GPL-3.0-or-later](LICENSE) 许可证。
