@@ -117,7 +117,7 @@ extension AppFeature {
         case .pastePlain, .soundOutputSwitcher, .micMute,
              .musicBlock, .bluetoothSleep, .keepAwake, .brightness, .quickLauncher, .quickToggles, .colorPicker,
              .screenOCR, .cleaningMode, .mediaTools, .cleaner, .uninstaller, .homebrew, .screenshot,
-             .cameraPreview, .scratchpad, .commandBar, .screenRecorder, .fanControl,
+             .cameraPreview, .scratchpad, .commandBar, .screenRecorder, .fanControl, .translation,
              .diskImageInstaller, .killProcess, .menuBarIcons:
             return .idle
         case .appUpdates:

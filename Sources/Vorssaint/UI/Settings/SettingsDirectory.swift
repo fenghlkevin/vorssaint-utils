@@ -209,6 +209,12 @@ enum SettingsDirectory {
                                       keywords: ["force quit", "process", "cpu", "memory", "kill"]),
             ]),
             (categories.utilities, [
+                SettingsDirectoryItem(page: .translation,
+                                      title: TranslationStrings(language: language)[.title],
+                                      icon: "character.bubble",
+                                      keywords: ["Apple", "translate", "translation",
+                                                 TranslationStrings(language: language)[.selection],
+                                                 TranslationStrings(language: language)[.capture]]),
                 SettingsDirectoryItem(page: .commandBar,
                                       title: FeatureStrings.commandBar(language).pageTitle,
                                       icon: "command",

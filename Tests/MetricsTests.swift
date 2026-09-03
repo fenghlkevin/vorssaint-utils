@@ -7827,6 +7827,7 @@ struct MetricsTests {
             settingsFeatureTitles[feature] ?? feature.rawValue
         }
         let expectedFeatureSearchDestinations: [(AppFeature, FeatureSettingsDestination)] = [
+            (.translation, FeatureSettingsDestination(.translation, sectionAnchor: .translation)),
             (.homebrew, FeatureSettingsDestination(.homebrew)),
             (.cameraPreview, FeatureSettingsDestination(.quickTools, sectionAnchor: .cameraPreview)),
             (.screenRecorder, FeatureSettingsDestination(.screenshot, sectionAnchor: .screenRecorder)),
@@ -11923,7 +11924,7 @@ struct MetricsTests {
             inputMemoryDefaults.removePersistentDomain(forName: inputMemorySuite)
         }
 
-        expect(AppFeature.allCases.count == 57, "feature catalog has 57 features")
+        expect(AppFeature.allCases.count == 58, "feature catalog has 58 features")
         expect(Set(AppFeature.allCases.map(\.rawValue)).count == AppFeature.allCases.count,
                "feature ids are unique")
         expect(AppFeature.allCases.map(\.rawValue) == [
@@ -11936,7 +11937,7 @@ struct MetricsTests {
             "keepAwake", "brightness", "extraBrightness", "bluetoothSleep", "awayLock",
             "quickLauncher", "quickToggles", "colorPicker", "screenOCR", "cleaningMode", "mediaTools",
             "cleaner", "uninstaller", "homebrew", "appUpdates", "screenshot", "cameraPreview",
-            "radialMenu", "scratchpad", "commandBar", "screenRecorder", "killProcess",
+            "radialMenu", "scratchpad", "commandBar", "screenRecorder", "killProcess", "translation",
             "menuBarIcons",
             "monitorCPU", "monitorGPU", "monitorMemory", "monitorNetwork", "monitorDisk", "monitorPower",
             "fanControl",
@@ -11950,9 +11951,10 @@ struct MetricsTests {
                 && (AppFeature.availabilityDefaults[AppFeature.killProcess.availabilityKey] as? Bool) == false
                 && (AppFeature.availabilityDefaults[AppFeature.menuBarIcons.availabilityKey] as? Bool) == false
                 && (AppFeature.availabilityDefaults[AppFeature.awayLock.availabilityKey] as? Bool) == false
+                && (AppFeature.availabilityDefaults[AppFeature.translation.availabilityKey] as? Bool) == false
                 && AppFeature.allCases.filter {
                     $0 != .focusFollowsMouse && $0 != .fanControl && $0 != .diskImageInstaller
-                        && $0 != .killProcess && $0 != .menuBarIcons && $0 != .awayLock
+                        && $0 != .killProcess && $0 != .menuBarIcons && $0 != .awayLock && $0 != .translation
                 }.allSatisfy {
                     (AppFeature.availabilityDefaults[$0.availabilityKey] as? Bool) == true
                 },
@@ -12496,7 +12498,7 @@ struct MetricsTests {
                "only active Window Layout hooks and live features keep the permission watcher alive")
 
         expect(activeSet(.accessibility)
-                == [.windowLayout, .cleaningMode, .commandBar, .screenRecorder],
+                == [.windowLayout, .cleaningMode, .commandBar, .screenRecorder, .translation],
                "with nothing enabled only on-demand features use accessibility")
         expect(activeSet(.accessibility, on: [DefaultsKey.scrollInverterEnabled]).contains(.scrollInverter),
                "an enabled feature counts as using its permission")
@@ -12535,11 +12537,11 @@ struct MetricsTests {
                "mixer without precise volume roller does not use accessibility")
 
         expect(activeSet(.screenRecording, on: [DefaultsKey.switcherEnabled])
-                == [.switcher, .screenOCR, .screenshot, .screenRecorder],
+                == [.switcher, .screenOCR, .screenshot, .screenRecorder, .translation],
                "switcher with previews uses screen recording; OCR, screenshots and recordings are on demand")
         expect(activeSet(.screenRecording,
                          on: [DefaultsKey.switcherEnabled, DefaultsKey.switcherSimpleMode])
-                == [.screenOCR, .screenshot, .screenRecorder],
+                == [.screenOCR, .screenshot, .screenRecorder, .translation],
                "simple-mode switcher stops using screen recording")
         expect(activeSet(.screenRecording,
                          on: [DefaultsKey.switcherSimpleMode, DefaultsKey.dockPreviewEnabled])
@@ -13106,6 +13108,10 @@ struct MetricsTests {
                "cleaner settings, including WhatsApp downloads, follow the cleaner module")
         expect(pageVisible(.quickTools, available: [.quickToggles]),
                "the quick toggles alone keep the quick tools page")
+        expect(pageVisible(.translation, available: [.translation])
+                && !pageVisible(.quickTools, available: [.translation])
+                && !pageVisible(.translation, available: [.quickToggles]),
+               "translation has an independent feature-gated settings page")
         expect(pageVisible(.clipboard, available: [.finderCutPaste]),
                "the image paste option keeps the Clipboard page available")
         expect(AppFeature.allCases.allSatisfy { feature in
@@ -18196,8 +18202,8 @@ struct MetricsTests {
         expect(!CommandBarHome.isCollapsed(compact: false, query: "",
                                            hasCategory: false, isPeeking: false),
                "the ordinary bar is never collapsed")
-        expect(Defaults.registeredDefaults[DefaultsKey.commandBarCompactMode] as? Bool == false,
-               "compact mode ships off: the browse list is how the bar introduces itself")
+        expect(Defaults.registeredDefaults[DefaultsKey.commandBarCompactMode] as? Bool == true,
+               "compact mode ships on: the bar opens without default suggestions")
         expect(SettingsBackupSupport.exportKeys().contains(DefaultsKey.commandBarCompactMode),
                "compact mode is configuration, so it travels with an exported setup")
         expect(SettingsBackupSupport.valueLooksRight(DefaultsKey.commandBarCompactMode, true)

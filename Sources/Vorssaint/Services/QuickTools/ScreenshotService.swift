@@ -4,6 +4,7 @@
 import AppKit
 import ImageIO
 import UniformTypeIdentifiers
+import OSLog
 
 /// The screenshot tool: freeze-first area, window and full screen capture
 /// with an annotation editor, pinned floating captures and direct clipboard
@@ -29,6 +30,7 @@ final class ScreenshotService: ObservableObject {
     private var directCaptureTask: Task<Void, Never>?
     private var autoCopyTask: Task<Void, Never>?
     private var autoCopyGeneration = 0
+    private let activationLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "vorssaint", category: "ScreenshotActivation")
     private var scrollingTask: Task<Void, Never>?
     private var scrollingCaptureID: UUID?
     private var scrollingFinishSignal: ScreenshotScrollingCapture.FinishSignal?
@@ -40,7 +42,26 @@ final class ScreenshotService: ObservableObject {
     }
 
     private var hideVorssaintWindows: Bool {
-        UserDefaults.standard.bool(forKey: DefaultsKey.screenshotHideVorssaintWindows)
+        let configured = UserDefaults.standard.bool(forKey: DefaultsKey.screenshotHideVorssaintWindows)
+        guard configured else { return false }
+
+        // Settings is a normal, user-visible document window.  When the
+        // screenshot shortcut is invoked from Settings, hiding every window
+        // owned by this process makes the very window the user is trying to
+        // capture disappear from the frozen frame.  Keep it in the capture;
+        // transient screenshot HUD/editor windows remain excluded through
+        // `protectedWindowIDs` when the capture policy is evaluated.
+        let settingsIsVisible = NSApp.windows.contains {
+            guard $0.isVisible, !$0.isMiniaturized else { return false }
+            // The title is localized, so do not rely on one exact string.
+            // Screenshot panels have no title; the Settings window is the
+            // only titled, user-facing window owned by the app at this point.
+            let title = $0.title.lowercased()
+            return !title.isEmpty &&
+                (title.contains("设置") || title.contains("settings") ||
+                 title == L10n.shared.s.settingsTitle.lowercased())
+        }
+        return !settingsIsVisible
     }
 
     private var protectedWindowIDs: Set<CGWindowID> {
@@ -224,6 +245,11 @@ final class ScreenshotService: ObservableObject {
 
     private func beginSelection(_ mode: CaptureMode) {
         guard session == nil, !ScreenshotSelectionController.isSessionOnScreen else { return }
+        if UserDefaults.standard.bool(forKey: ScreenshotCaptureTrace.enabledKey) {
+            let visible = NSApp.windows.filter { $0.isVisible && !$0.isMiniaturized }
+                .map { "\($0.title.isEmpty ? "<untitled>" : $0.title)" }
+            activationLog.notice("screenshot-begin mode=\(String(describing: mode), privacy: .public) hideVorssaintWindows=\(self.hideVorssaintWindows) visibleWindows=\(visible.joined(separator: " | "), privacy: .public)")
+        }
         preview?.close()
         preview = nil
         let defaults = UserDefaults.standard

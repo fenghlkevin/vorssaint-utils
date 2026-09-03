@@ -381,6 +381,33 @@ enum CommandBarCatalog {
                 shortcut: roleShortcut(.scratchpad),
                 run: { _ in afterBeat { ScratchpadService.shared.show() } }))
         }
+        if AppFeature.translation.isAvailable {
+            let strings = TranslationStrings.current
+            entries.append(CommandBarEntry(
+                id: "action.translation", title: strings[.title],
+                subtitle: area(.translation), keywords: "translate translation 翻译",
+                icon: .symbol("character.bubble"),
+                run: { _ in afterBeat { TranslationService.shared.show() } }))
+            entries.append(CommandBarEntry(
+                id: "action.translationSelection", title: strings[.selection],
+                subtitle: area(.translation), icon: .symbol("character.cursor.ibeam"),
+                shortcut: roleShortcut(.translationSelection),
+                run: { _ in
+                    let selection = CommandBarService.shared.selectionWhenRun
+                    afterBeat {
+                        if selection.isEmpty { TranslationService.shared.readSelection() }
+                        else {
+                            TranslationService.shared.text = selection
+                            TranslationService.shared.show()
+                        }
+                    }
+                }))
+            entries.append(CommandBarEntry(
+                id: "action.translationCapture", title: strings[.capture],
+                subtitle: area(.translation), icon: .symbol("text.viewfinder"),
+                shortcut: roleShortcut(.translationCapture),
+                run: { _ in afterBeat { TranslationService.shared.captureText() } }))
+        }
         if AppFeature.cameraPreview.isAvailable {
             entries.append(CommandBarEntry(
                 id: "action.cameraPreview",

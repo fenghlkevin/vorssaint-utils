@@ -590,6 +590,7 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
     case cameraPreview
     case radialMenu
     case scratchpad
+    case translationOpen, translationSelection, translationCapture
     case snippetLibrary
     case commandBar
     case screenRecorder
@@ -617,6 +618,9 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
         case .cameraPreview: return DefaultsKey.cameraPreviewShortcut
         case .radialMenu: return DefaultsKey.radialMenuShortcut
         case .scratchpad: return DefaultsKey.scratchpadShortcut
+        case .translationSelection: return "translation.selection.shortcut"
+        case .translationOpen: return "translation.open.shortcut"
+        case .translationCapture: return "translation.capture.shortcut"
         case .snippetLibrary: return DefaultsKey.snippetLibraryShortcut
         case .commandBar: return DefaultsKey.commandBarShortcut
         case .screenRecorder: return DefaultsKey.recorderShortcut
@@ -644,6 +648,9 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
         case .cameraPreview: return .cameraPreviewDefault
         case .radialMenu: return .radialMenuDefault
         case .scratchpad: return .scratchpadDefault
+        case .translationSelection: return GlobalShortcut(keyCode: Int64(kVK_ANSI_D), modifiers: [.control, .option, .shift])
+        case .translationOpen: return GlobalShortcut(keyCode: Int64(kVK_ANSI_T), modifiers: [.control, .option, .shift])
+        case .translationCapture: return GlobalShortcut(keyCode: Int64(kVK_ANSI_S), modifiers: [.control, .option, .shift])
         case .snippetLibrary: return .snippetLibraryDefault
         case .commandBar: return .commandBarDefault
         case .screenRecorder: return .screenRecorderDefault
@@ -679,6 +686,9 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
         case .cameraPreview: return FeatureStrings.cameraPreview(L10n.shared.language).pageTitle
         case .radialMenu: return FeatureStrings.radialMenu(L10n.shared.language).pageTitle
         case .scratchpad: return FeatureStrings.scratchpad(L10n.shared.language).pageTitle
+        case .translationSelection: return TranslationStrings.current[.selection]
+        case .translationOpen: return TranslationStrings.current.settingsLabels.open
+        case .translationCapture: return TranslationStrings.current[.capture]
         case .snippetLibrary: return FeatureStrings.snippets(L10n.shared.language).libraryTitle
         case .commandBar: return FeatureStrings.commandBar(L10n.shared.language).pageTitle
         case .screenRecorder: return FeatureStrings.recorder(L10n.shared.language).pageTitle
@@ -723,6 +733,9 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
         case .cameraPreview: return [DefaultsKey.cameraPreviewShortcutEnabled]
         case .radialMenu: return [DefaultsKey.radialMenuEnabled]
         case .scratchpad: return [DefaultsKey.scratchpadShortcutEnabled]
+        case .translationSelection: return ["translation.selection.enabled"]
+        case .translationOpen: return ["translation.open.enabled"]
+        case .translationCapture: return ["translation.capture.enabled"]
         case .snippetLibrary: return [DefaultsKey.snippetLibraryEnabled]
         case .commandBar: return [DefaultsKey.commandBarShortcutEnabled]
         case .screenRecorder: return [DefaultsKey.recorderShortcutEnabled]
@@ -750,6 +763,7 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
         case .cameraPreview: return .cameraPreview
         case .radialMenu: return .radialMenu
         case .scratchpad: return .scratchpad
+        case .translationOpen, .translationSelection, .translationCapture: return .translation
         case .snippetLibrary: return .textSnippets
         case .commandBar: return .commandBar
         case .screenRecorder: return .screenRecorder

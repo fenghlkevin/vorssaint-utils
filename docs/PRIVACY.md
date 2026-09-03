@@ -7,7 +7,7 @@ Vorssaint is built to be local-first. Core features run on your Mac, and the app
 - **No account.** There is nothing to sign up for and nobody to log in as.
 - **No subscription.** The app is free and stays free, with nothing held back behind a paid tier.
 - **No automatic telemetry.** Vorssaint gathers no usage stats, crash reports or device identifiers. Feedback sends technical details only when you select them after seeing the complete list.
-- **No Vorssaint analytics or tracking.** There are no analytics kits, no ad networks and no third party tracking anywhere in the app.
+- **No Vorssaint analytics or tracking.** The built-in app has no analytics kits or ad networks. Optional cloud translation providers have their own data policies.
 - **No data selling.** Vorssaint never sells personal information or shared screenshots and recordings.
 - **Your settings stay put.** Preferences and saved state live in the app's own local storage on your Mac and are never uploaded.
 
@@ -19,7 +19,7 @@ Clipboard history, including the images and files you copy, lives in the app's l
 
 Recent Captures keeps up to 12 screenshots, within a 256 MB limit, in the app's private local cache so you can reopen them. Recordings are not duplicated: only their existing path and a small thumbnail are kept. Clear removes that history and its cached images. When a screenshot is copied as a file, its private local PNG is kept temporarily so other apps can finish reading it, then cleaned on later copies once it is older than 24 hours or earlier when the bounded cache fills. None of these local caches is uploaded automatically.
 
-When a feature needs a macOS permission such as Accessibility, Screen Recording or Microphone, that access is used only for the feature it belongs to. Captured content leaves the Mac only when you explicitly create a temporary link. The [permissions guide](PERMISSIONS.md) breaks down each permission.
+When a feature needs a macOS permission such as Accessibility, Screen Recording or Microphone, that access is used only for the feature it belongs to. Captured content leaves the Mac when you explicitly create a temporary link, or when you submit recognized text to an optional cloud translation provider. The [permissions guide](PERMISSIONS.md) breaks down each permission.
 
 ## Network connections
 
@@ -45,7 +45,11 @@ The service validates and rebuilds the MP4 without its original metadata. The vi
 
 Feedback is delivered to private support channels visible to the service owner. After delivery, the text and any technical details you selected remain there until the service owner deletes them. The temporary delivery copy is then deleted; if delivery never succeeds, that copy is permanently deleted after 7 days. No contact information is sent, so feedback cannot receive a direct reply.
 
-That is the entire list. There are no hidden beacons or background uploads.
+8. **Translation.** Screenshots are recognized locally. Apple Translation (macOS 15+) processes text on-device and may download language models. The optional AI API provider sends text when you submit a translation or successfully invoke screenshot/selection translation, to the HTTPS Chat Completions endpoint you explicitly configure; provider charges and retention policies apply. Screenshot/selection translation automatically uses the last selected provider. API Key, endpoint and model are stored together in Keychain and excluded from settings export. Redirects, persistent caches, cookies and automatic retries are disabled. Google translation has been removed. Bob plugin import and execution remain disabled; existing packages and Keychain settings are retained. Text/results remain in memory. See [translation details](TRANSLATION.md).
+
+The optional Codex CLI translation provider invokes the installed native CLI, using its existing login without reading or copying credentials into Vorssaint. Text is sent through stdin when you submit a translation or successfully invoke screenshot/selection translation, to Codex's cloud service; account quota and provider data policies apply. Each invocation uses a temporary working directory, read-only sandbox, disabled command/browser/plugin features and ephemeral session mode. User config and rules are ignored. Cancellation kills the owned CLI process; timeout is 120 seconds. Vorssaint does not persist source or results; Codex's own authentication, runtime metadata and cloud retention are outside Vorssaint's storage. CLI path and model are local preferences. See [translation details](TRANSLATION.md).
+
+Those are the app's network entry points. Bob plugins remain disabled.
 
 ## Changes to this document
 

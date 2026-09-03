@@ -17,7 +17,6 @@ struct FeatureHubSettings: View {
     @AppStorage(DefaultsKey.superKeySource) private var superKeySourceRaw =
         SuperKeySource.capsLock.rawValue
     @State private var tab: Tab = .features
-    @State private var confirmingPreset: FeaturePreset?
     /// Tracks the feature-target request currently being revealed, so a
     /// delayed retry from an older request cannot act after a newer one has
     /// already taken over (same convention as `SettingsSectionFocusModifier`).
@@ -92,7 +91,6 @@ struct FeatureHubSettings: View {
                 }
             }
             if tab == .features {
-                presetsSection
                 featureSections
             } else {
                 Section {
@@ -101,19 +99,6 @@ struct FeatureHubSettings: View {
             }
         }
         .formStyle(.grouped)
-        .alert(confirmingPreset.map { presetName($0) } ?? "",
-               isPresented: Binding(get: { confirmingPreset != nil },
-                                    set: { if !$0 { confirmingPreset = nil } }),
-               presenting: confirmingPreset) { preset in
-            Button(hub.presetConfirmApply) {
-                withAnimation(.easeOut(duration: 0.22)) {
-                    FeatureRuntime.shared.apply(preset)
-                }
-            }
-            Button(hub.presetConfirmCancel, role: .cancel) {}
-        } message: { preset in
-            Text(String(format: hub.presetConfirmFormat, presetName(preset)))
-        }
     }
 
     /// Consumes a pending Feature Hub target: switches off the Permissions
@@ -162,47 +147,6 @@ struct FeatureHubSettings: View {
         }
     }
 
-    /// Three one-click starting points. Nobody arrives wanting 37 decisions;
-    /// a preset shapes the app in one move and everything else stays one
-    /// click away in the list below.
-    private var presetsSection: some View {
-        Section {
-            HStack(alignment: .top, spacing: 8) {
-                ForEach(FeaturePreset.allCases) { preset in
-                    PresetCard(preset: preset,
-                               name: presetName(preset),
-                               caption: presetDescription(preset),
-                               applyTitle: hub.presetApplyButton) {
-                        confirmingPreset = preset
-                    }
-                }
-            }
-            .padding(.vertical, 2)
-        } header: {
-            Text(hub.presetsTitle)
-        } footer: {
-            Text(hub.presetsCaption)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func presetName(_ preset: FeaturePreset) -> String {
-        switch preset {
-        case .essential: return hub.presetEssentialName
-        case .windows: return hub.presetWindowsName
-        case .battery: return hub.presetBatteryName
-        }
-    }
-
-    private func presetDescription(_ preset: FeaturePreset) -> String {
-        switch preset {
-        case .essential: return hub.presetEssentialDesc
-        case .windows: return hub.presetWindowsDesc
-        case .battery: return hub.presetBatteryDesc
-        }
-    }
-
     @ViewBuilder
     private var featureSections: some View {
         ForEach(FeatureGroup.allCases, id: \.self) { group in
@@ -246,46 +190,6 @@ struct FeatureHubSettings: View {
         case .tools: return hub.groupTools
         case .monitor: return hub.groupMonitor
         }
-    }
-}
-
-// MARK: - Preset card
-
-private struct PresetCard: View {
-    let preset: FeaturePreset
-    let name: String
-    let caption: String
-    let applyTitle: String
-    let onApply: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: preset.symbolName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-                Text(name)
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
-            }
-            Text(caption)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Spacer(minLength: 0)
-            Button(applyTitle, action: onApply)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-        }
-        .padding(9)
-        .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.secondary.opacity(0.08))
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(name). \(caption)")
     }
 }
 
@@ -741,6 +645,7 @@ extension AppFeature {
         case .cameraPreview: return FeatureStrings.cameraPreview(L10n.shared.language).pageTitle
         case .radialMenu: return FeatureStrings.radialMenu(L10n.shared.language).pageTitle
         case .scratchpad: return FeatureStrings.scratchpad(L10n.shared.language).pageTitle
+        case .translation: return TranslationStrings.current[.title]
         case .commandBar: return FeatureStrings.commandBar(L10n.shared.language).pageTitle
         case .cleaningMode: return s.cleaningMenuItem
         case .mediaTools: return s.mediaName
@@ -805,6 +710,7 @@ extension AppFeature {
         case .cameraPreview: return FeatureStrings.cameraPreview(L10n.shared.language).hubDescription
         case .radialMenu: return FeatureStrings.radialMenu(L10n.shared.language).hubDescription
         case .scratchpad: return FeatureStrings.scratchpad(L10n.shared.language).hubDescription
+        case .translation: return TranslationStrings.current[.caption]
         case .commandBar: return FeatureStrings.commandBar(L10n.shared.language).hubDescription
         case .cleaningMode: return hub.descCleaningMode
         case .mediaTools: return hub.descMediaTools

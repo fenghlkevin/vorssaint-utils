@@ -174,6 +174,7 @@ final class ScreenshotSelectionController {
     private let supportsScrollingCapture: Bool
     private let screenCaptureOptions: ScreenCaptureSelectionOptions?
     fileprivate let requiresDraggedRegion: Bool
+    private let editsSelectedImage: Bool
     private var finished = false
     private var editingTrace: ScreenshotCaptureTrace?
     /// Read by the overlays so a late event finds a session that is over.
@@ -198,7 +199,7 @@ final class ScreenshotSelectionController {
     }
     fileprivate var isPickingColor: Bool { activeMode == .color }
     fileprivate var offersInlineScreenshotEditing: Bool {
-        activeMode == .image && activeTool != .text && !scrollingCaptureEnabled
+        editsSelectedImage && activeMode == .image && activeTool != .text && !scrollingCaptureEnabled
     }
     fileprivate var loupeEnabled = false {
         didSet { panels.forEach { $0.overlayView.refreshPointerState() } }
@@ -229,6 +230,7 @@ final class ScreenshotSelectionController {
          mode: Mode = .image,
          supportsScrollingCapture: Bool = false,
          requiresDraggedRegion: Bool = false,
+         editsSelectedImage: Bool = true,
          screenCaptureOptions: ScreenCaptureSelectionOptions? = nil) {
         self.freeze = freeze
         self.includePointer = includePointer
@@ -239,6 +241,7 @@ final class ScreenshotSelectionController {
         self.baseMode = mode
         self.supportsScrollingCapture = supportsScrollingCapture
         self.requiresDraggedRegion = requiresDraggedRegion
+        self.editsSelectedImage = editsSelectedImage
         self.screenCaptureOptions = screenCaptureOptions
     }
 
@@ -2245,8 +2248,10 @@ private struct CaptureGuideView: View {
     }
 
     private var subtitle: String {
-        let base = requiresDraggedRegion || scrollingCaptureEnabled
+        let base = scrollingCaptureEnabled
             ? strings.scrollingCaptureSelectionHint
+            : requiresDraggedRegion
+            ? strings.hintDrag
             : purpose?.isEmpty == false
             ? strings.hintDrag + "  ·  " + strings.hintClick
             : strings.hintClick

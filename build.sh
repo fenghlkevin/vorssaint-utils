@@ -53,8 +53,13 @@ if (( DEV )); then
     EXECUTABLE="VorssaintDeveloper"
     APP_BUNDLE_ID="com.vorssaint.utils.dev"
     BUILD_VARIANT_FLAGS=(-D VORSSAINT_DEVELOPMENT)
-    APP_OPTIMIZATION_FLAGS=(-Onone)
-    BUILD_CONFIGURATION="debug"
+    # Keep the Developer bundle/debug feature flags and incremental compilation,
+    # but optimize the running binary. -Onone makes every always-on event tap,
+    # menu-bar view and monitor disproportionately expensive during local use.
+    # Developers can still use Instruments and lldb; this is a performance
+    # representative development build rather than an unoptimized debug build.
+    APP_OPTIMIZATION_FLAGS=(-O -g)
+    BUILD_CONFIGURATION="development"
 else
     APP_NAME="Vorssaint"
     EXECUTABLE="Vorssaint"
@@ -334,6 +339,7 @@ if (( TEST )); then
         Sources/Vorssaint/Core/KeepAwakeStrings.swift \
         Sources/Vorssaint/Core/BluetoothSleepStrings.swift \
         Sources/Vorssaint/Core/AwayLockStrings.swift \
+        Sources/Vorssaint/Core/TranslationStrings.swift \
         Sources/Vorssaint/Core/PermissionGuideStrings.swift \
         Sources/Vorssaint/Core/FanControlStrings.swift \
         Sources/Vorssaint/Services/FanControl/FanControlSupport.swift \
@@ -475,6 +481,15 @@ if (( TEST )); then
         ./build/scrolling-stitch-tests || test_status=$?
     fi
     discard_test_preferences || test_status=1
+    swiftc -Onone -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" \
+        Sources/Vorssaint/Services/Translation/TranslationSupport.swift \
+        Sources/Vorssaint/Services/Translation/AITranslation.swift \
+        Sources/Vorssaint/Services/Translation/CodexTranslation.swift \
+        Sources/Vorssaint/Services/Translation/BobPluginWorker.swift \
+        Tests/TranslationTests.swift -o build/translation-tests || test_status=1
+    if [[ -x build/translation-tests ]]; then
+        ./build/translation-tests || test_status=1
+    fi
     exit $test_status
 fi
 

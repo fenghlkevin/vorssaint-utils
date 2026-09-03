@@ -8,6 +8,7 @@ import Foundation
 /// below and the unit tests can reason about pages without pulling UI in.
 enum SettingsPage: Hashable {
     case general, features, energy, monitor
+    case translation
     case mouse, switcher, keyDebounce, superKey, inputSourceAutomation, cutPaste, autoQuit, cleaner, uninstaller, urlCleaner, homebrew, appUpdates, menuBarIcons, awayLock, media, clipboard, windowLayout, shelf, quickTools, textSnippets, screenshot, radialMenu, commandBar, killProcess
     case shortcuts, advanced, about, releaseNotes, support
 }
@@ -44,6 +45,7 @@ enum SettingsSectionAnchor: String, CaseIterable, Hashable {
     case micMute
     case cameraPreview
     case scratchpad
+    case translation
     case soundOutputSwitcher
     case fanControl
 
@@ -57,6 +59,7 @@ enum SettingsSectionAnchor: String, CaseIterable, Hashable {
         case .switcher, .dock, .dockClick: return .switcher
         case .finderCutPaste, .finderRename: return .cutPaste
         case .clipboardHistory, .pastePlain: return .clipboard
+        case .translation: return .translation
         case .quickLauncher, .quickToggles, .micMute, .cameraPreview, .scratchpad:
             return .quickTools
         case .screenshot, .screenRecorder, .colorPicker, .screenOCR:
@@ -236,6 +239,8 @@ extension AppFeature {
         case .radialMenu: return FeatureSettingsDestination(.radialMenu)
         case .scratchpad:
             return FeatureSettingsDestination(.quickTools, sectionAnchor: .scratchpad)
+        case .translation:
+            return FeatureSettingsDestination(.translation, sectionAnchor: .translation)
         case .commandBar: return FeatureSettingsDestination(.commandBar)
         case .screenRecorder:
             return FeatureSettingsDestination(.screenshot, sectionAnchor: .screenRecorder)
@@ -273,6 +278,7 @@ enum FeatureVisibilitySupport {
         case .media: return [.mediaTools]
         case .quickTools: return [.quickLauncher, .quickToggles, .micMute,
                                   .cameraPreview, .scratchpad]
+        case .translation: return [.translation]
         case .urlCleaner: return [.urlCleaner]
         case .cleaner: return [.cleaner]
         case .homebrew: return [.homebrew]
