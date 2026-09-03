@@ -163,14 +163,14 @@ struct CommandBarView: View {
             // a mark left to follow the proposed height shrinks or vanishes
             // mid-layout. It is also the handle that carries the bar to
             // wherever the hand wants it; a double-click brings it home.
-            BrandMark(width: 22, tint: markTint)
-                .opacity(0.85)
-                .frame(width: 22, height: 22)
-                .allowsHitTesting(false)
-                .overlay(
-                    DragHandle()
-                        .help(text.dragHint)
-                )
+            ZStack {
+                BrandMark(width: 22, tint: markTint)
+                    .opacity(0.85)
+                    .allowsHitTesting(false)
+                DragHandle()
+                    .help(text.dragHint)
+            }
+            .frame(width: 22, height: 22)
             if case .naming(let entryID) = service.mode,
                let entry = service.entry(withID: entryID) {
                 Text(entry.title)

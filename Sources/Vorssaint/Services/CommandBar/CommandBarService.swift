@@ -273,6 +273,11 @@ final class CommandBarService: ObservableObject {
         deferredRowShortcut.cancel()
         scriptRunner.reset()
         fileSearch.reset()
+        // A dragged position is useful only for the current interaction. The
+        // next activation starts in the middle again so the bar does not
+        // obscure whichever content the user is about to inspect.
+        UserDefaults.standard.removeObject(forKey: DefaultsKey.commandBarPositionOffset)
+        hasCustomPosition = false
         let id = UUID()
         presentationID = id
         presentationLifecycle.beginHome(id)
