@@ -3,6 +3,10 @@
 
 import AppKit
 
+if CommandLine.arguments.contains("--reset-battery-registration") {
+    BatteryRegistrationRepair.runAndExit()
+}
+
 if CommandLine.arguments.contains("--translation-plugin-worker") { exit(1) }
 #if VORSSAINT_DEVELOPMENT
 // An isolated UI check: no startup services, persistent feature changes or global hotkeys.

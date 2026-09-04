@@ -34,6 +34,7 @@ struct CodexTranslationSettings: View {
             }.disabled(loading || selected == nil)
             HStack {
                 Button(strings.codexOptions.refresh) { refresh = UUID() }.disabled(loading)
+                Button(strings.codexOptions.speedFirst) { prioritizeSpeed() }.disabled(loading || models.isEmpty)
                 if loading { ProgressView().controlSize(.small) }
             }
             Text(strings.codexOptions.notice).font(.caption).foregroundStyle(.secondary)
@@ -48,7 +49,7 @@ struct CodexTranslationSettings: View {
             loading = true; failed = false; models = []
             do {
                 try await Task.sleep(for: .milliseconds(350))
-                let catalog = try await CodexTranslation.loadModels(path: path)
+                let catalog = try await CodexTranslation.loadModels(path: path, refresh: true)
                 guard !Task.isCancelled else { return }
                 models = catalog
                 if let selected {
@@ -61,5 +62,10 @@ struct CodexTranslationSettings: View {
             }
             loading = false
         }
+    }
+    private func prioritizeSpeed() {
+        guard let preset = CodexTranslation.speedPreset(models) else { return }
+        model = preset.model
+        DispatchQueue.main.async { effort = preset.effort; speed = preset.speed }
     }
 }

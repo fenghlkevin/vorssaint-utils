@@ -3,8 +3,8 @@ import SwiftUI
 extension TranslationStrings {
     var aiNotice: String {
         switch language {
-        case .enUS: return "API requests send text to the configured HTTPS endpoint and may incur charges. Enter the full /chat/completions URL and model ID. API Key is stored in Keychain, excluded from export. Leave Key empty to retain it only for the same endpoint. Click Save before translating."
-        case .zhHans: return "AI 翻译会向配置的 HTTPS 接口发送原文，可能产生费用。请填写完整 /chat/completions 地址和模型 ID。Key 存于钥匙串，不随设置导出；留空仅在接口地址不变时保留原 Key。修改后请先保存。"
+        case .enUS: return "Add up to 20 API profiles and select which one translation uses. API Keys are stored in Keychain and excluded from export. Leave Key empty to retain the saved key for this profile."
+        case .zhHans: return "最多可保存 20 个 AI API 配置，并选择翻译当前使用的配置。Key 存于钥匙串，不随设置导出；Key 留空会保留当前配置已保存的 Key。"
         case .zhTW: return "AI 翻譯會向設定的 HTTPS 介面傳送原文，可能產生費用。請填寫完整 /chat/completions 網址和模型 ID。Key 存於鑰匙圈，不隨設定匯出；留空只在網址不變時保留。修改後請先儲存。"
         case .zhHK: return "AI 翻譯會向設定的 HTTPS 介面傳送原文，可能產生費用。請填寫完整 /chat/completions 網址和模型 ID。Key 存於鑰匙圈，不隨設定輸出；留空只在網址不變時保留。修改後請先儲存。"
         case .ptBR: return "Envia texto ao endpoint HTTPS configurado e pode gerar custos. Informe a URL completa /chat/completions e o modelo. Chave no Chaves, fora da exportação. Campo vazio mantém a chave apenas para o mesmo endpoint. Salve antes de traduzir."
@@ -22,17 +22,41 @@ extension TranslationStrings {
 
 struct AITranslationSettings: View {
     @ObservedObject private var l10n = L10n.shared
+    @State private var profiles: [AITranslationProfile] = []
+    @State private var selectedID = ""
+    @State private var name = ""
     @State private var endpoint = AITranslation.defaultEndpoint
     @State private var model = AITranslation.defaultModel
     @State private var key = ""
     @State private var message = ""
     @State private var saved = false
-    @State private var configuredEndpoint: String?
-    private var hasStoredKey: Bool {
-        configuredEndpoint != nil && (try? AITranslation.endpoint(endpoint).absoluteString) == configuredEndpoint
-    }
+    @State private var hasStoredKey = false
     var body: some View {
         Section {
+            ForEach(profiles) { profile in
+                Button { selectedID = profile.id } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(profile.name).foregroundStyle(.primary)
+                            Text(profile.model).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if profile.id == selectedID {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
+                        }
+                    }.contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            HStack {
+                Button { addProfile() } label: { Label("新增 AI API", systemImage: "plus") }
+                    .disabled(profiles.count >= 20)
+                Spacer()
+                Button(role: .destructive) { removeProfile() } label: { Label("删除当前配置", systemImage: "trash") }
+                    .disabled(profiles.count <= 1)
+            }
+            Divider()
+            TextField("Name", text: $name)
             TextField("API URL · /chat/completions", text: $endpoint)
             TextField("Model ID", text: $model)
             SecureField("API Key", text: $key, prompt: Text(hasStoredKey ? "••••••••" : "API Key"))
@@ -45,12 +69,14 @@ struct AITranslationSettings: View {
         } header: { Text("AI · API") }
         .onAppear {
             do {
-                let config = try TranslationCredentials.load(AITranslation.credentialID)
-                endpoint = config.options["endpoint"] ?? AITranslation.defaultEndpoint
-                model = config.options["model"] ?? AITranslation.defaultModel
-                configuredEndpoint = (config.options["key"] ?? "").isEmpty ? nil : config.options["endpoint"]
+                let state = try AITranslationProfiles.load()
+                profiles = state.profiles
+                selectedID = state.selectedID
+                loadSelected()
             } catch { message = error.localizedDescription }
         }
+        .onChange(of: selectedID) { _, _ in loadSelected() }
+        .onChange(of: name) { _, _ in saved = false }
         .onChange(of: endpoint) { _, _ in saved = false }
         .onChange(of: model) { _, _ in saved = false }
         .onChange(of: key) { _, value in if !value.isEmpty { saved = false } }
@@ -58,15 +84,44 @@ struct AITranslationSettings: View {
     private func save() {
         do {
             let url = try AITranslation.endpoint(endpoint).absoluteString
-            let previous = try TranslationCredentials.load(AITranslation.credentialID).options
-            let secret = key.isEmpty && previous["endpoint"] == url ? previous["key"] ?? "" : key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let index = profiles.firstIndex(where: { $0.id == selectedID }),
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw AITranslation.Failure.configuration }
+            let secret = key.isEmpty ? profiles[index].key : key.trimmingCharacters(in: .whitespacesAndNewlines)
             _ = try AITranslation.request(endpoint: url, model: model, key: secret, text: "validation", source: "auto", target: "en")
-            try TranslationCredentials.save(.init(options: ["endpoint": url, "model": model, "key": secret]), id: AITranslation.credentialID)
+            profiles[index] = .init(id: selectedID, name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                                    endpoint: url, model: model.trimmingCharacters(in: .whitespacesAndNewlines), key: secret)
+            try AITranslationProfiles.save(profiles, selectedID: selectedID)
+            TranslationService.shared.refreshAIProfiles()
             TranslationService.shared.cancel()
             key = ""
-            configuredEndpoint = url
+            hasStoredKey = !secret.isEmpty
             saved = true
             message = ""
         } catch { message = error.localizedDescription; saved = false }
+    }
+
+    private func loadSelected() {
+        guard let profile = profiles.first(where: { $0.id == selectedID }) else { return }
+        name = profile.name; endpoint = profile.endpoint; model = profile.model
+        key = ""; hasStoredKey = !profile.key.isEmpty; saved = false; message = ""
+    }
+
+    private func addProfile() {
+        guard profiles.count < 20 else { return }
+        let profile = AITranslationProfile(id: UUID().uuidString, name: "AI API \(profiles.count + 1)",
+            endpoint: AITranslation.defaultEndpoint, model: AITranslation.defaultModel, key: "")
+        profiles.append(profile); selectedID = profile.id
+    }
+
+    private func removeProfile() {
+        guard profiles.count > 1, let index = profiles.firstIndex(where: { $0.id == selectedID }) else { return }
+        profiles.remove(at: index)
+        selectedID = profiles[min(index, profiles.count - 1)].id
+        do {
+            try AITranslationProfiles.save(profiles, selectedID: selectedID)
+            TranslationService.shared.refreshAIProfiles()
+            message = ""
+        }
+        catch { message = error.localizedDescription }
     }
 }

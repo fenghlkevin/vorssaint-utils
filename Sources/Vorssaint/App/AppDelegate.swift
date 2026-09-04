@@ -10,6 +10,7 @@ import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
     private var statusController: StatusItemController!
+    private var batteryStatusController: BatteryStatusItemController!
     private let popover = NSPopover()
     private var popoverClosedAt = Date.distantPast
     private var popoverDismissMonitor: Any?
@@ -80,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         PanelLayout.resetCollapsedSectionsOnce(for: "2.15.1")
 
         statusController = StatusItemController()
+        batteryStatusController = BatteryStatusItemController()
         MenuBarIconCollapser.shared.attach(to: statusController.statusItem)
         statusController.onLeftClick = { [weak self] in
             self?.captureStatusClick()
@@ -247,6 +249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         PreciseVolumeRollerService.shared.stop()
         AppVolumeMixer.shared.stopAll()
         FanControlService.restoreBeforeTerminationIfNeeded()
+        BatteryManagementService.shared.prepareForTermination()
         // Puts the system input back if a microphone was chosen here: the
         // app's audio settings must not outlive the app.
         AudioInputDeviceManager.shared.stop()
@@ -259,6 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             ClipboardHistoryService.shared.flushBeforeTermination()
         }
         KeepAwakeManager.shared.deactivate(reason: .quit)
+        DynamicIslandService.shared.stop()
     }
 
     /// The lifeline when the menu bar icon goes missing. Opening the app again

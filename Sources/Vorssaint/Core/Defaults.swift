@@ -7,6 +7,8 @@ import Foundation
 
 /// Every UserDefaults key used by the app, in one place.
 enum DefaultsKey {
+    static let dynamicIslandEnabled = "dynamicIslandEnabled"
+    static let dynamicIslandDisplay = "dynamicIslandDisplay"
     static let language = "appLanguage"                   // AppLanguage.rawValue
     static let appearance = "appAppearance"               // AppAppearance.rawValue
     static let liquidGlassEnabled = "liquidGlassEnabled"  // Liquid Glass visual styling on macOS 26+
@@ -20,6 +22,20 @@ enum DefaultsKey {
     static let updateShowcaseMediaOverride = "updateShowcaseMediaOverride"
     static let defaultDuration = "defaultDurationMinutes" // 0 = indefinite
     static let batteryLimit = "batteryLimitPercent"       // 0 = never
+    static let batteryManagementEnabled = "batteryManagementEnabled"
+    static let batteryManagementLimit = "batteryManagementLimitPercent"
+    static let batteryManagementMenuBarIcon = "batteryManagementMenuBarIcon"
+    static let batteryManagementResumeMargin = "batteryManagementResumeMarginPercent"
+    static let batteryManagementSleepPolicy = "batteryManagementSleepPolicy"
+    static let batteryManagementTemperatureProtection = "batteryManagementTemperatureProtection"
+    static let batteryManagementTemperatureLimit = "batteryManagementTemperatureLimit"
+    static let batteryManagementNotifications = "batteryManagementNotifications"
+    static let batteryMenuHiddenFields = "batteryManagement.menuHiddenFields"
+    static let batteryIconStyle = "batteryManagement.iconStyle"
+    static let batteryIconMonochrome = "batteryManagement.iconMonochrome"
+    static let batteryIconRemainingTime = "batteryManagement.iconRemainingTime"
+    static let batteryLowNotification = "batteryManagement.lowNotification"
+    static let batteryLowNotificationThreshold = "batteryManagement.lowNotificationThreshold"
     static let keepAwakeAutoStart = "keepAwakeAutoStart"  // start Keep Awake when the app launches
     static let keepAwakeRightClickToggle = "keepAwakeRightClickToggle"
     static let keepAwakeAllowDisplaySleep = "keepAwakeAllowDisplaySleep"

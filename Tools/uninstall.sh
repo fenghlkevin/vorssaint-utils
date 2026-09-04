@@ -24,13 +24,19 @@ sleep 0.5
 # deleting the app below cannot reach it. Only the binary can drop it, and the
 # check after the loop settles what its absence or failure left behind.
 detached=1
+detach_attempted=0
 for candidate in "$APP/Contents/MacOS/Vorssaint" "$LEGACY_APP/Contents/MacOS/VorssaintUtils"; do
     if [[ -x "$candidate" ]]; then
+        detach_attempted=1
         echo "▸ Detaching the fan helper and login item, restoring sleep…"
         if "$candidate" --uninstall; then detached=0; fi
         break
     fi
 done
+if (( detach_attempted && detached )); then
+    echo "✗ Safe hardware restoration was not confirmed; application and data retained." >&2
+    exit 1
+fi
 # `detached` cannot tell a failed unregister from no binary having run, and the
 # second is ordinary: an app trashed by hand, then this script for the rest. It
 # also cannot see a daemon that went despite a reported failure. launchctl
@@ -42,6 +48,17 @@ if (( detached )); then
     # failure means launchctl could not tell us, and warning then is the honest
     # side of a check that exists to stop this script claiming what it cannot see.
     (( $? == 113 )) && detached=0
+fi
+
+# Never remove an executable that may still be needed for battery recovery.
+# A failed new binary is authoritative. If no binary ran, require BOTH helper
+# services to be absent, rather than checking only the historical fan daemon.
+launchctl print "system/$BUNDLE.battery-control" >/dev/null 2>&1
+battery_service_status=$?
+if (( detached || battery_service_status != 113 )); then
+    echo "✗ Hardware helper removal was not confirmed; application and data retained." >&2
+    echo "  Restore automatic control and use the in-app uninstall after approving the helpers." >&2
+    exit 1
 fi
 
 echo "▸ Resetting permissions (Accessibility, Screen Recording)…"

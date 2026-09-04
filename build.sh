@@ -69,6 +69,7 @@ else
     BUILD_CONFIGURATION="release"
 fi
 FAN_HELPER_ID="$APP_BUNDLE_ID.fan-control"
+BATTERY_HELPER_ID="$APP_BUNDLE_ID.battery-control"
 TARGET="arm64-apple-macosx14.0"
 ENTITLEMENTS="Resources/Vorssaint.entitlements"
 LEGACY_IDENTITY="Vorssaint Utils Signing"
@@ -302,6 +303,7 @@ discard_test_preferences() {
 # then exit. Fast and deterministic; no XCTest needed.
 if (( TEST )); then
     echo "▸ Building & running unit tests against $(basename "$SDK")…"
+    bash Tools/test-battery-control.sh
     rm -rf build
     mkdir -p build
     # The full app build below remains optimized and is the optimizer gate.
@@ -524,6 +526,18 @@ swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIAN
     -o "build/$FAN_HELPER_ID"
 "build/$FAN_HELPER_ID" --selftest
 
+echo "▸ Compiling protected battery helper…"
+swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" \
+    Sources/Vorssaint/Services/Metrics/TemperatureSensorSelector.swift \
+    Sources/Vorssaint/Services/FanControl/FanControlSupport.swift \
+    Sources/Vorssaint/Services/SystemMonitor/SMCClient.swift \
+    Sources/Vorssaint/Services/Battery/BatteryControlPolicy.swift \
+    Sources/Vorssaint/Services/Battery/BatteryControlXPC.swift \
+    Sources/Vorssaint/Services/Battery/BatteryControlHardware.swift \
+    Sources/BatteryControlHelper/main.swift \
+    -o "build/$BATTERY_HELPER_ID"
+"build/$BATTERY_HELPER_ID" --selftest
+
 echo "▸ Generating app icon…"
 swift Tools/MakeIcon.swift build/AppIcon.iconset
 xattr -c -r build/AppIcon.iconset build/AppIcon.icns build/MenuBarIcon.png build/MenuBarIcon@2x.png build/BrandMark.png 2>/dev/null || true
@@ -563,6 +577,9 @@ mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources" \
     "$STAGE/Contents/Library/LaunchDaemons" "$STAGE/Contents/Library/LaunchServices"
 cp "build/$EXECUTABLE" "$STAGE/Contents/MacOS/$EXECUTABLE"
 cp "build/$FAN_HELPER_ID" "$STAGE/Contents/Library/LaunchServices/$FAN_HELPER_ID"
+cp "build/$BATTERY_HELPER_ID" "$STAGE/Contents/Library/LaunchServices/$BATTERY_HELPER_ID"
+cp Resources/com.vorssaint.utils.battery-control.plist \
+    "$STAGE/Contents/Library/LaunchDaemons/$BATTERY_HELPER_ID.plist"
 cp Resources/com.vorssaint.utils.fan-control.plist \
     "$STAGE/Contents/Library/LaunchDaemons/$FAN_HELPER_ID.plist"
 cp Resources/Info.plist "$STAGE/Contents/Info.plist"
@@ -577,11 +594,20 @@ if (( DEV )); then
     /usr/libexec/PlistBuddy -c "Set :CFBundleName Vorssaint (Developer)" "$STAGE/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Vorssaint (Developer)" "$STAGE/Contents/Info.plist"
     /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $EXECUTABLE" "$STAGE/Contents/Info.plist"
+    # SMAppService caches the launch daemon's lightweight code requirement by
+    # parent bundle version. A fresh development bundle must therefore carry a
+    # fresh build number when its embedded privileged helper changes.
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(date '+%Y%m%d%H%M%S')" "$STAGE/Contents/Info.plist"
     FAN_PLIST="$STAGE/Contents/Library/LaunchDaemons/$FAN_HELPER_ID.plist"
     /usr/libexec/PlistBuddy -c "Set :Label $FAN_HELPER_ID" "$FAN_PLIST"
     /usr/libexec/PlistBuddy -c "Set :BundleProgram Contents/Library/LaunchServices/$FAN_HELPER_ID" "$FAN_PLIST"
     /usr/libexec/PlistBuddy -c "Delete :MachServices:com.vorssaint.utils.fan-control" "$FAN_PLIST"
     /usr/libexec/PlistBuddy -c "Add :MachServices:$FAN_HELPER_ID bool true" "$FAN_PLIST"
+    BATTERY_PLIST="$STAGE/Contents/Library/LaunchDaemons/$BATTERY_HELPER_ID.plist"
+    /usr/libexec/PlistBuddy -c "Set :Label $BATTERY_HELPER_ID" "$BATTERY_PLIST"
+    /usr/libexec/PlistBuddy -c "Set :BundleProgram Contents/Library/LaunchServices/$BATTERY_HELPER_ID" "$BATTERY_PLIST"
+    /usr/libexec/PlistBuddy -c "Delete :MachServices:com.vorssaint.utils.battery-control" "$BATTERY_PLIST"
+    /usr/libexec/PlistBuddy -c "Add :MachServices:$BATTERY_HELPER_ID bool true" "$BATTERY_PLIST"
     # Stamp the source commit + build time so the running dev app shows (in About)
     # exactly which code it was compiled from. Lets you verify it matches HEAD before
     # testing, instead of unknowingly running a stale build. Dev-only; never shipped.
@@ -645,14 +671,15 @@ codesign_app() {
 
 codesign_fan_helper() {
     local target="$1"
+    local helper_identifier="${2:-$FAN_HELPER_ID}"
     if [[ -n "$DEVID" ]]; then
         codesign_with_timestamp_retry --force --strip-disallowed-xattrs --options runtime --timestamp \
-            --identifier "$FAN_HELPER_ID" --sign "$DEVID" "$target"
+            --identifier "$helper_identifier" --sign "$DEVID" "$target"
     elif security find-identity -p codesigning 2>/dev/null | grep -q "$LEGACY_IDENTITY"; then
-        codesign --force --strip-disallowed-xattrs --identifier "$FAN_HELPER_ID" \
+        codesign --force --strip-disallowed-xattrs --identifier "$helper_identifier" \
             --sign "$LEGACY_IDENTITY" "$target"
     else
-        codesign --force --strip-disallowed-xattrs --identifier "$FAN_HELPER_ID" --sign - "$target"
+        codesign --force --strip-disallowed-xattrs --identifier "$helper_identifier" --sign - "$target"
     fi
 }
 
@@ -669,6 +696,7 @@ sign_bundle() {
         echo "  signing ad-hoc (no identity installed — run Tools/setup-signing.sh)"
     fi
     [[ -f "$helper" ]] && codesign_fan_helper "$helper"
+    codesign_fan_helper "$bundle/Contents/Library/LaunchServices/$BATTERY_HELPER_ID" "$BATTERY_HELPER_ID"
     codesign_app "$bundle"
 
     # If local filesystem metadata invalidates the first signature, sign once
@@ -677,6 +705,7 @@ sign_bundle() {
         echo "  re-signing after filesystem metadata settled"
         xattr -c -r "$bundle" 2>/dev/null || true
         [[ -f "$helper" ]] && codesign_fan_helper "$helper"
+        codesign_fan_helper "$bundle/Contents/Library/LaunchServices/$BATTERY_HELPER_ID" "$BATTERY_HELPER_ID"
         codesign_app "$bundle"
     fi
     [[ -f "$executable" ]] && codesign --verify --strict "$executable"

@@ -45,25 +45,33 @@ enum TranslationTests {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         try expect(TranslationProviderSelection.restored(from: defaults) == "system", "first launch defaults to Apple")
-        for provider in TranslationProviderSelection.providers {
+        let aiIDs = ["glm", "deepseek"]
+        for provider in TranslationProviderSelection.available(aiIDs: aiIDs) {
             defaults.set(provider, forKey: TranslationProviderSelection.key)
-            try expect(TranslationProviderSelection.restored(from: UserDefaults(suiteName: suite)!) == provider, "last provider survives reload")
-            let next = TranslationProviderSelection.next(after: provider, backwards: false)
-            try expect(TranslationProviderSelection.next(after: next, backwards: true) == provider, "provider cycling is reversible")
+            try expect(TranslationProviderSelection.restored(from: UserDefaults(suiteName: suite)!, aiIDs: aiIDs) == provider, "last provider survives reload")
+            let next = TranslationProviderSelection.next(after: provider, backwards: false, aiIDs: aiIDs)
+            try expect(TranslationProviderSelection.next(after: next, backwards: true, aiIDs: aiIDs) == provider, "provider cycling is reversible")
         }
-        try expect(TranslationProviderSelection.next(after: "codex", backwards: false) == "system", "down wraps to first provider")
-        try expect(TranslationProviderSelection.next(after: "system", backwards: true) == "codex", "up wraps to last provider")
+        try expect(TranslationProviderSelection.next(after: "codex", backwards: false, aiIDs: aiIDs) == "system", "down wraps to first provider")
+        try expect(TranslationProviderSelection.next(after: "system", backwards: true, aiIDs: aiIDs) == "codex", "up wraps to last provider")
+        defaults.set("ai", forKey: TranslationProviderSelection.key)
+        try expect(TranslationProviderSelection.restored(from: defaults, aiIDs: aiIDs) == "ai:glm", "legacy AI selection migrates to first profile")
         defaults.set("google", forKey: TranslationProviderSelection.key)
         try expect(TranslationProviderSelection.restored(from: defaults) == "system", "removed provider falls back safely")
         try expect(serviceSource.contains("requiresDraggedRegion: true, editsSelectedImage: false"), "translation OCR skips screenshot editor")
         let settingsSource = try source("UI/Translation/AITranslationSettings.swift")
         try expect(settingsSource.contains("prompt: Text(hasStoredKey ? \"••••••••\""), "saved key has a masked placeholder")
+        try expect(settingsSource.contains("addProfile()") && settingsSource.contains("removeProfile()"), "AI settings manage multiple profiles")
+        try expect(serviceSource.contains("AITranslationProfiles.profile(id: profileID)"), "translation uses the selected AI profile")
+        try expect(viewSource.contains("ForEach(service.aiProfileOptions)"), "AI profiles appear beside other translation providers")
         let codexArgs = try CodexTranslation.arguments(model: "test-model")
         let catalogData = Data(#"{"models":[{"slug":"test-model","display_name":"Test Model","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],"service_tiers":[{"id":"priority"}]},{"slug":"basic-model","display_name":"Basic","visibility":"list","supported_reasoning_levels":[{"effort":"medium"}],"service_tiers":[]},{"slug":"internal","display_name":"Hidden","visibility":"hide","supported_reasoning_levels":[]}]}"#.utf8)
         let catalog = try CodexTranslation.parseModels(catalogData)
         try expect(catalog.count == 2, "hidden CLI models are excluded")
         try expect(catalog[0].efforts == ["low", "high"] && catalog[0].supportsFast, "model capabilities come from CLI")
         try expect(!catalog[1].supportsFast, "fast unavailable without advertised tier")
+        let preset = CodexTranslation.speedPreset(catalog)
+        try expect(preset?.model == "test-model" && preset?.effort == "low" && preset?.speed == "fast", "speed preset uses fastest available capability")
         let tuned = try CodexTranslation.arguments(model: "test-model", effort: "low", speed: "fast", capabilities: catalog[0])
         try expect(tuned.contains("model_reasoning_effort=\"low\"") && tuned.contains("service_tier=\"fast\""), "selected effort and speed reach exec")
         try expect(!codexArgs.contains(where: { $0.hasPrefix("model_reasoning_effort=") || $0.hasPrefix("service_tier=") }), "default options do not override CLI")
@@ -100,7 +108,9 @@ enum TranslationTests {
         try expect(request.url?.query == nil, "AI credentials are not in URL")
         let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
         try expect(body["model"] as? String == "test-model", "AI model is configurable")
-        try expect(body["stream"] as? Bool == false, "AI non-stream response")
+        try expect(body["stream"] as? Bool == true, "AI requests streaming response")
+        try expect(try AITranslation.streamDelta(#"data: {"choices":[{"delta":{"content":"你"}}]}"#) == "你", "AI parses SSE delta")
+        try expect(try AITranslation.streamDelta("data: [DONE]") == nil, "AI accepts SSE completion")
         for invalid in ["http://example.com/api", "https://user:pass@example.com/api", "https://example.com/api?key=secret", "file:///tmp/api"] {
             try expect((try? AITranslation.endpoint(invalid)) == nil, "AI unsafe endpoint rejected")
         }
@@ -109,6 +119,9 @@ enum TranslationTests {
         try expect((try? AITranslation.parse(Data("{}".utf8))) == nil, "AI malformed result rejected")
         let truncated = Data("{\"choices\":[{\"message\":{\"content\":\"partial\"},\"finish_reason\":\"length\"}]}".utf8)
         try expect((try? AITranslation.parse(truncated)) == nil, "AI truncated result rejected")
+        let streamParser = CodexTranslation.StreamParser()
+        let partial = try streamParser.append(Data("{\"type\":\"item.updated\",\"item\":{\"type\":\"agent_message\",\"text\":\"你好\"}}\n".utf8))
+        try expect(partial == "你好", "Codex publishes updated agent text")
         for path in ["../main.js", "/main.js", "a/../../main.js", "a\\main.js", "a//main.js", "*.js", "a/./b.js"] {
             try expect(!BobPluginPackage.safePath(path), "unsafe path accepted: \(path)")
         }

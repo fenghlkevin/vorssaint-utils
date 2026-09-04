@@ -3,7 +3,29 @@
 
 import Foundation
 
+enum TranslationProgressStage { case idle, recognizing, connecting, generating }
+
 extension TranslationStrings {
+    func progress(_ stage: TranslationProgressStage) -> String {
+        switch (language, stage) {
+        case (_, .idle): return ""
+        case (.zhHans, .recognizing): return "正在识别文字…"
+        case (.zhHans, .connecting): return "正在连接…"
+        case (.zhHans, .generating): return "正在生成译文…"
+        case (.zhTW, .recognizing), (.zhHK, .recognizing): return "正在辨識文字…"
+        case (.zhTW, .connecting), (.zhHK, .connecting): return "正在連線…"
+        case (.zhTW, .generating), (.zhHK, .generating): return "正在產生譯文…"
+        case (.ja, .recognizing): return "テキストを認識中…"
+        case (.ja, .connecting): return "接続中…"
+        case (.ja, .generating): return "翻訳を生成中…"
+        case (.ko, .recognizing): return "텍스트 인식 중…"
+        case (.ko, .connecting): return "연결 중…"
+        case (.ko, .generating): return "번역 생성 중…"
+        case (_, .recognizing): return "Recognizing text…"
+        case (_, .connecting): return "Connecting…"
+        case (_, .generating): return "Generating translation…"
+        }
+    }
     var localNotice: String {
         switch language {
         case .enUS: return "Apple translates on-device (macOS 15+). Language models may need to be downloaded first."

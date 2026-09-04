@@ -90,6 +90,7 @@ enum SettingsDirectory {
                                                         .powerToggle,
                                                       FeatureStrings.keepAwakeDisplaySleep(language)
                                                         .allowDisplaySleep]),
+                                        (.batteryManagement, ["电池管理", "充放电与睡眠", "MagSafe 灯效", "充电自动化", "电池菜单内容", "电池状态图标", "低电量提醒"]),
                                         (.brightness, [FeatureStrings.brightness(language).pageTitle,
                                                        FeatureStrings.brightness(language).osdToggle]),
                                         (.extraBrightness, [s.extraBrightnessName]),
@@ -104,6 +105,9 @@ enum SettingsDirectory {
                                        ]),
             ]),
             (categories.windowsControls, [
+                SettingsDirectoryItem(page: .dynamicIsland, title: "灵动岛",
+                                      icon: "rectangle.topthird.inset.filled",
+                                      keywords: ["音乐控制", "视频控制", "刘海", "显示器"]),
                 SettingsDirectoryItem(page: .mouse, title: s.tabMouse, icon: "computermouse",
                                        featureKeywords: [
                                         (.scrollInverter, [s.invertMouseScroll, s.invertVerticalScroll,

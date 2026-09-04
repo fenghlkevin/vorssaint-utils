@@ -23,6 +23,9 @@ final class TranslationService: ObservableObject {
     @Published private(set) var result = ""
     @Published private(set) var error = ""
     @Published private(set) var busy = false
+    @Published private(set) var stage: TranslationProgressStage = .idle
+    @Published private(set) var elapsed: TimeInterval?
+    @Published private(set) var aiProfileOptions: [AITranslationProfileOption] = []
     @Published private(set) var plugins: [BobPluginPackage] = []
     @Published private(set) var systemRequest: SystemRequest?
     @Published private(set) var shortcutRegistrationFailed = false
@@ -35,10 +38,13 @@ final class TranslationService: ObservableObject {
     private var generation = UUID()
     private var capture: ScreenshotSelectionController?
     private var loaded = false
+    private var startedAt: ContinuousClock.Instant?
 
     private init() {
         let defaults = UserDefaults.standard
-        provider = TranslationProviderSelection.restored(from: defaults)
+        let state = try? AITranslationProfiles.load(defaults: defaults)
+        aiProfileOptions = (state?.profiles ?? []).map { .init(id: $0.id, name: $0.name, model: $0.model) }
+        provider = TranslationProviderSelection.restored(from: defaults, aiIDs: aiProfileOptions.map(\.id))
         defaults.set(provider, forKey: TranslationProviderSelection.key)
         if let value = defaults.string(forKey: "translation.source"), value == "auto" || Self.languages.contains(value) { source = value }
         if let value = defaults.string(forKey: "translation.target"), Self.languages.contains(value) { target = value }
@@ -47,8 +53,26 @@ final class TranslationService: ObservableObject {
         captureKey.onPress = { [weak self] in self?.captureText() }
     }
     var selectedPlugin: BobPluginPackage? { plugins.first { $0.id == provider } }
+    var isAIProvider: Bool { TranslationProviderSelection.aiID(provider) != nil }
+    var providerDisplayName: String {
+        if provider == "system" { return TranslationStrings.current[.system] }
+        if provider == "codex" { return "Codex · CLI" }
+        guard let id = TranslationProviderSelection.aiID(provider) else { return provider }
+        return aiProfileOptions.first(where: { $0.id == id })?.name ?? "AI · API"
+    }
     func cycleProvider(backwards: Bool) {
-        provider = TranslationProviderSelection.next(after: provider, backwards: backwards)
+        provider = TranslationProviderSelection.next(after: provider, backwards: backwards,
+                                                     aiIDs: aiProfileOptions.map(\.id))
+    }
+    func refreshAIProfiles(preferredID: String? = nil) {
+        guard let state = try? AITranslationProfiles.load() else { return }
+        aiProfileOptions = state.profiles.map { .init(id: $0.id, name: $0.name, model: $0.model) }
+        if let preferredID, aiProfileOptions.contains(where: { $0.id == preferredID }) {
+            provider = TranslationProviderSelection.ai(preferredID)
+        } else if let id = TranslationProviderSelection.aiID(provider),
+                  !aiProfileOptions.contains(where: { $0.id == id }) {
+            provider = "system"
+        }
     }
 
     private func translateAcquiredText(_ value: String) {
@@ -127,6 +151,7 @@ final class TranslationService: ObservableObject {
             switch outcome {
             case .captured(let capture):
                 self.busy = true
+                self.stage = .recognizing
                 self.show()
                 let fallbackLanguages = MediaSupport.recognitionLanguages(for: L10n.shared.language.rawValue)
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -150,6 +175,8 @@ final class TranslationService: ObservableObject {
         aiTask?.cancel(); aiTask = nil
         systemRequest = nil
         busy = false
+        stage = .idle
+        startedAt = nil
         result = ""
         error = ""
     }
@@ -161,6 +188,9 @@ final class TranslationService: ObservableObject {
             report("emptyInput / maximum 20000 characters"); return
         }
         busy = true
+        stage = provider == "system" ? .generating : .connecting
+        startedAt = .now
+        elapsed = nil
         let id = generation
         if provider == "system" {
             if #available(macOS 15.0, *) {
@@ -177,7 +207,12 @@ final class TranslationService: ObservableObject {
             let speed = UserDefaults.standard.string(forKey: CodexTranslation.speedKey) ?? ""
             let input = text, from = source, to = target
             DispatchQueue.global(qos: .userInitiated).async {
-                let outcome = Result { try CodexTranslation.run(runner: runner, path: path, model: model, text: input, source: from, target: to, effort: effort, speed: speed) }
+                let outcome = Result { try CodexTranslation.run(runner: runner, path: path, model: model, text: input, source: from, target: to, effort: effort, speed: speed) { partial in
+                    DispatchQueue.main.async {
+                        guard id == self.generation else { return }
+                        self.stage = .generating; self.result = partial
+                    }
+                } }
                 DispatchQueue.main.async {
                     switch outcome {
                     case .success(let text): self.finish(id: id, text: text)
@@ -188,15 +223,20 @@ final class TranslationService: ObservableObject {
             }
             return
         }
-        if provider == "ai" {
+        if let profileID = TranslationProviderSelection.aiID(provider) {
             do {
-                let options = try TranslationCredentials.load(AITranslation.credentialID).options
-                let request = try AITranslation.request(endpoint: options["endpoint"] ?? AITranslation.defaultEndpoint,
-                    model: options["model"] ?? AITranslation.defaultModel, key: options["key"] ?? "",
+                let profile = try AITranslationProfiles.profile(id: profileID)
+                let request = try AITranslation.request(endpoint: profile.endpoint,
+                    model: profile.model, key: profile.key,
                     text: text, source: source, target: target)
                 aiTask = Task { @MainActor in
                     do {
-                        let value = try await AITranslation.send(request)
+                        let value = try await AITranslation.send(request) { partial in
+                            Task { @MainActor in
+                                guard id == self.generation else { return }
+                                self.stage = .generating; self.result = partial
+                            }
+                        }
                         guard !Task.isCancelled else { return }
                         self.finish(id: id, text: value)
                     } catch {
@@ -243,6 +283,9 @@ final class TranslationService: ObservableObject {
     func finish(id: UUID, text: String = "", error: String = "") {
         guard id == generation, AppFeature.translation.isAvailable else { return }
         busy = false; systemRequest = nil; process = nil; aiTask = nil
+        stage = .idle
+        if let startedAt { elapsed = Double(startedAt.duration(to: .now).components.attoseconds) / 1e18 + Double(startedAt.duration(to: .now).components.seconds) }
+        startedAt = nil
         self.result = text
         self.error = error
     }
@@ -300,38 +343,5 @@ final class TranslationService: ObservableObject {
         plugins.removeAll { $0.id == plugin.id }
         provider = "system"
         try TranslationCredentials.remove(plugin.id)
-    }
-}
-
-enum TranslationCredentials {
-    struct Configuration: Codable { var options: [String: String] = [:]; var hosts: [String] = [] }
-    static func load(_ id: String) throws -> Configuration {
-        var query = base(id)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var value: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &value)
-        if status == errSecItemNotFound { return Configuration() }
-        guard status == errSecSuccess, let data = value as? Data else { throw TranslationFailure.storage }
-        return try JSONDecoder().decode(Configuration.self, from: data)
-    }
-    static func save(_ config: Configuration, id: String) throws {
-        let data = try JSONEncoder().encode(config)
-        let status = SecItemUpdate(base(id) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var query = base(id)
-            query[kSecValueData as String] = data
-            query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-            guard SecItemAdd(query as CFDictionary, nil) == errSecSuccess else { throw TranslationFailure.storage }
-        } else if status != errSecSuccess { throw TranslationFailure.storage }
-    }
-    static func remove(_ id: String) throws {
-        let status = SecItemDelete(base(id) as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw TranslationFailure.storage }
-    }
-    private static func base(_ id: String) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: (Bundle.main.bundleIdentifier ?? "Vorssaint") + ".translation",
-         kSecAttrAccount as String: id]
     }
 }

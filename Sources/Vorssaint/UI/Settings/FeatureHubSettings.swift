@@ -602,6 +602,7 @@ extension AppFeature {
     /// with no clean existing form live in the hub strings.
     func hubTitle(_ s: Strings, hub: FeatureHubStrings) -> String {
         switch self {
+        case .dynamicIsland: return "灵动岛"
         case .switcher: return s.switcherSection
         case .dockPreview: return s.dockPreviewName
         case .dockClick: return hub.titleDockClick
@@ -636,6 +637,7 @@ extension AppFeature {
         case .extraBrightness: return s.extraBrightnessName
         case .bluetoothSleep: return FeatureStrings.bluetoothSleep(L10n.shared.language).pageTitle
         case .awayLock: return AwayLockStrings.current.title
+        case .batteryManagement: return "电池管理"
         case .quickLauncher: return s.launcherName
         case .quickToggles: return FeatureStrings.quickToggles(L10n.shared.language).pageTitle
         case .colorPicker: return s.colorPickerName
@@ -667,6 +669,7 @@ extension AppFeature {
 
     func hubDescription(_ hub: FeatureHubStrings) -> String {
         switch self {
+        case .dynamicIsland: return "在刘海区域显示系统音乐与视频播放控制"
         case .switcher: return hub.descSwitcher
         case .dockPreview: return hub.descDockPreview
         case .dockClick: return hub.descDockClick
@@ -701,6 +704,7 @@ extension AppFeature {
         case .extraBrightness: return hub.descExtraBrightness
         case .bluetoothSleep: return FeatureStrings.bluetoothSleep(L10n.shared.language).hubDescription
         case .awayLock: return AwayLockStrings.current.caption
+        case .batteryManagement: return "设置充电上限并在菜单栏查看电池状态。"
         case .quickLauncher: return hub.descQuickLauncher
         case .quickToggles: return FeatureStrings.quickToggles(L10n.shared.language).hubDescription
         case .colorPicker: return hub.descColorPicker

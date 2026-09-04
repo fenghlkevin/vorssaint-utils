@@ -8,9 +8,9 @@ enum CodexTranslation {
     static let modelKey = "translation.codex.model"
     static let effortKey = "translation.codex.effort"
     static let speedKey = "translation.codex.speed"
-    struct Model: Decodable, Identifiable {
-        struct Level: Decodable { let effort: String }
-        struct Tier: Decodable { let id: String }
+    struct Model: Codable, Identifiable {
+        struct Level: Codable { let effort: String }
+        struct Tier: Codable { let id: String }
         let slug: String
         let display_name: String
         let visibility: String?
@@ -21,6 +21,9 @@ enum CodexTranslation {
         var supportsFast: Bool { service_tiers?.contains { ["priority", "fast"].contains($0.id) } == true }
     }
     private static let allowedEfforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+    private struct Cache: Codable { let path: String; let saved: Date; let models: [Model] }
+    private static let cacheKey = "translation.codex.modelCapabilities"
+    private static let cacheLifetime: TimeInterval = 86_400
     static func parseModels(_ data: Data) throws -> [Model] {
         struct Catalog: Decodable { let models: [Model] }
         let models = try JSONDecoder().decode(Catalog.self, from: data).models
@@ -28,6 +31,13 @@ enum CodexTranslation {
         let visible = models.filter { $0.visibility == "list" && !$0.slug.isEmpty && seen.insert($0.slug).inserted }
         guard !visible.isEmpty, visible.count <= 200 else { throw Failure.response }
         return visible
+    }
+    static func speedPreset(_ models: [Model]) -> (model: String, effort: String, speed: String)? {
+        guard let choice = models.first(where: { $0.id == "gpt-5.6-luna" })
+                ?? models.first(where: { $0.id.localizedCaseInsensitiveContains("luna") })
+                ?? models.first else { return nil }
+        let effort = allowedEfforts.first(where: choice.efforts.contains) ?? ""
+        return (choice.id, effort, choice.supportsFast ? "fast" : "")
     }
     static func models(path: String, runner: TranslationProcess) throws -> [Model] {
         let binary = try executable(path: path)
@@ -37,12 +47,28 @@ enum CodexTranslation {
             directory: FileManager.default.temporaryDirectory)
         return try parseModels(data)
     }
-    static func loadModels(path: String) async throws -> [Model] {
+    private static func storedModels(path: String) -> [Model]? {
+        guard let data = UserDefaults.standard.data(forKey: cacheKey),
+              let value = try? JSONDecoder().decode(Cache.self, from: data), value.path == path,
+              Date().timeIntervalSince(value.saved) < cacheLifetime else { return nil }
+        return value.models
+    }
+    private static func store(_ models: [Model], path: String) {
+        if let data = try? JSONEncoder().encode(Cache(path: path, saved: Date(), models: models)) {
+            UserDefaults.standard.set(data, forKey: cacheKey)
+        }
+    }
+    static func loadModels(path: String, refresh: Bool = false) async throws -> [Model] {
+        if !refresh, let cached = storedModels(path: path) { return cached }
         let runner = TranslationProcess()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
-                    continuation.resume(with: Result { try models(path: path, runner: runner) })
+                    continuation.resume(with: Result {
+                        let value = try models(path: path, runner: runner)
+                        store(value, path: path)
+                        return value
+                    })
                 }
             }
         } onCancel: { runner.cancel() }
@@ -122,10 +148,39 @@ enum CodexTranslation {
         guard completed, !translation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw Failure.response }
         return translation
     }
+    final class StreamParser {
+        private var buffer = Data()
+        private(set) var latest = ""
+        func append(_ data: Data) throws -> String? {
+            buffer.append(data)
+            var changed = false
+            while let newline = buffer.firstIndex(of: 10) {
+                let line = buffer[..<newline]; buffer.removeSubrange(...newline)
+                guard !line.isEmpty,
+                      let event = try JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                      let type = event["type"] as? String else { continue }
+                if type == "turn.failed" || type == "error" { throw Failure.request }
+                if let item = event["item"] as? [String: Any], item["type"] as? String == "agent_message",
+                   let text = item["text"] as? String, !text.isEmpty, text != latest {
+                    latest = text; changed = true
+                } else if type.contains("agent_message"), let delta = event["delta"] as? String, !delta.isEmpty {
+                    latest += delta; changed = true
+                }
+            }
+            return changed ? latest : nil
+        }
+    }
     static func run(runner: TranslationProcess, path: String, model: String, text: String, source: String, target: String,
-                    effort: String = "", speed: String = "") throws -> String {
+                    effort: String = "", speed: String = "", onPartial: @escaping (String) -> Void = { _ in }) throws -> String {
         let binary = try executable(path: path)
-        let capabilities = effort.isEmpty && speed.isEmpty ? nil : try models(path: path, runner: runner).first { $0.id == model }
+        let capabilities: Model?
+        if effort.isEmpty && speed.isEmpty { capabilities = nil }
+        else {
+            let catalog: [Model]
+            if let cached = storedModels(path: path) { catalog = cached }
+            else { catalog = try models(path: path, runner: runner); store(catalog, path: path) }
+            capabilities = catalog.first { $0.id == model }
+        }
         let args = try arguments(model: model, effort: effort, speed: speed, capabilities: capabilities)
         let input = try input(text: text, source: source, target: target)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("VorssaintTranslation-" + UUID().uuidString)
@@ -136,8 +191,11 @@ enum CodexTranslation {
         let environment = ["HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                            "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8", "TMPDIR": directory.path]
         do {
+            let parser = StreamParser()
             let data = try runner.run(executable: binary, arguments: args, input: input, timeout: 120,
-                                      limit: 2_000_000, environment: environment, directory: directory)
+                                      limit: 2_000_000, environment: environment, directory: directory) { chunk in
+                if let partial = try? parser.append(chunk) { onPartial(partial) }
+            }
             return try parse(data)
         } catch TranslationFailure.timeout { throw Failure.timeout }
         catch let error as Failure { throw error }

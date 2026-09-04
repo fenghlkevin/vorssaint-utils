@@ -42,26 +42,7 @@ final class ScreenshotService: ObservableObject {
     }
 
     private var hideVorssaintWindows: Bool {
-        let configured = UserDefaults.standard.bool(forKey: DefaultsKey.screenshotHideVorssaintWindows)
-        guard configured else { return false }
-
-        // Settings is a normal, user-visible document window.  When the
-        // screenshot shortcut is invoked from Settings, hiding every window
-        // owned by this process makes the very window the user is trying to
-        // capture disappear from the frozen frame.  Keep it in the capture;
-        // transient screenshot HUD/editor windows remain excluded through
-        // `protectedWindowIDs` when the capture policy is evaluated.
-        let settingsIsVisible = NSApp.windows.contains {
-            guard $0.isVisible, !$0.isMiniaturized else { return false }
-            // The title is localized, so do not rely on one exact string.
-            // Screenshot panels have no title; the Settings window is the
-            // only titled, user-facing window owned by the app at this point.
-            let title = $0.title.lowercased()
-            return !title.isEmpty &&
-                (title.contains("设置") || title.contains("settings") ||
-                 title == L10n.shared.s.settingsTitle.lowercased())
-        }
-        return !settingsIsVisible
+        UserDefaults.standard.bool(forKey: DefaultsKey.screenshotHideVorssaintWindows)
     }
 
     private var protectedWindowIDs: Set<CGWindowID> {
@@ -388,13 +369,13 @@ final class ScreenshotService: ObservableObject {
             QuickToolHUD.dismissScrollingCapture()
             switch result {
             case .success(let capture):
-                self.route(capture)
+                self.route(self.clipboardDelivery(capture))
             case .partial(let capture):
-                self.route(capture)
+                self.route(self.clipboardDelivery(capture))
                 QuickToolHUD.show(icon: "rectangle.stack",
                                   message: self.strings.scrollingCapturePartialHUD)
             case .limited(let capture):
-                self.route(capture)
+                self.route(self.clipboardDelivery(capture))
                 QuickToolHUD.show(icon: "rectangle.stack",
                                   message: self.strings.scrollingCaptureTooLongHUD)
             case .cancelled:
@@ -403,6 +384,21 @@ final class ScreenshotService: ObservableObject {
                 QuickToolHUD.show(icon: "camera.viewfinder", message: self.strings.captureFailed)
             }
         }
+    }
+
+    /// The checkmark is the scrolling capture's completion-and-copy action.
+    /// Stitching produces a standard capture, so normalize its delivery before
+    /// routing it through the same clipboard path used by ordinary screenshots.
+    private func clipboardDelivery(
+        _ capture: ScreenshotSelectionController.Capture
+    ) -> ScreenshotSelectionController.Capture {
+        var delivered = ScreenshotSelectionController.Capture(
+            image: capture.image,
+            scale: capture.scale,
+            anchorRect: capture.anchorRect,
+            delivery: .copy)
+        delivered.trace = capture.trace
+        return delivered
     }
 
     // MARK: - Routing

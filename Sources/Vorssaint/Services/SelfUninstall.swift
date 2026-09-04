@@ -26,7 +26,7 @@ enum SelfUninstall {
         DispatchQueue.main.async {
             suspendInputInterceptors()
             DispatchQueue.global(qos: .userInitiated).async {
-                detachFromSystem()
+                guard detachFromSystem() else { DispatchQueue.main.async(execute: completion); return }
                 removeSudoersRuleIfPresent {           // may show one admin prompt
                     resetTCC()
                     DispatchQueue.main.async(execute: completion)
@@ -41,7 +41,7 @@ enum SelfUninstall {
         DispatchQueue.main.async {
             suspendInputInterceptors()
             DispatchQueue.global(qos: .userInitiated).async {
-                detachFromSystem()
+                guard detachFromSystem() else { return }
                 removeSudoersRuleIfPresent {
                     resetTCC()
                     removePreferences()
@@ -61,6 +61,7 @@ enum SelfUninstall {
     /// `suspend`/`deactivate` is idempotent, so calling it when a service is
     /// already off is a no-op.
     private static func suspendInputInterceptors() {
+        BatteryManagementService.shared.prepareForTermination()
         // Deactivating Cleaning Mode re-syncs the services it paused back to
         // their preferences, so it has to happen before the suspends below,
         // or it would re-arm the very taps this teardown just stopped.
@@ -99,8 +100,18 @@ enum SelfUninstall {
         MicMuteService.shared.suspend()
     }
 
-    private static func detachFromSystem() {
-        FanControlService.restoreAndUnregisterForRemoval()
+    private static func detachFromSystem() -> Bool {
+        let batteryDetached = BatteryManagementService.restoreAndUnregisterForRemoval()
+        let fanDetached = FanControlService.restoreAndUnregisterForRemoval()
+        guard batteryDetached && fanDetached else {
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = "无法安全移除硬件控制后台"
+                alert.informativeText = "尚未确认电池或风扇恢复自动控制，已中止清理。请恢复自动控制后重试，勿直接删除应用。"
+                alert.runModal()
+            }
+            return false
+        }
         // Restore normal sleep if a closed-lid session left it disabled.
         if UserDefaults.standard.bool(forKey: DefaultsKey.sleepDisabledFlag) {
             _ = Sudoers.pmsetDisableSleep(false)
@@ -110,6 +121,7 @@ enum SelfUninstall {
         // the item again after the user asked for a clean detach.
         UserDefaults.standard.set(false, forKey: DefaultsKey.launchAtLoginWanted)
         try? SMAppService.mainApp.unregister()
+        return true
     }
 
     private static func removeSudoersRuleIfPresent(then: @escaping () -> Void) {

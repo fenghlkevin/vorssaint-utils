@@ -2,25 +2,70 @@
 // Copyright (C) 2026 Vorssaint
 
 import Foundation
+import Security
 
 enum TranslationProviderSelection {
     static let key = "translation.provider"
     static let providers = ["system", "ai", "codex"]
 
-    static func restored(from defaults: UserDefaults) -> String {
-        let saved = defaults.string(forKey: key) ?? "system"
-        return providers.contains(saved) ? saved : "system"
+    static func ai(_ id: String) -> String { "ai:" + id }
+    static func aiID(_ provider: String) -> String? {
+        provider.hasPrefix("ai:") ? String(provider.dropFirst(3)) : nil
     }
 
-    static func next(after current: String, backwards: Bool) -> String {
-        let index = providers.firstIndex(of: current) ?? 0
-        return providers[(index + (backwards ? providers.count - 1 : 1)) % providers.count]
+    static func available(aiIDs: [String]) -> [String] {
+        ["system"] + aiIDs.map(ai) + ["codex"]
+    }
+
+    static func restored(from defaults: UserDefaults, aiIDs: [String] = []) -> String {
+        let saved = defaults.string(forKey: key) ?? "system"
+        if saved == "ai", let first = aiIDs.first { return ai(first) }
+        return available(aiIDs: aiIDs).contains(saved) ? saved : "system"
+    }
+
+    static func next(after current: String, backwards: Bool, aiIDs: [String] = []) -> String {
+        let choices = available(aiIDs: aiIDs)
+        let index = choices.firstIndex(of: current) ?? 0
+        return choices[(index + (backwards ? choices.count - 1 : 1)) % choices.count]
     }
 }
 
 enum TranslationFailure: String, Error, LocalizedError {
     case invalidPackage, unsupportedAPI, invalidResult, unsupportedLanguage, timeout, networkDenied, network, storage, emptyInput
     var errorDescription: String? { "Translation: \(rawValue)" }
+}
+
+enum TranslationCredentials {
+    struct Configuration: Codable { var options: [String: String] = [:]; var hosts: [String] = [] }
+    static func load(_ id: String) throws -> Configuration {
+        var query = base(id)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var value: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &value)
+        if status == errSecItemNotFound { return Configuration() }
+        guard status == errSecSuccess, let data = value as? Data else { throw TranslationFailure.storage }
+        return try JSONDecoder().decode(Configuration.self, from: data)
+    }
+    static func save(_ config: Configuration, id: String) throws {
+        let data = try JSONEncoder().encode(config)
+        let status = SecItemUpdate(base(id) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var query = base(id)
+            query[kSecValueData as String] = data
+            query[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            guard SecItemAdd(query as CFDictionary, nil) == errSecSuccess else { throw TranslationFailure.storage }
+        } else if status != errSecSuccess { throw TranslationFailure.storage }
+    }
+    static func remove(_ id: String) throws {
+        let status = SecItemDelete(base(id) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw TranslationFailure.storage }
+    }
+    private static func base(_ id: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: (Bundle.main.bundleIdentifier ?? "Vorssaint") + ".translation",
+         kSecAttrAccount as String: id]
+    }
 }
 
 struct BobPluginManifest: Codable {
@@ -153,7 +198,8 @@ final class TranslationProcess: @unchecked Sendable {
         if let process, process.isRunning { kill(process.processIdentifier, SIGKILL) }
     }
     func run(executable: URL, arguments: [String], input: Data?, timeout: TimeInterval, limit: Int,
-             environment: [String: String]? = nil, directory: URL? = nil) throws -> Data {
+             environment: [String: String]? = nil, directory: URL? = nil,
+             onOutput: ((Data) -> Void)? = nil) throws -> Data {
         let child = Process(), output = Pipe(), stdin = Pipe()
         child.executableURL = executable
         child.arguments = arguments
@@ -186,6 +232,7 @@ final class TranslationProcess: @unchecked Sendable {
         while let chunk = try output.fileHandleForReading.read(upToCount: 16_384), !chunk.isEmpty {
             guard data.count + chunk.count <= limit else { throw TranslationFailure.invalidResult }
             data.append(chunk)
+            onOutput?(chunk)
         }
         child.waitUntilExit()
         lock.lock(); let stopped = cancelled; lock.unlock()

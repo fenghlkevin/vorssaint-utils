@@ -44,6 +44,7 @@ struct ScreenshotCaptureSettings: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            Toggle(strings.hideVorssaintWindowsToggle, isOn: $hideVorssaintWindows)
             Toggle("截图诊断日志", isOn: $diagnosticsEnabled)
             Text("记录滚动原始帧、合并预览、完成截图及编辑交接。包含实际屏幕内容，仅保存在本机，不上传；单次会话图片上限 2 GiB，可能影响截图速度。关闭后停止新增记录，已有日志保留。")
                 .font(.caption).foregroundStyle(.secondary)

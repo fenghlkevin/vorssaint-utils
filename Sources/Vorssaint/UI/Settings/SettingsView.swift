@@ -353,6 +353,7 @@ struct SettingsView: View {
         case .energy: EnergySettings()
         case .monitor: MonitorSettings()
         case .mouse: MouseSettings()
+        case .dynamicIsland: DynamicIslandSettings()
         case .switcher: SwitcherSettings()
         case .keyDebounce: KeyboardDebounceSettings()
         case .superKey: SuperKeySettings()
@@ -657,6 +658,12 @@ struct EnergySettings: View {
     @ObservedObject private var permissions = Permissions.shared
     @ObservedObject private var extraBrightness = ExtraBrightnessService.shared
     @ObservedObject private var brightness = BrightnessService.shared
+    @ObservedObject private var batteryManagement = BatteryManagementService.shared
+    @AppStorage(DefaultsKey.batteryManagementMenuBarIcon) private var batteryMenuBarIcon = true
+    @AppStorage(DefaultsKey.batteryManagementResumeMargin) private var batteryResumeMargin = 5
+    @AppStorage(DefaultsKey.batteryManagementSleepPolicy) private var batterySleepPolicy = "limit"
+    @AppStorage(DefaultsKey.batteryManagementTemperatureProtection) private var batteryTemperatureProtection = true
+    @AppStorage(DefaultsKey.batteryManagementTemperatureLimit) private var batteryTemperatureLimit = 40
     @AppStorage(DefaultsKey.brightnessControlEnabled) private var brightnessEnabled = false
     @AppStorage(DefaultsKey.brightnessKeysEnabled) private var brightnessKeysEnabled = false
     @AppStorage(DefaultsKey.brightnessOSDEnabled) private var brightnessOSDEnabled = false
@@ -677,6 +684,9 @@ struct EnergySettings: View {
 
     var body: some View {
         Form {
+            batteryManagementSection
+            BatteryAdvancedSettings()
+            BatteryPresentationSettings()
             if AppFeature.keepAwake.isAvailable {
                 Section(l10n.s.sessionSection) {
                     Picker(l10n.s.defaultDurationLabel, selection: $defaultDuration) {
@@ -855,6 +865,70 @@ struct EnergySettings: View {
             // re-check so the section never shows a stale availability.
             ExtraBrightnessService.shared.syncWithPreferences()
             BrightnessService.shared.refresh()
+        }
+    }
+
+    private var batteryManagementSection: some View {
+        Section("电池管理") {
+            Toggle("启用独立电池管理", isOn: $batteryManagement.isEnabled)
+            Text(batteryManagement.accessText).font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("授权电池后台…") { batteryManagement.authorize() }
+                Button("重新连接 / 重试") { batteryManagement.retry() }
+                    .disabled(batteryManagement.performingUserAction)
+                Button("更新电池后台…") { batteryManagement.replaceBackend() }
+                    .disabled(batteryManagement.performingUserAction)
+            }
+            BatteryTakeoverButton()
+            Toggle("在菜单栏显示电池图标", isOn: $batteryMenuBarIcon)
+            Button("打开电池信息面板") {
+                NotificationCenter.default.post(name: Notification.Name("VorssaintShowBatteryPanel"), object: nil)
+            }
+            Text("此功能独立于 Keep Awake 和现有电源功能，用于控制充电上限。")
+                .font(.caption).foregroundStyle(.secondary)
+            if batteryManagement.snapshot == nil {
+                Text("当前设备未检测到内置电池。")
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack {
+                    Text("充电上限")
+                    Slider(value: Binding(get: { Double(batteryManagement.chargeLimit) },
+                                          set: { batteryManagement.chargeLimit = Int($0.rounded()) }),
+                           in: 50...100, step: 5)
+                    Text("\(batteryManagement.chargeLimit)%")
+                        .monospacedDigit().frame(width: 48, alignment: .trailing)
+                }
+                Picker("恢复充电阈值", selection: $batteryResumeMargin) {
+                    Text("低于上限 3% 时").tag(3)
+                    Text("低于上限 5% 时").tag(5)
+                    Text("低于上限 10% 时").tag(10)
+                }
+                Picker("睡眠期间策略", selection: $batterySleepPolicy) {
+                    Text("睡眠时停止充电，唤醒后恢复上限").tag("limit")
+                    Text("恢复自动充电").tag("automatic")
+                }
+                Toggle("高温时暂停充电", isOn: $batteryTemperatureProtection)
+                if batteryTemperatureProtection {
+                    Picker("温度上限", selection: $batteryTemperatureLimit) {
+                        Text("38°C").tag(38); Text("40°C").tag(40); Text("42°C").tag(42)
+                    }
+                }
+                Text("温度降至上限以下 3°C 后恢复；温度读取失败时暂停充电。高温保护优先于临时充满和睡眠自动充电。")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("当前状态")
+                    Spacer()
+                    Text(batteryManagement.statusText)
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("充到 100%") { batteryManagement.forceCharge() }
+                    Button("停止充电") { batteryManagement.inhibitCharging() }
+                    Button("恢复自动充电") { batteryManagement.restoreAutomatic() }
+                }
+                .disabled(!batteryManagement.backendReady || batteryManagement.performingUserAction)
+                if let warning = batteryManagement.warning { Text(warning).font(.caption).foregroundStyle(.orange) }
+            }
         }
     }
 

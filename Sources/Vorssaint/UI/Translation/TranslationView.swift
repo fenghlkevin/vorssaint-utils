@@ -63,11 +63,8 @@ struct TranslationSettings: View {
           Section {
             Button(TranslationStrings.current.settingsLabels.open) { model.show() }
             Text(TranslationStrings.current[.caption]).font(.caption).foregroundStyle(.secondary)
-            Picker(TranslationStrings.current.settingsLabels.service, selection: $model.provider) {
-                Text(TranslationStrings.current[.system]).tag("system")
-                Text("AI · API").tag("ai")
-                Text("Codex · CLI").tag("codex")
-            }
+            TranslationProviderPicker(title: TranslationStrings.current.settingsLabels.service,
+                                      selection: $model.provider)
             TranslationLanguagePicker(title: TranslationStrings.current[.source], selection: $model.source, automatic: true)
             TranslationLanguagePicker(title: TranslationStrings.current[.target], selection: $model.target, automatic: false)
           } header: { Text(TranslationStrings.current.settingsLabels.service) }
@@ -129,11 +126,8 @@ struct TranslationView: View {
                     Text(strings[.caption]).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 16)
-                Picker(strings.settingsLabels.service, selection: $model.provider) {
-                    Text(strings[.system]).tag("system")
-                    Text("AI · API").tag("ai")
-                    Text("Codex · CLI").tag("codex")
-                }.labelsHidden().frame(maxWidth: 240).help(strings.settingsLabels.service + " · ⇧ ↑ / ⇧ ↓")
+                TranslationProviderPicker(title: strings.settingsLabels.service, selection: $model.provider)
+                    .labelsHidden().frame(maxWidth: 240).help(strings.settingsLabels.service + " · ⇧ ↑ / ⇧ ↓")
             }
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 0) {
@@ -202,9 +196,11 @@ struct TranslationView: View {
             HStack {
                 Image(systemName: model.provider == "system" ? "lock.shield" : "network")
                     .foregroundStyle(.secondary)
-                Text(model.provider == "codex" ? "Codex · CLI" : model.provider == "ai" ? "AI · API" : strings[.system])
+                Text(model.providerDisplayName)
                     .font(.caption).foregroundStyle(.secondary)
-                Image(systemName: "info.circle").foregroundStyle(.secondary).help(model.provider == "codex" ? strings.codexNotice : model.provider == "ai" ? strings.aiNotice : strings.localNotice)
+                if model.busy { Text(strings.progress(model.stage)).font(.caption).foregroundStyle(.secondary) }
+                else if let elapsed = model.elapsed { Text(String(format: "%.1fs", elapsed)).font(.caption.monospacedDigit()).foregroundStyle(.tertiary) }
+                Image(systemName: "info.circle").foregroundStyle(.secondary).help(model.provider == "codex" ? strings.codexNotice : model.isAIProvider ? strings.aiNotice : strings.localNotice)
                 Spacer()
                 if model.busy {
                     Button(l10n.s.mediaCancel) { model.cancel() }.controlSize(.large)
@@ -225,6 +221,21 @@ struct TranslationView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { editing = true }
         .onExitCommand { model.cancel(); TranslationWindowController.shared.hide() }
+    }
+}
+
+private struct TranslationProviderPicker: View {
+    let title: String
+    @Binding var selection: String
+    @ObservedObject private var service = TranslationService.shared
+    var body: some View {
+        Picker(title, selection: $selection) {
+            Text(TranslationStrings.current[.system]).tag("system")
+            ForEach(service.aiProfileOptions) { profile in
+                Text(profile.name).tag(TranslationProviderSelection.ai(profile.id))
+            }
+            Text("Codex · CLI").tag("codex")
+        }
     }
 }
 

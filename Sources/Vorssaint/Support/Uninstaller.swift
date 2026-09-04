@@ -17,6 +17,8 @@ enum Uninstaller {
         // main app as a login item never reaches it. Without this its root
         // registration outlives the bundle that carried its executable.
         let detached = FanControlService.restoreAndUnregisterForRemoval()
+        let batteryDetached = BatteryManagementService.restoreAndUnregisterForRemoval()
+        print(batteryDetached ? "UNINSTALL: battery helper daemon unregistered" : "UNINSTALL: battery recovery not confirmed; daemon retained")
         print(detached
               ? "UNINSTALL: fan helper daemon unregistered"
               : "UNINSTALL: fan helper daemon still registered")
@@ -32,6 +34,6 @@ enum Uninstaller {
         // Only the daemon decides the status. A login item that was never
         // registered is not a failure; a daemon left behind is the one thing
         // the caller cannot see for itself.
-        exit(detached ? EXIT_SUCCESS : EXIT_FAILURE)
+        exit(detached && batteryDetached ? EXIT_SUCCESS : EXIT_FAILURE)
     }
 }
