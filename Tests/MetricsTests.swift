@@ -65,6 +65,8 @@ struct MetricsTests {
                "menu bar divider rejects an unsupported automatic collapse delay")
         expect(MenuBarIconCollapserSupport.allowedDelays == [0, 5, 10, 15, 30, 60],
                "menu bar divider exposes the documented automatic collapse choices")
+        expect(Defaults.registeredDefaults[DefaultsKey.menuBarIconsCollapsed] as? Bool == true,
+               "managed menu bar icons start collapsed")
 
         // MARK: Byte / rate formatting
 

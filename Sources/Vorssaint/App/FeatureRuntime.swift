@@ -153,6 +153,7 @@ final class FeatureRuntime: ObservableObject {
     /// permission it depends on) changes. Most on-demand tools have no binding;
     /// Media only binds so uninstalling it can cancel work already in flight.
     private static let bindings: [AppFeature: () -> Void] = [
+        .dynamicIsland: { DynamicIslandService.shared.syncWithPreferences() },
         .switcher: {
             WindowUseTracker.shared.syncWithFeatures()
             AppSwitcher.shared.syncWithPreferences()

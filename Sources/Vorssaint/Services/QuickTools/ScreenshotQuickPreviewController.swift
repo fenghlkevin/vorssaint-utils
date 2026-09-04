@@ -14,6 +14,7 @@ final class ScreenshotQuickPreviewModel: ObservableObject {
     @Published var sharing = false
     @Published var sharedRecord: ScreenshotShareRecord?
     @Published var deletingShare = false
+    @Published var isCompact = false
 }
 
 /// A transient in-memory capture preview. It stays outside Command Tab and
@@ -41,7 +42,8 @@ final class ScreenshotQuickPreviewController {
     private var panel: ScreenshotQuickPreviewPanel?
     private var keyMonitor: Any?
     private var dismissWork: DispatchWorkItem?
-    private var autoDismissDuration: TimeInterval = 12
+    private var autoDismissDuration: TimeInterval = 5
+    private let compactDelay: TimeInterval = 3
     private var closed = false
 
     var protectedWindowIDs: Set<CGWindowID> {
@@ -82,10 +84,12 @@ final class ScreenshotQuickPreviewController {
             copySharedLink: { [weak self] in self?.copySharedLink() },
             deleteSharedLink: { [weak self] in self?.deleteSharedLink() },
             showQR: { [weak self] in self?.showQRResult() },
+            restore: { [weak self] in self?.restoreFromCompact() },
             hoverChanged: { [weak self] inside in
                 if inside {
-                    self?.dismissWork?.cancel()
-                    self?.dismissWork = nil
+                    if self?.model.isCompact == true {
+                        self?.restoreFromCompact()
+                    }
                 } else {
                     self?.scheduleAutoDismiss()
                 }
@@ -113,10 +117,10 @@ final class ScreenshotQuickPreviewController {
         installKeyMonitor(for: panel)
         panel.orderFrontRegardless()
         panel.makeKey()
-        // A performed action turns the preview into a short confirmation; a
-        // failed one keeps the full stay so the person can still act by hand.
-        autoDismissDuration = runDefaultAction(defaultAction) ? 3 : 12
-        scheduleAutoDismiss()
+        _ = runDefaultAction(defaultAction)
+        autoDismissDuration = TimeInterval(max(1, UserDefaults.standard.integer(
+            forKey: DefaultsKey.screenshotPreviewDismissDelay)))
+        scheduleCompactTransition()
         scanForQR()
     }
 
@@ -313,6 +317,42 @@ final class ScreenshotQuickPreviewController {
                         animate: true)
     }
 
+    private func scheduleCompactTransition() {
+        dismissWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.enterCompactMode() }
+        dismissWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + compactDelay, execute: work)
+    }
+
+    private func enterCompactMode() {
+        guard !closed, !model.isCompact, model.sharedRecord == nil else {
+            scheduleAutoDismiss()
+            return
+        }
+        model.isCompact = true
+        dismissWork = nil
+        panel?.setFrame(compactFrame(), display: true, animate: true)
+        scheduleAutoDismiss()
+    }
+
+    private func restoreFromCompact() {
+        guard !closed, model.isCompact else { return }
+        dismissWork?.cancel()
+        dismissWork = nil
+        model.isCompact = false
+        resizePanel(showingLink: model.sharedRecord != nil)
+        scheduleAutoDismiss()
+    }
+
+    private func compactFrame() -> CGRect {
+        let visible = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })?.visibleFrame
+            ?? NSScreen.main?.visibleFrame ?? NSScreen.screens[0].visibleFrame
+        let size = CGSize(width: 156, height: 38)
+        return CGRect(x: visible.maxX - size.width - 18,
+                      y: visible.maxY - size.height - 18,
+                      width: size.width, height: size.height)
+    }
+
     private func scheduleAutoDismiss() {
         guard !closed else { return }
         dismissWork?.cancel()
@@ -377,10 +417,21 @@ private struct ScreenshotQuickPreviewView: View {
     let copySharedLink: () -> Void
     let deleteSharedLink: () -> Void
     let showQR: () -> Void
+    let restore: () -> Void
     let hoverChanged: (Bool) -> Void
     @AppStorage(DefaultsKey.screenshotSharingEnabled) private var sharingEnabled = true
 
     var body: some View {
+        Group {
+            if model.isCompact {
+                Button(action: restore) {
+                    Label("截图已完成", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.primary)
+                }
+                .buttonStyle(.plain)
+                .frame(width: 156, height: 38)
+            } else {
         VStack(spacing: 10) {
             Button {
                 perform(.edit)
@@ -451,9 +502,11 @@ private struct ScreenshotQuickPreviewView: View {
                 .accessibilityLabel(strings.editButton)
             }
         }
+        }
+        }
         .padding(10)
-        .frame(width: ScreenshotQuickPreviewController.size(showingLink: false).width,
-               height: ScreenshotQuickPreviewController.size(
+        .frame(width: model.isCompact ? 156 : ScreenshotQuickPreviewController.size(showingLink: false).width,
+               height: model.isCompact ? 38 : ScreenshotQuickPreviewController.size(
                    showingLink: model.sharedRecord != nil).height)
         .background(.regularMaterial,
                     in: RoundedRectangle(cornerRadius: 16, style: .continuous))

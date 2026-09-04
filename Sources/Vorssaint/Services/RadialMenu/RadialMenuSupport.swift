@@ -464,6 +464,9 @@ struct RadialNowPlayingSnapshot: Equatable {
     let artworkData: Data?
     let appBundleIdentifier: String?
     let appPID: Int32?
+    var isPlaying: Bool = true
+    var elapsedTime: Double? = nil
+    var duration: Double? = nil
 
     var radialLabel: String? {
         let parts = [title, artist].compactMap { $0 }
@@ -496,7 +499,6 @@ enum RadialNowPlayingSupport {
                          isPlaying: Bool,
                          appBundleIdentifier: String?,
                          appPID: Int32) -> RadialNowPlayingSnapshot? {
-        guard isPlaying else { return nil }
         let title = sanitizedText(info[titleKey])
         let artist = sanitizedText(info[artistKey])
         let album = sanitizedText(info[albumKey])
@@ -509,7 +511,8 @@ enum RadialNowPlayingSupport {
                                         album: album,
                                         artworkData: artworkData,
                                         appBundleIdentifier: bundleIdentifier,
-                                        appPID: pid)
+                                        appPID: pid,
+                                        isPlaying: isPlaying)
     }
 
     private static func sanitizedText(_ value: Any?) -> String? {

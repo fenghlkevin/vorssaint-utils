@@ -3,6 +3,25 @@
 
 import AppKit
 
+if CommandLine.arguments.contains("--vorssaint-codex-hook") {
+    CodexHookBridge.runAndExit()
+}
+
+if CommandLine.arguments.contains("--export-codex-sounds") {
+    let directory = URL(fileURLWithPath: "/private/tmp/vorssaint-codex-sounds", isDirectory: true)
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let sounds: [(String, CodexIslandService.SoundKind)] = [
+        ("01-session-start.wav", .started),
+        ("02-task-complete.wav", .completed),
+        ("03-task-error.wav", .failed),
+        ("04-approval-needed.wav", .waiting)
+    ]
+    for (name, kind) in sounds {
+        try? CodexIslandService.soundData(kind).write(to: directory.appendingPathComponent(name), options: .atomic)
+    }
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--reset-battery-registration") {
     BatteryRegistrationRepair.runAndExit()
 }

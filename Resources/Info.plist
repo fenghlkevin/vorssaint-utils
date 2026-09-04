@@ -58,6 +58,8 @@
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Vorssaint uses Automation to show Apple Music playback in Dynamic Island, move files in Finder, send items to the Trash and open Terminal commands when you ask for Homebrew actions.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Vorssaint reads upcoming calendar events to show time reminders in Dynamic Island.</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Vorssaint taps individual app audio only to adjust each app's volume in the mixer. Nothing is recorded or leaves your Mac.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>

@@ -584,6 +584,14 @@ cp Resources/com.vorssaint.utils.fan-control.plist \
     "$STAGE/Contents/Library/LaunchDaemons/$FAN_HELPER_ID.plist"
 cp Resources/Info.plist "$STAGE/Contents/Info.plist"
 cp CHANGELOG.md "$STAGE/Contents/Resources/CHANGELOG.md"
+# Departure Mono is explicitly supplied by the local developer for the Codex
+# island. Bundle it when present so the installed app does not depend on Vibe
+# Island remaining installed at runtime.
+DEPARTURE_FONT="/Applications/Vibe Island.app/Contents/Resources/Fonts/DepartureMono-Regular.otf"
+if [[ -f "$DEPARTURE_FONT" ]]; then
+    mkdir -p "$STAGE/Contents/Resources/Fonts"
+    cp "$DEPARTURE_FONT" "$STAGE/Contents/Resources/Fonts/DepartureMono-Regular.otf"
+fi
 for lproj in Resources/*.lproj(N); do
     cp -R "$lproj" "$STAGE/Contents/Resources/"
 done

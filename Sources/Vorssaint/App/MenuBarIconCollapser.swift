@@ -23,8 +23,12 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
     private var autoCollapseTimer: Timer?
 
     private override init() {
-        isEnabled = UserDefaults.standard.bool(forKey: DefaultsKey.menuBarIconCollapserEnabled)
-        isCollapsed = UserDefaults.standard.bool(forKey: DefaultsKey.menuBarIconsCollapsed)
+        let enabled = UserDefaults.standard.bool(forKey: DefaultsKey.menuBarIconCollapserEnabled)
+        isEnabled = enabled
+        // Start hidden on every app launch. Expansion is a temporary viewing
+        // action; carrying it across launches briefly exposes every managed
+        // icon before the user asks to see them again.
+        isCollapsed = enabled
         autoCollapseDelay = MenuBarIconCollapserSupport.sanitizedDelay(
             UserDefaults.standard.integer(forKey: DefaultsKey.menuBarIconCollapserDelay))
         super.init()

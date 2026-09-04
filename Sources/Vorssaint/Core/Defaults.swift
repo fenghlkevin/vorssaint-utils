@@ -9,6 +9,7 @@ import Foundation
 enum DefaultsKey {
     static let dynamicIslandEnabled = "dynamicIslandEnabled"
     static let dynamicIslandDisplay = "dynamicIslandDisplay"
+    static let dynamicIslandCodexEnabled = "dynamicIslandCodexEnabled"
     static let language = "appLanguage"                   // AppLanguage.rawValue
     static let appearance = "appAppearance"               // AppAppearance.rawValue
     static let liquidGlassEnabled = "liquidGlassEnabled"  // Liquid Glass visual styling on macOS 26+
@@ -579,6 +580,7 @@ enum DefaultsKey {
     static let screenshotOpenEditorDirectly = "screenshotOpenEditorDirectly"
     static let screenshotCopyToClipboard = "screenshotCopyToClipboard"
     static let screenshotPreviewPosition = "screenshotPreviewPosition"
+    static let screenshotPreviewDismissDelay = "screenshotPreviewDismissDelay"
     static let screenshotSharingEnabled = "screenshotSharingEnabled"
     // Developer-only endpoint for an isolated test tunnel. The official app
     // ignores it, and settings backups must never carry it to another Mac.
@@ -855,7 +857,7 @@ enum Defaults {
         DefaultsKey.keepAwakeActiveIcon: KeepAwakeActiveIcon.vorssaint.rawValue,
         DefaultsKey.showCountdown: false,
         DefaultsKey.menuBarIconCollapserEnabled: false,
-        DefaultsKey.menuBarIconsCollapsed: false,
+        DefaultsKey.menuBarIconsCollapsed: true,
         DefaultsKey.menuBarIconCollapserDelay: 0,
         DefaultsKey.awayLockEnabled: false,
         DefaultsKey.awayLockPeripheralID: "",
@@ -1337,6 +1339,7 @@ enum Defaults {
         DefaultsKey.screenshotOpenEditorDirectly: false,
         DefaultsKey.screenshotCopyToClipboard: false,
         DefaultsKey.screenshotPreviewPosition: ScreenshotSupport.QuickPreviewPosition.automatic.rawValue,
+        DefaultsKey.screenshotPreviewDismissDelay: 5,
         DefaultsKey.screenshotSharingEnabled: true,
         DefaultsKey.panelUtilityScreenshot: true,
         DefaultsKey.windowLayoutShortcutsEnabled: false,
