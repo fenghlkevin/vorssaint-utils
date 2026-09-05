@@ -2,6 +2,17 @@ import AppKit
 import EventKit
 import SwiftUI
 
+struct IslandCalendarEvent: Identifiable, Equatable {
+    enum MeetingProvider: Equatable { case tencent, dingtalk }
+    let id: String
+    let title: String
+    let start: Date
+    let end: Date
+    let location: String?
+    let url: URL?
+    let provider: MeetingProvider?
+}
+
 enum IslandTimePresentation: Equatable {
     case countdown(title: String, remaining: Int, total: Int, paused: Bool)
     case focus(remaining: Int, total: Int)
@@ -25,6 +36,7 @@ final class TimeReminderService: ObservableObject {
     @Published var completionSoundName: String { didSet { UserDefaults.standard.set(completionSoundName, forKey: "dynamicIsland.completionSoundName") } }
     @Published var completionSoundVolume: Double { didSet { UserDefaults.standard.set(completionSoundVolume, forKey: "dynamicIsland.completionSoundVolume") } }
     @Published private(set) var completionRemainingSeconds = 0
+    @Published private(set) var todayEvents: [IslandCalendarEvent] = []
 
     private enum RunningKind { case countdown, focus }
     private let eventStore = EKEventStore()
@@ -91,7 +103,9 @@ final class TimeReminderService: ObservableObject {
             completionRemainingSeconds = max(0, Int(completionDeadline.timeIntervalSinceNow.rounded(.up)))
             if Date() >= completionDeadline { dismissCompletion() }
         }
-        if Date().timeIntervalSince(lastCalendarCheck) >= 30 { lastCalendarCheck = Date(); refreshPresentation() }
+        if Date().timeIntervalSince(lastCalendarCheck) >= 30 {
+            lastCalendarCheck = Date(); refreshTodayEvents(); refreshPresentation()
+        }
         else { refreshPresentation(includeCalendar: false) }
     }
 
@@ -141,17 +155,67 @@ final class TimeReminderService: ObservableObject {
     }
 
     private func requestCalendarAccess() {
-        Task { _ = try? await eventStore.requestFullAccessToEvents(); await MainActor.run { self.refreshPresentation() } }
+        Task { _ = try? await eventStore.requestFullAccessToEvents(); await MainActor.run { self.refreshTodayEvents(); self.refreshPresentation() } }
+    }
+
+    private func refreshTodayEvents() {
+        todayEvents = calendarEvents(on: Date())
+    }
+
+    func calendarEvents(on date: Date) -> [IslandCalendarEvent] {
+        guard calendarEnabled, EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return [] }
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: date)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400)
+        return eventStore.events(matching: eventStore.predicateForEvents(withStart: start, end: end, calendars: nil))
+            .filter { !$0.isAllDay }
+            .sorted { $0.startDate < $1.startDate }
+            .prefix(5)
+            .map { event in
+                let url = meetingURL(event)
+                return IslandCalendarEvent(id: event.eventIdentifier,
+                                           title: event.title ?? "未命名日程",
+                                           start: event.startDate,
+                                           end: event.endDate,
+                                           location: event.location,
+                                           url: url,
+                                           provider: Self.meetingProvider(for: url))
+            }
+    }
+
+    var nextJoinableMeeting: IslandCalendarEvent? {
+        todayEvents.first { $0.url != nil && $0.end > Date() }
+    }
+
+    func join(_ event: IslandCalendarEvent) {
+        if let url = event.url { NSWorkspace.shared.open(url) }
     }
     private func currentMeeting() -> EKEvent? {
         guard calendarEnabled, EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return nil }
         let now = Date(), end = now.addingTimeInterval(10 * 60)
         return eventStore.events(matching: eventStore.predicateForEvents(withStart: now, end: end, calendars: nil))
-            .filter { !$0.isAllDay }.sorted { $0.startDate < $1.startDate }.first
+            .filter { !$0.isAllDay && meetingURL($0) != nil }
+            .sorted { $0.startDate < $1.startDate }.first
     }
     private func meetingURL(_ event: EKEvent) -> URL? {
-        if let url = event.url { return url }
+        if let url = event.url, Self.isSupportedMeetingURL(url) { return url }
         let text = [event.notes, event.location].compactMap { $0 }.joined(separator: " ")
-        return text.split(whereSeparator: { $0.isWhitespace }).compactMap { URL(string: String($0)) }.first(where: { $0.scheme?.hasPrefix("http") == true })
+        return text.split(whereSeparator: { $0.isWhitespace })
+            .compactMap { URL(string: String($0).trimmingCharacters(in: .punctuationCharacters)) }
+            .first(where: Self.isSupportedMeetingURL)
+    }
+
+    static func isSupportedMeetingURL(_ url: URL) -> Bool {
+        let value = url.absoluteString.lowercased()
+        return value.contains("meeting.tencent.com") || value.contains("voovmeeting.com")
+            || value.contains("wemeet") || value.contains("dingtalk.com")
+            || value.contains("meeting.dingtalk") || value.hasPrefix("dingtalk://")
+    }
+
+    static func meetingProvider(for url: URL?) -> IslandCalendarEvent.MeetingProvider? {
+        guard let value = url?.absoluteString.lowercased() else { return nil }
+        if value.contains("tencent") || value.contains("voov") || value.contains("wemeet") { return .tencent }
+        if value.contains("dingtalk") { return .dingtalk }
+        return nil
     }
 }

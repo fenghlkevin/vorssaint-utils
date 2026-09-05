@@ -1,6 +1,7 @@
 import AppKit
 import CoreText
 import Foundation
+import SQLite3
 
 struct CodexIslandSession: Codable, Equatable, Identifiable {
     enum Status: String, Codable { case running, waiting, completed, failed }
@@ -20,6 +21,7 @@ private struct CodexHookEvent: Codable {
     let title: String
     let detail: String
     let timestamp: Date
+    let approvalID: String?
 }
 
 /// Receives small, local-only state envelopes written by the Codex hook
@@ -30,6 +32,7 @@ final class CodexIslandService: ObservableObject {
     @Published var enabled: Bool {
         didSet {
             UserDefaults.standard.set(enabled, forKey: DefaultsKey.dynamicIslandCodexEnabled)
+            refreshGeneration = UUID()
             syncHookInstallation()
         }
     }
@@ -52,9 +55,12 @@ final class CodexIslandService: ObservableObject {
     @Published var pathFilters: String { didSet { UserDefaults.standard.set(pathFilters, forKey: "dynamicIsland.codexPathFilters") } }
     @Published var promptFilters: String { didSet { UserDefaults.standard.set(promptFilters, forKey: "dynamicIsland.codexPromptFilters") } }
 
-    private var consumedFiles = Set<String>()
     private var firstRefresh = true
-    private var logTitles: [String: String] = [:]
+    private let monitoringStartedAt = Date()
+    private let refreshQueue = DispatchQueue(label: "Vorssaint.codexIsland.refresh", qos: .utility)
+    private let logReader = CodexIslandLogReader()
+    private var refreshInFlight = false
+    private var refreshGeneration = UUID()
 
     private init() {
         enabled = UserDefaults.standard.object(forKey: DefaultsKey.dynamicIslandCodexEnabled) as? Bool ?? true
@@ -87,6 +93,37 @@ final class CodexIslandService: ObservableObject {
         }.first
     }
 
+    var runningCount: Int { sessions.filter { $0.status == .running }.count }
+    var waitingCount: Int { sessions.filter { $0.status == .waiting }.count }
+
+    func respondToApproval(for session: CodexIslandSession, allow: Bool) {
+        let directory = CodexHookBridge.responseDirectory
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let response = directory.appendingPathComponent(session.id + ".response")
+        try? (allow ? "allow" : "deny").write(to: response, atomically: true, encoding: .utf8)
+    }
+
+    @discardableResult
+    func submit(_ prompt: String, to session: CodexIslandSession) -> Bool {
+        let clean = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return false }
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let candidates = [
+            home.appendingPathComponent(".npm-global/bin/codex").path,
+            "/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex"
+        ]
+        guard let executable = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            lastError = "找不到 Codex 命令行工具"
+            return false
+        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["exec", "resume", "--all", session.id, clean]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run(); return true } catch { lastError = error.localizedDescription; return false }
+    }
+
     func syncHookInstallation() {
         do {
             if enabled { try CodexHookInstaller.install() }
@@ -100,191 +137,62 @@ final class CodexIslandService: ObservableObject {
     }
 
     func refresh() {
-        guard enabled else { return }
-        let fm = FileManager.default
-        let directory = CodexHookBridge.inboxDirectory
-        let urls = (try? fm.contentsOfDirectory(at: directory,
-                                                     includingPropertiesForKeys: nil)
-            .filter({ $0.pathExtension == "json" })
-            .sorted(by: { $0.lastPathComponent < $1.lastPathComponent })) ?? []
-        var attention = false
-        for url in urls where !consumedFiles.contains(url.lastPathComponent) {
-            consumedFiles.insert(url.lastPathComponent)
-            guard let data = try? Data(contentsOf: url),
-                  let event = try? JSONDecoder.codexIsland.decode(CodexHookEvent.self, from: data) else {
-                try? fm.removeItem(at: url)
-                continue
-            }
-            attention = apply(event) || attention
-            try? fm.removeItem(at: url)
-        }
-        refreshSessionLogs()
-        sessions.removeAll { Date().timeIntervalSince($0.updatedAt) > 2 * 60 * 60 }
-        if attention, !firstRefresh {
-            let shouldExpand = sessions.first?.status != .completed || expandOnCompletion
-            if shouldExpand {
-                let duration: TimeInterval = sessions.first?.status == .completed ? 4 : 5
-                DynamicIslandService.shared.activateCodex(duration: duration)
-            }
-        }
-        firstRefresh = false
-    }
-
-    /// Codex Desktop can keep a hook list cached for an already-running task.
-    /// Its local JSONL session stream is therefore used as a read-only live
-    /// fallback; hooks remain authoritative for permission and stop events.
-    private func refreshSessionLogs() {
-        let calendar = Calendar.current
-        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")
-        var candidates: [(URL, Date)] = []
-        for offset in 0...1 {
-            guard let date = calendar.date(byAdding: .day, value: -offset, to: Date()) else { continue }
-            let parts = calendar.dateComponents([.year, .month, .day], from: date)
-            guard let year = parts.year, let month = parts.month, let day = parts.day else { continue }
-            let directory = root
-                .appendingPathComponent(String(format: "%04d", year))
-                .appendingPathComponent(String(format: "%02d", month))
-                .appendingPathComponent(String(format: "%02d", day))
-            guard let files = try? FileManager.default.contentsOfDirectory(at: directory,
-                                                                           includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
-            for url in files where url.pathExtension == "jsonl" {
-                guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey]),
-                      let modified = values.contentModificationDate,
-                      Date().timeIntervalSince(modified) < 2 * 60 * 60 else { continue }
-                candidates.append((url, modified))
-            }
-        }
-        for (url, modified) in candidates.sorted(by: { $0.1 > $1.1 }).prefix(8) {
-            guard let metadata = sessionMetadata(at: url), metadata.threadSource == "user" else { continue }
-            let id = metadata.id
-            if let existing = sessions.firstIndex(where: { $0.id == id }),
-               sessions[existing].status == .waiting,
-               Date().timeIntervalSince(sessions[existing].updatedAt) < 5 * 60 { continue }
-            let title = logTitles[url.path] ?? sessionTitle(at: url, fallback: metadata.project)
-            guard !isFiltered(cwd: metadata.cwd, prompt: title) else { continue }
-            logTitles[url.path] = title
-            let status = sessionStatus(at: url, modified: modified)
-            let detail = sessionDetail(at: url, status: status)
-            if let index = sessions.firstIndex(where: { $0.id == id }) {
-                let previousStatus = sessions[index].status
-                sessions[index].title = title
-                sessions[index].project = metadata.project
-                sessions[index].detail = detail
-                sessions[index].status = status
-                sessions[index].updatedAt = modified
-                if !firstRefresh, previousStatus == .running, status == .completed {
-                    play(.completed)
-                    if expandOnCompletion {
-                        DynamicIslandService.shared.activateCodex(duration: 4)
+        // Snapshot UI-owned state before entering the serial I/O queue. A slow
+        // directory scan must neither block scrolling nor enqueue more scans.
+        guard enabled, !refreshInFlight else { return }
+        refreshInFlight = true
+        let generation = refreshGeneration
+        let currentSessions = sessions
+        let startedAt = monitoringStartedAt
+        let filters = CodexIslandLogReader.Filters(builtIn: builtInFiltersEnabled,
+                                                  paths: pathFilters, prompts: promptFilters)
+        let reader = logReader
+        refreshQueue.async { [weak self] in
+            let events = reader.readEvents(since: startedAt)
+            let logs = reader.readSessions(previous: currentSessions, filters: filters, since: startedAt)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.refreshInFlight = false
+                guard self.enabled, self.refreshGeneration == generation else { return }
+                var attention = false
+                for event in events { attention = self.apply(event) || attention }
+                self.mergeSessionLogs(logs)
+                let retained = self.sessions.filter { Date().timeIntervalSince($0.updatedAt) <= 2 * 60 * 60 }
+                if self.sessions != retained { self.sessions = retained }
+                if attention, !self.firstRefresh {
+                    let completed = self.sessions.first?.status == .completed
+                    if !completed || self.expandOnCompletion {
+                        DynamicIslandService.shared.activateCodex(duration: completed ? 4 : 5)
                     }
                 }
+                self.firstRefresh = false
+            }
+        }
+    }
+
+    private func mergeSessionLogs(_ logs: [CodexIslandSession]) {
+        var updated = sessions
+        for log in logs {
+            if let index = updated.firstIndex(where: { $0.id == log.id }) {
+                let previous = updated[index]
+                // Hooks applied after the scan began retain their authority.
+                guard !(previous.status == .waiting && Date().timeIntervalSince(previous.updatedAt) < 5 * 60),
+                      previous.updatedAt <= log.updatedAt else { continue }
+                updated[index] = log
+                updated[index].startedAt = previous.startedAt
+                if !firstRefresh, previous.status == .running, log.status == .completed {
+                    play(.completed)
+                    if expandOnCompletion { DynamicIslandService.shared.activateCodex(duration: 4) }
+                } else if !firstRefresh, previous.status != .running, log.status == .running {
+                    play(.started)
+                }
             } else {
-                sessions.append(CodexIslandSession(id: id, project: metadata.project, title: title,
-                                                    detail: detail, status: status,
-                                                    startedAt: metadata.startedAt, updatedAt: modified))
-                if !firstRefresh, Date().timeIntervalSince(modified) < 15 { play(.started) }
+                updated.append(log)
+                if !firstRefresh, Date().timeIntervalSince(log.updatedAt) < 15 { play(.started) }
             }
         }
-        sessions.sort { $0.updatedAt > $1.updatedAt }
-    }
-
-    private func sessionMetadata(at url: URL) -> (id: String, project: String, cwd: String, threadSource: String, startedAt: Date)? {
-        guard let handle = try? FileHandle(forReadingFrom: url),
-              let data = try? handle.read(upToCount: 256 * 1024),
-              let line = String(data: data, encoding: .utf8)?.split(separator: "\n").first,
-              let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-              let payload = object["payload"] as? [String: Any] else { return nil }
-        try? handle.close()
-        let source: String
-        if let value = payload["thread_source"] as? String { source = value }
-        else { source = "" }
-        let id = (payload["session_id"] as? String) ?? (payload["id"] as? String) ?? url.lastPathComponent
-        let cwd = payload["cwd"] as? String ?? ""
-        let project = cwd.isEmpty ? "Codex" : URL(fileURLWithPath: cwd).lastPathComponent
-        let startedAt = ISO8601DateFormatter().date(from: payload["timestamp"] as? String ?? "") ?? Date()
-        return (id, project, cwd, source, startedAt)
-    }
-
-    private func isFiltered(cwd: String, prompt: String) -> Bool {
-        if builtInFiltersEnabled {
-            let knownPaths = ["/.codex/memories", "/chronicle/screen_recording", "/.claude-mem"]
-            let knownPrompts = ["## Memory Writing Agent", "# Overview Generate 0 to 3 hyperpersonalized suggestions", "Using the supplied git context below, generate", "What topic or area is the user exploring?"]
-            if knownPaths.contains(where: cwd.contains) || knownPrompts.contains(where: prompt.hasPrefix) { return true }
-        }
-        let paths = pathFilters.split(whereSeparator: { $0 == "\n" || $0 == "," }).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        let prompts = promptFilters.split(whereSeparator: { $0 == "\n" || $0 == "," }).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        return paths.contains(where: cwd.contains) || prompts.contains(where: prompt.hasPrefix)
-    }
-
-    private func sessionTitle(at url: URL, fallback: String) -> String {
-        guard let handle = try? FileHandle(forReadingFrom: url),
-              let data = try? handle.read(upToCount: 1024 * 1024),
-              let text = String(data: data, encoding: .utf8) else { return fallback }
-        try? handle.close()
-        for line in text.split(separator: "\n") {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-                  let payload = object["payload"] as? [String: Any],
-                  payload["role"] as? String == "user",
-                  let content = payload["content"] as? [[String: Any]] else { continue }
-            for item in content where item["type"] as? String == "input_text" {
-                guard let value = item["text"] as? String else { continue }
-                let clean = value.split(separator: "\n").first.map(String.init)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let injected = clean.hasPrefix("<") || clean.hasPrefix("# Files mentioned")
-                    || clean.hasPrefix("Distinguish instructions") || clean.hasPrefix("[App Context]")
-                if !clean.isEmpty, !injected { return clean.count > 52 ? String(clean.prefix(52)) + "…" : clean }
-            }
-        }
-        return fallback
-    }
-
-    private func sessionDetail(at url: URL, status: CodexIslandSession.Status) -> String {
-        guard let handle = try? FileHandle(forReadingFrom: url),
-              let size = try? handle.seekToEnd() else { return "正在工作" }
-        try? handle.seek(toOffset: size > 96 * 1024 ? size - 96 * 1024 : 0)
-        let data = (try? handle.readToEnd()) ?? Data()
-        try? handle.close()
-        let text = String(data: data, encoding: .utf8) ?? ""
-        for line in text.split(separator: "\n").reversed() {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-                  let type = object["type"] as? String else { continue }
-            if status == .completed {
-                if type == "task_complete", let payload = object["payload"] as? [String: Any],
-                   let message = payload["last_agent_message"] as? String {
-                    let summary = message.split(separator: "\n").first.map(String.init)?
-                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    if !summary.isEmpty { return summary.count > 68 ? String(summary.prefix(68)) + "…" : summary }
-                }
-                if type == "event_msg", let payload = object["payload"] as? [String: Any],
-                   payload["type"] as? String == "turn_aborted" { return "任务已停止" }
-            }
-            if type == "response_item", let payload = object["payload"] as? [String: Any] {
-                if payload["type"] as? String == "custom_tool_call", let name = payload["name"] as? String {
-                    return "正在执行 \(name)"
-                }
-                if payload["type"] as? String == "message" { return "正在整理结果" }
-                if payload["type"] as? String == "reasoning" { return "正在分析" }
-            }
-        }
-        return status == .completed ? "任务已完成" : "正在工作"
-    }
-
-    private func sessionStatus(at url: URL, modified: Date) -> CodexIslandSession.Status {
-        guard let handle = try? FileHandle(forReadingFrom: url),
-              let size = try? handle.seekToEnd() else {
-            return Date().timeIntervalSince(modified) < 15 ? .running : .completed
-        }
-        try? handle.seek(toOffset: size > 128 * 1024 ? size - 128 * 1024 : 0)
-        let data = (try? handle.readToEnd()) ?? Data()
-        try? handle.close()
-        let text = String(data: data, encoding: .utf8) ?? ""
-        for line in text.split(separator: "\n").reversed() {
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
-            let type = object["type"] as? String ?? ""
-            let payloadType = (object["payload"] as? [String: Any])?["type"] as? String ?? ""
-            if type == "task_complete" || payloadType == "task_complete" || payloadType == "turn_aborted" { return .completed }
-            if payloadType == "task_started" { return .running }
-        }
-        return Date().timeIntervalSince(modified) < 15 ? .running : .completed
+        updated.sort { $0.updatedAt > $1.updatedAt }
+        if sessions != updated { sessions = updated }
     }
 
     private func apply(_ event: CodexHookEvent) -> Bool {
@@ -413,6 +321,8 @@ final class CodexIslandService: ObservableObject {
 enum CodexHookBridge {
     static let inboxDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Vorssaint/CodexIsland/inbox", isDirectory: true)
+    static let responseDirectory = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Vorssaint/CodexIsland/responses", isDirectory: true)
 
     static func runAndExit() -> Never {
         autoreleasepool {
@@ -430,13 +340,37 @@ enum CodexHookBridge {
             let tool = string(in: object, keys: ["tool_name", "tool", "name"]) ?? ""
             let title = compact(prompt, fallback: project == "Codex" ? "Codex 任务" : project, limit: 52)
             let detail = eventDetail(event: event, tool: tool)
+            let approvalID = baseEvent.lowercased().contains("permission") ? sessionID : nil
+            if approvalID != nil {
+                try? FileManager.default.createDirectory(at: responseDirectory, withIntermediateDirectories: true)
+                try? FileManager.default.removeItem(at: responseDirectory.appendingPathComponent(sessionID + ".response"))
+            }
             let envelope = CodexHookEvent(event: event, sessionID: sessionID, project: project,
-                                          title: title, detail: detail, timestamp: Date())
+                                          title: title, detail: detail, timestamp: Date(), approvalID: approvalID)
             do {
                 try FileManager.default.createDirectory(at: inboxDirectory, withIntermediateDirectories: true)
                 let url = inboxDirectory.appendingPathComponent(String(format: "%.6f-%@.json", Date().timeIntervalSince1970, UUID().uuidString))
                 try JSONEncoder.codexIsland.encode(envelope).write(to: url, options: .atomic)
             } catch { }
+            if approvalID != nil {
+                let responseURL = responseDirectory.appendingPathComponent(sessionID + ".response")
+                let deadline = Date().addingTimeInterval(295)
+                while Date() < deadline {
+                    if let decision = try? String(contentsOf: responseURL, encoding: .utf8) {
+                        try? FileManager.default.removeItem(at: responseURL)
+                        let behavior = decision == "allow" ? "allow" : "deny"
+                        let output: [String: Any] = ["hookSpecificOutput": [
+                            "hookEventName": "PermissionRequest",
+                            "decision": ["behavior": behavior]
+                        ]]
+                        if let data = try? JSONSerialization.data(withJSONObject: output) {
+                            FileHandle.standardOutput.write(data)
+                        }
+                        exit(0)
+                    }
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+            }
         }
         exit(0)
     }
@@ -486,17 +420,28 @@ private enum CodexHookInstaller {
         let command = "'\(executable.replacingOccurrences(of: "'", with: "'\\''"))' --vorssaint-codex-hook"
         for eventName in eventNames {
             var groups = hooks[eventName] as? [[String: Any]] ?? []
-            let exists = groups.contains { group in
-                (group["hooks"] as? [[String: Any]])?.contains {
-                    ($0["command"] as? String)?.contains("--vorssaint-codex-hook") == true
-                } == true
+            let timeout = eventName == "PermissionRequest" ? 300 : 5
+            var exists = false
+            groups = groups.map { group in
+                var updated = group
+                var entries = group["hooks"] as? [[String: Any]] ?? []
+                entries = entries.map { entry in
+                    guard (entry["command"] as? String)?.contains("--vorssaint-codex-hook") == true else { return entry }
+                    exists = true
+                    var updatedEntry = entry
+                    updatedEntry["timeout"] = timeout
+                    return updatedEntry
+                }
+                updated["hooks"] = entries
+                return updated
             }
             if !exists {
-                var group: [String: Any] = ["hooks": [["command": command, "timeout": 5, "type": "command"]]]
+                var group: [String: Any] = ["hooks": [["command": command, "timeout": timeout, "type": "command"]]]
                 if eventName == "PostToolUse" { group["matcher"] = "" }
                 groups.append(group)
                 hooks[eventName] = groups
             }
+            if exists { hooks[eventName] = groups }
         }
         root["hooks"] = hooks
         try write(root)
@@ -533,6 +478,276 @@ private enum CodexHookInstaller {
         let data = try JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: configURL, options: .atomic)
     }
+}
+
+/// All mutable caches and filesystem/database reads are confined to refreshQueue.
+private final class CodexIslandLogReader {
+    struct Filters {
+        let builtIn: Bool
+        let paths: String
+        let prompts: String
+    }
+
+    private var consumedFiles = Set<String>()
+    private var logTitles: [String: String] = [:]
+    private var recentlyDiscoveredLogs = Set<URL>()
+    private var lastFullLogDiscoveryAt: Date?
+    private var monitoringStartedAt = Date()
+
+    func readEvents(since startedAt: Date) -> [CodexHookEvent] {
+        let fm = FileManager.default
+        let urls = (try? fm.contentsOfDirectory(at: CodexHookBridge.inboxDirectory,
+                                                includingPropertiesForKeys: nil)) ?? []
+        var events: [CodexHookEvent] = []
+        for url in urls.filter({ $0.pathExtension == "json" }).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            guard consumedFiles.insert(url.lastPathComponent).inserted else { continue }
+            defer { try? fm.removeItem(at: url) }
+            guard let data = try? Data(contentsOf: url),
+                  let event = try? JSONDecoder.codexIsland.decode(CodexHookEvent.self, from: data),
+                  event.timestamp >= startedAt else { continue }
+            events.append(event)
+        }
+        return events
+    }
+
+    func readSessions(previous: [CodexIslandSession], filters: Filters, since startedAt: Date) -> [CodexIslandSession] {
+        monitoringStartedAt = startedAt
+        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")
+        let candidates = recentSessionLogCandidates(in: root)
+        let titles = currentCodexThreadTitles()
+        var result: [CodexIslandSession] = []
+        for (url, modified) in candidates.sorted(by: { $0.1 > $1.1 }) {
+            guard result.count < 8 else { break }
+            guard let metadata = sessionMetadata(at: url), metadata.threadSource == "user" else { continue }
+            let previousSession = previous.first { $0.id == metadata.id }
+            if let previousSession, previousSession.status == .waiting,
+               Date().timeIntervalSince(previousSession.updatedAt) < 5 * 60 { continue }
+            let title = titles[metadata.id] ?? logTitles[url.path] ?? sessionTitle(at: url, fallback: metadata.project)
+            guard !isFiltered(cwd: metadata.cwd, prompt: title, filters: filters) else { continue }
+            logTitles[url.path] = title
+            let status = sessionStatus(at: url, modified: modified, previousStatus: previousSession?.status)
+            result.append(CodexIslandSession(id: metadata.id, project: metadata.project, title: title,
+                                            detail: sessionDetail(at: url, status: status), status: status,
+                                            startedAt: metadata.startedAt, updatedAt: modified))
+        }
+        return result
+    }
+
+    /// Codex stores the user-facing sidebar label in `threads.name`. The
+    /// JSONL stream only contains prompts, so it cannot reproduce generated
+    /// or manually renamed session titles accurately.
+    private func currentCodexThreadTitles() -> [String: String] {
+        let databaseURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/state_5.sqlite")
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let database else { return [:] }
+        defer { sqlite3_close(database) }
+
+        let sql = """
+            SELECT id, COALESCE(NULLIF(name, ''), NULLIF(title, ''))
+            FROM threads
+            WHERE updated_at >= CAST(strftime('%s', 'now') AS INTEGER) - 7200
+            """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else { return [:] }
+        defer { sqlite3_finalize(statement) }
+
+        var titles: [String: String] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let idBytes = sqlite3_column_text(statement, 0),
+                  let titleBytes = sqlite3_column_text(statement, 1) else { continue }
+            let id = String(cString: idBytes)
+            let title = String(cString: titleBytes).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty { titles[id] = title }
+        }
+        return titles
+    }
+
+    /// A task keeps the directory of the day it was created, even when it is
+    /// still running days later. Discover by file modification time instead
+    /// of assuming every live task lives under today's directory.
+    private func recentSessionLogCandidates(in root: URL) -> [(URL, Date)] {
+        let now = Date()
+        let fm = FileManager.default
+        let keys: Set<URLResourceKey> = [.contentModificationDateKey, .isRegularFileKey]
+        var modifiedByURL: [URL: Date] = [:]
+
+        func collect(_ url: URL) {
+            guard url.pathExtension == "jsonl",
+                  let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true,
+                  let modified = values.contentModificationDate,
+                  modified >= monitoringStartedAt,
+                  now.timeIntervalSince(modified) < 2 * 60 * 60 else { return }
+            modifiedByURL[url] = modified
+        }
+
+        // Today's and yesterday's folders are cheap to inspect every second,
+        // which keeps newly-created tasks responsive.
+        let calendar = Calendar.current
+        for offset in 0...1 {
+            guard let date = calendar.date(byAdding: .day, value: -offset, to: now) else { continue }
+            let parts = calendar.dateComponents([.year, .month, .day], from: date)
+            guard let year = parts.year, let month = parts.month, let day = parts.day else { continue }
+            let directory = root
+                .appendingPathComponent(String(format: "%04d", year))
+                .appendingPathComponent(String(format: "%02d", month))
+                .appendingPathComponent(String(format: "%02d", day))
+            guard let files = try? FileManager.default.contentsOfDirectory(at: directory,
+                                                                           includingPropertiesForKeys: Array(keys)) else { continue }
+            files.forEach(collect)
+        }
+
+        // A full walk catches a task resumed from an older date folder. Keep
+        // the recent hits warm between walks so the one-second refresh remains
+        // cheap while that task is active.
+        if lastFullLogDiscoveryAt.map({ now.timeIntervalSince($0) >= 30 }) ?? true {
+            let enumerator = fm.enumerator(at: root,
+                                           includingPropertiesForKeys: Array(keys),
+                                           options: [.skipsHiddenFiles, .skipsPackageDescendants])
+            while let url = enumerator?.nextObject() as? URL {
+                collect(url)
+            }
+            recentlyDiscoveredLogs = Set(modifiedByURL.keys)
+            lastFullLogDiscoveryAt = now
+        } else {
+            recentlyDiscoveredLogs.forEach(collect)
+        }
+        recentlyDiscoveredLogs = recentlyDiscoveredLogs.filter { modifiedByURL[$0] != nil }
+        return modifiedByURL.map { ($0.key, $0.value) }
+    }
+
+    private func sessionMetadata(at url: URL) -> (id: String, project: String, cwd: String, threadSource: String, startedAt: Date)? {
+        guard let handle = try? FileHandle(forReadingFrom: url),
+              let data = try? handle.read(upToCount: 256 * 1024),
+              let line = String(data: data, encoding: .utf8)?.split(separator: "\n").first,
+              let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+              let payload = object["payload"] as? [String: Any] else { return nil }
+        try? handle.close()
+        let source: String
+        if let value = payload["thread_source"] as? String { source = value }
+        else { source = "" }
+        let id = (payload["session_id"] as? String) ?? (payload["id"] as? String) ?? url.lastPathComponent
+        let cwd = payload["cwd"] as? String ?? ""
+        let project = cwd.isEmpty ? "Codex" : URL(fileURLWithPath: cwd).lastPathComponent
+        let startedAt = ISO8601DateFormatter().date(from: payload["timestamp"] as? String ?? "") ?? Date()
+        return (id, project, cwd, source, startedAt)
+    }
+
+    private func isFiltered(cwd: String, prompt: String, filters: Filters) -> Bool {
+        if filters.builtIn {
+            let knownPaths = ["/.codex/memories", "/chronicle/screen_recording", "/.claude-mem"]
+            let knownPrompts = ["## Memory Writing Agent", "# Overview Generate 0 to 3 hyperpersonalized suggestions", "Using the supplied git context below, generate", "What topic or area is the user exploring?"]
+            if knownPaths.contains(where: cwd.contains) || knownPrompts.contains(where: prompt.hasPrefix) { return true }
+        }
+        let paths = filters.paths.split(whereSeparator: { $0 == "\n" || $0 == "," }).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        let prompts = filters.prompts.split(whereSeparator: { $0 == "\n" || $0 == "," }).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return paths.contains(where: cwd.contains) || prompts.contains(where: prompt.hasPrefix)
+    }
+
+    private func sessionTitle(at url: URL, fallback: String) -> String {
+        guard let handle = try? FileHandle(forReadingFrom: url),
+              let data = try? handle.read(upToCount: 1024 * 1024),
+              let text = String(data: data, encoding: .utf8) else { return fallback }
+        try? handle.close()
+        for line in text.split(separator: "\n") {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let payload = object["payload"] as? [String: Any],
+                  payload["role"] as? String == "user",
+                  let content = payload["content"] as? [[String: Any]] else { continue }
+            for item in content where item["type"] as? String == "input_text" {
+                guard let value = item["text"] as? String else { continue }
+                let clean = value.split(separator: "\n").first.map(String.init)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let injected = clean.hasPrefix("<") || clean.hasPrefix("# Files mentioned")
+                    || clean.hasPrefix("Distinguish instructions") || clean.hasPrefix("[App Context]")
+                if !clean.isEmpty, !injected { return clean.count > 52 ? String(clean.prefix(52)) + "…" : clean }
+            }
+        }
+        return fallback
+    }
+
+    private func sessionDetail(at url: URL, status: CodexIslandSession.Status) -> String {
+        guard let handle = try? FileHandle(forReadingFrom: url),
+              let size = try? handle.seekToEnd() else { return "正在工作" }
+        try? handle.seek(toOffset: size > 96 * 1024 ? size - 96 * 1024 : 0)
+        let data = (try? handle.readToEnd()) ?? Data()
+        try? handle.close()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        for line in text.split(separator: "\n").reversed() {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  let type = object["type"] as? String else { continue }
+            if status == .completed {
+                if type == "task_complete", let payload = object["payload"] as? [String: Any],
+                   let message = payload["last_agent_message"] as? String {
+                    let summary = message.split(separator: "\n").first.map(String.init)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    if !summary.isEmpty { return summary.count > 68 ? String(summary.prefix(68)) + "…" : summary }
+                }
+                if type == "event_msg", let payload = object["payload"] as? [String: Any],
+                   payload["type"] as? String == "turn_aborted" { return "任务已停止" }
+            }
+            if type == "response_item", let payload = object["payload"] as? [String: Any] {
+                if payload["type"] as? String == "custom_tool_call", let name = payload["name"] as? String {
+                    return "正在执行 \(name)"
+                }
+                if payload["type"] as? String == "message" { return "正在整理结果" }
+                if payload["type"] as? String == "reasoning" { return "正在分析" }
+            }
+        }
+        return status == .completed ? "任务已完成" : "正在工作"
+    }
+
+    private func sessionStatus(at url: URL, modified: Date,
+                               previousStatus: CodexIslandSession.Status?) -> CodexIslandSession.Status {
+        guard let handle = try? FileHandle(forReadingFrom: url),
+              let size = try? handle.seekToEnd() else {
+            return previousStatus ?? .running
+        }
+        try? handle.seek(toOffset: size > 512 * 1024 ? size - 512 * 1024 : 0)
+        let data = (try? handle.readToEnd()) ?? Data()
+        try? handle.close()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        var latestStatus: CodexIslandSession.Status?
+        for line in text.split(separator: "\n") {
+            guard let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any] else { continue }
+            let type = object["type"] as? String ?? ""
+            let payload = object["payload"] as? [String: Any]
+            let payloadType = payload?["type"] as? String ?? ""
+            if payloadType == "task_started" {
+                latestStatus = .running
+                continue
+            }
+            if type == "task_complete" || payloadType == "task_complete"
+                || payloadType == "turn_complete" || payloadType == "turn_completed"
+                || payloadType == "turn_aborted" {
+                latestStatus = .completed
+                continue
+            }
+            // The desktop app renders the final answer before its trailing
+            // task_complete event is flushed. Treat that final answer as the
+            // end of the current turn so the island changes immediately.
+            if type == "event_msg", payloadType == "item_completed",
+               let item = payload?["item"] as? [String: Any],
+               item["type"] as? String == "AgentMessage",
+               item["phase"] as? String == "final_answer" {
+                latestStatus = .completed
+                continue
+            }
+            if type == "response_item", payloadType == "message",
+               payload?["role"] as? String == "assistant",
+               payload?["phase"] as? String == "final_answer" {
+                latestStatus = .completed
+            }
+        }
+        if let latestStatus { return latestStatus }
+        // A quiet task is not necessarily complete: long reasoning and tool
+        // calls can leave the JSONL unchanged for well over 15 seconds. Keep
+        // the last known state until Codex writes an explicit lifecycle event.
+        return previousStatus ?? (Date().timeIntervalSince(modified) < 2 * 60 * 60 ? .running : .completed)
+    }
+
 }
 
 private extension JSONEncoder {

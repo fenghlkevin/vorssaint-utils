@@ -345,6 +345,7 @@ struct AwayLockSettings: View {
         case .nearby(let rssi): return "Nearby · \(rssi) dBm"
         case .weak(let seconds): return "Weak signal · \(seconds) \(strings.seconds)"
         case .countdown(let seconds): return "Locking in \(seconds) \(strings.seconds)"
+        case .awaitingReturn: return "Locked · waiting for a confirmed return"
         case .bluetoothUnavailable: return strings.bluetoothUnavailable
         }
     }
@@ -353,6 +354,7 @@ struct AwayLockSettings: View {
         switch service.state {
         case .nearby: return "checkmark.circle.fill"
         case .weak, .countdown: return "exclamationmark.triangle.fill"
+        case .awaitingReturn: return "lock.fill"
         case .bluetoothUnavailable: return "antenna.radiowaves.left.and.right.slash"
         default: return "circle.dotted"
         }
@@ -362,6 +364,7 @@ struct AwayLockSettings: View {
         switch service.state {
         case .nearby: return .green
         case .weak, .countdown: return .orange
+        case .awaitingReturn: return .blue
         case .bluetoothUnavailable: return .red
         default: return .secondary
         }

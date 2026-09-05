@@ -62,7 +62,7 @@ private final class AwayLockAdvertisementThrottle: @unchecked Sendable {
 @MainActor
 final class AwayLockService: NSObject, ObservableObject {
     static let shared = AwayLockService()
-    enum State: Equatable { case disabled, needsDevice, scanning, nearby(Int), weak(Int), countdown(Int), bluetoothUnavailable }
+    enum State: Equatable { case disabled, needsDevice, scanning, nearby(Int), weak(Int), countdown(Int), awaitingReturn, bluetoothUnavailable }
     @Published private(set) var state: State = .disabled
     @Published private(set) var peripherals: [AwayLockPeripheral] = []
     @Published private(set) var events: [AwayLockEvent] = []
@@ -86,6 +86,10 @@ final class AwayLockService: NSObject, ObservableObject {
     private var wakeRequestCount = 0
     private var lastLockRequestAt: Date?
     private var observedDisplayState = "未知（尚未收到系统通知）"
+    private var lockWarningPresentedForCurrentAway = false
+    private var lastLockWarningAt = Date.distantPast
+    private let lockWarningCooldown: TimeInterval = 300
+    private let lockWarningNotificationID = "com.vorssaint.away-lock.imminent"
     private nonisolated let advertisementThrottle = AwayLockAdvertisementThrottle()
 
     private override init() {
@@ -124,6 +128,7 @@ final class AwayLockService: NSObject, ObservableObject {
         if isPaused { return "监测已暂停" }
         return switch state { case .disabled: "距离监测已关闭"; case .needsDevice: "请选择蓝牙设备"; case .scanning: "正在寻找目标设备"
         case .nearby: "设备就在附近"; case .weak: "设备可能已经离开"; case .countdown(let s): "将在 \(s) 秒后锁屏"
+        case .awaitingReturn: "已请求锁屏，等待设备明确返回"
         case .bluetoothUnavailable: "蓝牙不可用" }
     }
     var detailText: String { latestAggregateRSSI.map { "聚合信号：\($0) dBm" } ?? "等待目标设备信号" }
@@ -248,8 +253,13 @@ final class AwayLockService: NSObject, ObservableObject {
     private func startIfPossible() {
         guard AppFeature.awayLock.isAvailable, bool(DefaultsKey.awayLockEnabled) else { return }
         guard let central, central.state == .poweredOn else {
-            state = central?.state == .unknown ? .scanning : .bluetoothUnavailable
-            logCondition("bluetooth-unavailable", "蓝牙不可用，离开锁屏正在等待蓝牙恢复")
+            if central?.state == .unknown {
+                state = .scanning
+                logCondition("bluetooth-initializing", "蓝牙状态正在初始化，尚未开始判定（不代表蓝牙不可用）")
+            } else {
+                state = .bluetoothUnavailable
+                logCondition("bluetooth-unavailable", "蓝牙不可用，离开锁屏正在等待蓝牙恢复")
+            }
             return
         }
         central.stopScan(); central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
@@ -285,8 +295,21 @@ final class AwayLockService: NSObject, ObservableObject {
         case .primaryAway: snapshots.first { $0.0 == primaryID }.map { $0.3 && !$0.1 } ?? false
         case .majorityAway: reliable.count == snapshots.count && away > snapshots.count / 2
         }
+        let confirmedReturn = AwayLockSupport.hasConfirmedReturn(
+            policy: policy.rawValue, primaryID: primaryID,
+            readings: snapshots.map { (id: $0.0, near: $0.1) })
+        if waitingForReturn && !confirmedReturn {
+            weakSince = nil; cancelCountdown(); state = .awaitingReturn
+            logCondition("awaiting-confirmed-return",
+                         "已发送过锁屏请求，正在等待设备明确返回；不会重复锁屏或唤醒。当前：\(signalSummary(snapshots, now: now))")
+            return
+        }
         if !shouldLock {
             let returned = waitingForReturn; let wasSuspectedAway = weakSince != nil || countdownTimer != nil
+            if lockWarningPresentedForCurrentAway {
+                lockWarningPresentedForCurrentAway = false
+                clearLockWarningNotification()
+            }
             waitingForReturn = false; weakSince = nil; cancelCountdown(); state = .nearby(latestAggregateRSSI ?? 0); learn(snapshots)
             let summary = signalSummary(snapshots, now: now)
             if returned {
@@ -324,7 +347,7 @@ final class AwayLockService: NSObject, ObservableObject {
     }
     private func beginCountdown() {
         guard countdownTimer == nil else { return }; var remaining = max(1, graceSeconds); state = .countdown(remaining); log("离开条件已确认，开始 \(remaining) 秒锁屏倒计时")
-        if bool(DefaultsKey.awayLockNotificationSound) { NSSound.beep() }; notify("即将锁定 Mac", "目标蓝牙设备已经离开")
+        presentLockWarningIfNeeded()
         if bool(DefaultsKey.awayLockShowCountdown) { AwayLockCountdownOverlay.shared.show(seconds: remaining) { [weak self] in
             guard let self else { return }
             self.weakSince = Date(); self.cancelCountdown(); self.log("用户取消了本次锁屏倒计时")
@@ -405,6 +428,11 @@ final class AwayLockService: NSObject, ObservableObject {
             log("设备已返回，但为防止反复亮屏，本次唤醒已抑制（冷却剩余 \(remaining) 秒）")
             return
         }
+        let displayPower = displayPowerSnapshot
+        guard displayPower.allOnlineDisplaysAsleep else {
+            log("设备已明确返回，但未发送唤醒请求：\(displayPower.description)。显示器已经亮着时唤醒可能导致闪烁")
+            return
+        }
         var id: IOPMAssertionID = 0
         wakeRequestCount += 1
         log("发送显示器唤醒请求 #\(wakeRequestCount)：\(diagnosticContext)")
@@ -417,7 +445,48 @@ final class AwayLockService: NSObject, ObservableObject {
             log("设备返回后的显示器唤醒请求失败（IOKit 错误 \(result)）")
         }
     }
+    private var displayPowerSnapshot: (allOnlineDisplaysAsleep: Bool, description: String) {
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else {
+            return (false, "无法读取在线显示器电源状态，按安全策略跳过唤醒")
+        }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetOnlineDisplayList(count, &displays, &count) == .success else {
+            return (false, "读取在线显示器电源状态失败，按安全策略跳过唤醒")
+        }
+        displays = Array(displays.prefix(Int(count)))
+        let asleep = displays.filter { CGDisplayIsAsleep($0) != 0 }.count
+        return (asleep == displays.count,
+                "在线显示器 \(displays.count) 台，其中休眠 \(asleep) 台、亮屏 \(displays.count - asleep) 台")
+    }
     private func notify(_ title: String, _ body: String) { guard bool(DefaultsKey.awayLockNotifications) else { return }; let c = UNMutableNotificationContent(); c.title = title; c.body = body; UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil)) }
+    private func presentLockWarningIfNeeded(now: Date = Date()) {
+        guard !lockWarningPresentedForCurrentAway else {
+            logCondition("lock-warning-deduplicated", "锁屏倒计时再次开始，但同一次离开过程已通知，不再重复发送")
+            return
+        }
+        lockWarningPresentedForCurrentAway = true
+        let elapsed = now.timeIntervalSince(lastLockWarningAt)
+        guard elapsed >= lockWarningCooldown else {
+            let remaining = Int((lockWarningCooldown - elapsed).rounded(.up))
+            logCondition("lock-warning-cooldown", "锁屏倒计时再次开始，但通知仍在 5 分钟冷却期内（剩余 \(remaining) 秒），不再重复发送")
+            return
+        }
+        lastLockWarningAt = now
+        if bool(DefaultsKey.awayLockNotificationSound) { NSSound.beep() }
+        guard bool(DefaultsKey.awayLockNotifications) else { return }
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [lockWarningNotificationID])
+        center.removeDeliveredNotifications(withIdentifiers: [lockWarningNotificationID])
+        let content = UNMutableNotificationContent()
+        content.title = "即将锁定 Mac"; content.body = "目标蓝牙设备已经离开"
+        center.add(UNNotificationRequest(identifier: lockWarningNotificationID, content: content, trigger: nil))
+    }
+    private func clearLockWarningNotification() {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [lockWarningNotificationID])
+        center.removeDeliveredNotifications(withIdentifiers: [lockWarningNotificationID])
+    }
     private func setPause(_ date: Date) { UserDefaults.standard.set(date.timeIntervalSince1970, forKey: DefaultsKey.awayLockPauseUntil); cancelCountdown(); objectWillChange.send() }
     private var diagnosticContext: String {
         let now = Date()
@@ -460,7 +529,7 @@ final class AwayLockService: NSObject, ObservableObject {
         }.sorted().joined(separator: "；")
     }
     private func cancelCountdown() { countdownTimer?.invalidate(); countdownTimer = nil; AwayLockCountdownOverlay.shared.hide() }
-    private func resetEvaluation() { weakSince = nil; waitingForReturn = false; wakeOnReturnArmed = false; cancelCountdown() }
+    private func resetEvaluation() { weakSince = nil; waitingForReturn = false; wakeOnReturnArmed = false; lockWarningPresentedForCurrentAway = false; cancelCountdown() }
     private func stop() {
         central?.stopScan(); evaluationTimer?.invalidate(); evaluationTimer = nil; energyTimer?.invalidate(); energyTimer = nil
         resetEvaluation(); state = .disabled; lastDiagnosticCondition = nil

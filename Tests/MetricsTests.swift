@@ -11894,6 +11894,22 @@ struct MetricsTests {
                     lastSeen: Date(timeIntervalSince1970: 35),
                     requiredObservationSeconds: 25),
                "away lock may use silence after a complete stable observation window")
+        expect(!AwayLockSupport.hasConfirmedReturn(policy: "anyAway", primaryID: "phone",
+                                                    readings: [("phone", false)]),
+               "an unknown or away reading never masquerades as a confirmed return")
+        expect(!AwayLockSupport.hasConfirmedReturn(policy: "anyAway", primaryID: "phone",
+                                                    readings: [("phone", true), ("watch", false)])
+                && AwayLockSupport.hasConfirmedReturn(policy: "anyAway", primaryID: "phone",
+                                                      readings: [("phone", true), ("watch", true)]),
+               "any-away policy requires every selected device to return explicitly")
+        expect(AwayLockSupport.hasConfirmedReturn(policy: "allAway", primaryID: "phone",
+                                                  readings: [("phone", true), ("watch", false)]),
+               "all-away policy clears once one device explicitly returns")
+        expect(!AwayLockSupport.hasConfirmedReturn(policy: "primaryAway", primaryID: "phone",
+                                                    readings: [("phone", false), ("watch", true)])
+                && AwayLockSupport.hasConfirmedReturn(policy: "primaryAway", primaryID: "phone",
+                                                      readings: [("phone", true), ("watch", false)]),
+               "primary-away policy requires the primary device itself to return")
 
         expect(InputSourceRuleSupport.normalizedDomain(" HTTPS://WWW.Example.COM/path ") == "example.com",
                "input source domain normalization removes scheme, path and www")

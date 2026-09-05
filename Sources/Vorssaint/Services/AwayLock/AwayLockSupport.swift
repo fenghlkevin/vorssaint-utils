@@ -31,4 +31,19 @@ enum AwayLockSupport {
         guard let firstSeen, let lastSeen else { return false }
         return lastSeen.timeIntervalSince(firstSeen) >= Double(max(1, requiredObservationSeconds))
     }
+
+    /// A missing or unreliable reading can suppress locking, but it is not proof
+    /// that a device returned. Return requires fresh, explicitly-near readings
+    /// sufficient to clear the policy that caused the lock.
+    static func hasConfirmedReturn(policy: String, primaryID: String,
+                                   readings: [(id: String, near: Bool)]) -> Bool {
+        guard !readings.isEmpty else { return false }
+        switch policy {
+        case "allAway": return readings.contains(where: \.near)
+        case "anyAway": return readings.allSatisfy(\.near)
+        case "primaryAway": return readings.first(where: { $0.id == primaryID })?.near == true
+        case "majorityAway": return readings.filter(\.near).count > readings.count / 2
+        default: return false
+        }
+    }
 }

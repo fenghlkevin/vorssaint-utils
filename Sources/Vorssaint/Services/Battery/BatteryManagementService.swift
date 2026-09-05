@@ -40,6 +40,11 @@ final class BatteryManagementService: ObservableObject {
             // Defaults notification is debounced; never recursively assign a slider property.
         }
     }
+    private let refreshQueue = DispatchQueue(label: "com.vorssaint.battery.refresh", qos: .utility)
+    private var refreshInFlight = false
+    private var refreshGeneration = UUID()
+    private var daemonStatus: SMAppService.Status = .notRegistered
+    private var lastPreferences = NSDictionary()
     private var connection: NSXPCConnection?
     private var timer: Timer?
     private var observers: [AnyCancellable] = []
@@ -53,9 +58,16 @@ final class BatteryManagementService: ObservableObject {
         let d = UserDefaults.standard
         isEnabled = d.bool(forKey: DefaultsKey.batteryManagementEnabled)
         chargeLimit = min(100, max(50, d.object(forKey: DefaultsKey.batteryManagementLimit) as? Int ?? 80))
+        lastPreferences = refreshPreferences()
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .debounce(for: .milliseconds(400), scheduler: RunLoop.main)
-            .sink { [weak self] _ in self?.refresh() }.store(in: &observers)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                let preferences = self.refreshPreferences()
+                guard preferences != self.lastPreferences else { return }
+                self.lastPreferences = preferences
+                self.refresh()
+            }.store(in: &observers)
         NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
             .receive(on: RunLoop.main).sink { [weak self] _ in self?.refresh() }.store(in: &observers)
         refresh()
@@ -90,16 +102,48 @@ final class BatteryManagementService: ObservableObject {
         } catch { lastError = "后台注册失败：\(error.localizedDescription)"; updateAccess() }
     }
 
+    /// Ignore UI-only and unrelated defaults changes. Window/scroll state
+    /// must not trigger hardware and ServiceManagement queries.
+    private func refreshPreferences() -> NSDictionary {
+        let defaults = UserDefaults.standard
+        let keys = [DefaultsKey.batteryManagementEnabled, DefaultsKey.batteryManagementLimit,
+                    DefaultsKey.batteryManagementResumeMargin, DefaultsKey.batteryManagementSleepPolicy,
+                    DefaultsKey.batteryManagementTemperatureProtection, DefaultsKey.batteryManagementTemperatureLimit,
+                    "batteryManagement.dischargeAboveLimit", "batteryManagement.preventSleepDischarging",
+                    "batteryManagement.preventSleepCharging", "batteryManagement.greenLED", "batteryManagement.blinkLED",
+                    "batteryManagement.automationEnabled", "batteryManagement.rules.v1"]
+        var values = keys.reduce(into: [String: Any]()) { $0[$1] = defaults.object(forKey: $1) }
+        values["featureAvailable"] = AppFeature.batteryManagement.isAvailable
+        return values as NSDictionary
+    }
+
     func refresh() {
-        snapshot = SystemInfo.batterySnapshot()
-        updateAccess()
-        let configuration = currentConfiguration()
-        guard AppFeature.batteryManagement.isAvailable else {
-            if connection != nil { disconnect() }
-            return
+        guard !refreshInFlight else { return }
+        refreshInFlight = true
+        let generation = refreshGeneration
+        refreshQueue.async { [weak self] in
+            // SMAppService.status performs synchronous XPC. Query it once,
+            // off the main thread, along with the power-source snapshot.
+            let status = Self.daemon.status
+            let battery = SystemInfo.batterySnapshot()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.refreshInFlight = false
+                guard self.refreshGeneration == generation else { return }
+                self.daemonStatus = status
+                self.snapshot = battery
+                self.updateAccess()
+                let configuration = self.currentConfiguration()
+                guard AppFeature.batteryManagement.isAvailable else {
+                    if self.connection != nil { self.disconnect() }
+                    return
+                }
+                guard status == .enabled, !self.working, !self.suspendedAfterFailure else { return }
+                self.send { proxy, reply in
+                    proxy.update((try? JSONEncoder().encode(configuration)) ?? Data(), withReply: reply)
+                }
+            }
         }
-        guard Self.daemon.status == .enabled, !working, !suspendedAfterFailure else { return }
-        send { proxy, reply in proxy.update((try? JSONEncoder().encode(configuration)) ?? Data(), withReply: reply) }
     }
     func retry() {
         guard !working, Self.daemon.status == .enabled else { updateAccess(); return }
@@ -207,6 +251,7 @@ final class BatteryManagementService: ObservableObject {
     private func disconnect() {
         // Invalidating an in-flight request triggers restoration in the helper.
         requestID = UUID()
+        refreshGeneration = UUID()
         connection?.invalidate(); connection = nil
         working = false; performingUserAction = false; backendReady = false; mode = .automatic
     }
@@ -249,14 +294,14 @@ final class BatteryManagementService: ObservableObject {
     }
 
     private func updateAccess() {
-        switch Self.daemon.status {
+        switch daemonStatus {
         case .enabled: accessText = backendName.map { "电池后台已连接 · \($0)" } ?? "后台已注册，连接后确认状态"
         case .requiresApproval: accessText = "请在系统设置 → 登录项与扩展中允许电池后台"
         case .notRegistered: accessText = "电池后台未授权"
         case .notFound: accessText = helperIsEmbedded ? "电池后台尚未注册，请点击授权" : "安装包缺少电池后台，请重新安装开发版"
         default: accessText = "电池后台不可用，请使用已签名的安装版"
         }
-        if Self.daemon.status != .enabled { backendReady = false; mode = .unavailable }
+        if daemonStatus != .enabled { backendReady = false; mode = .unavailable }
     }
     private var helperIsEmbedded: Bool {
         FileManager.default.fileExists(atPath: Bundle.main.bundleURL
@@ -289,10 +334,10 @@ final class BatteryManagementService: ObservableObject {
 
     private func send(_ operation: @escaping (BatteryControlXPCProtocol, @escaping (Data) -> Void) -> Void,
                       completion: ((Bool) -> Void)? = nil) {
-        guard let requirement = BatteryControlIdentifiers.requirement(for: BatteryControlIdentifiers.helperID) else {
-            lastError = "后台需要证书签名；不接受临时签名版本"; completion?(false); return
-        }
         if connection == nil {
+            guard let requirement = BatteryControlIdentifiers.requirement(for: BatteryControlIdentifiers.helperID) else {
+                lastError = "后台需要证书签名；不接受临时签名版本"; completion?(false); return
+            }
             let connection = NSXPCConnection(machServiceName: BatteryControlIdentifiers.helperID, options: .privileged)
             connection.remoteObjectInterface = NSXPCInterface(with: BatteryControlXPCProtocol.self)
             connection.setCodeSigningRequirement(requirement)
@@ -310,7 +355,7 @@ final class BatteryManagementService: ObservableObject {
                     self.connection?.invalidate(); self.connection = nil
                     self.mode = .unavailable
                     completion?(false)
-                    if self.consecutiveTransportFailures < 3, Self.daemon.status == .enabled {
+                    if self.consecutiveTransportFailures < 3, self.daemonStatus == .enabled {
                         self.lastError = "电池后台连接暂时中断，正在自动重连…"
                         self.suspendedAfterFailure = false
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in

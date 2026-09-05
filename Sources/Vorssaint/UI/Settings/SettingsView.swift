@@ -50,10 +50,10 @@ struct SettingsView: View {
     var body: some View {
         let searchResults = SearchResultsSnapshot(
             query: searchQuery,
-            groups: SettingsSearchSupport.groupedMatchingItems(
+            groups: hasSearchQuery ? SettingsSearchSupport.groupedMatchingItems(
                 query: searchQuery,
                 items: SettingsDirectory.searchItems(l10n.s, language: l10n.language),
-                isAvailable: { features.isAvailable($0) })
+                isAvailable: { features.isAvailable($0) }) : []
         )
 
         NavigationSplitView {

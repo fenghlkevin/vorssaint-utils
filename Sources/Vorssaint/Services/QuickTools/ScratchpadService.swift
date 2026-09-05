@@ -258,6 +258,18 @@ final class ScratchpadService: NSObject, ObservableObject, NSWindowDelegate {
 
     // MARK: - Actions
 
+    /// Appends a one-line capture without opening the scratchpad window.
+    @discardableResult
+    func appendQuickNote(_ note: String) -> Bool {
+        let clean = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return false }
+        if !hasLoaded { loadApplyingRetention() }
+        let separator = text.isEmpty ? "" : (text.hasSuffix("\n") ? "" : "\n")
+        text += separator + clean
+        flushSave()
+        return true
+    }
+
     func copyAll() {
         guard !text.isEmpty else { return }
         let pasteboard = NSPasteboard.general
