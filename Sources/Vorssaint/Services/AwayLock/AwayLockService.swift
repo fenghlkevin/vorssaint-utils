@@ -86,6 +86,7 @@ final class AwayLockService: NSObject, ObservableObject {
     private var wakeRequestCount = 0
     private var lastLockRequestAt: Date?
     private var observedDisplayState = "未知（尚未收到系统通知）"
+    private var displayRecoveryUntil = Date.distantPast
     private var lockWarningPresentedForCurrentAway = false
     private var lastLockWarningAt = Date.distantPast
     private let lockWarningCooldown: TimeInterval = 300
@@ -108,7 +109,14 @@ final class AwayLockService: NSObject, ObservableObject {
             NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
-                    if let displayState { self.observedDisplayState = displayState }
+                    if let displayState {
+                        self.observedDisplayState = displayState
+                        if displayState == "唤醒" {
+                            self.displayRecoveryUntil = Date().addingTimeInterval(15)
+                            self.weakSince = nil
+                            self.cancelCountdown()
+                        }
+                    }
                     self.logSystemEvent(message)
                 }
             }
@@ -262,7 +270,9 @@ final class AwayLockService: NSObject, ObservableObject {
             }
             return
         }
-        central.stopScan(); central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        if !central.isScanning {
+            central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: true])
+        }
         if evaluationTimer == nil { evaluationTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in Task { @MainActor in self?.evaluate() } } }
         state = selectedIDs.isEmpty ? .needsDevice : .scanning; scheduleEnergyPause()
         if !monitoringWasActive {
@@ -371,6 +381,12 @@ final class AwayLockService: NSObject, ObservableObject {
         } }
     }
     private var protectionReason: String? {
+        if (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true {
+            return "系统会话已经锁定，不再发送锁屏请求"
+        }
+        if Date() < displayRecoveryUntil {
+            return "显示器正在恢复，15 秒保护期间不重新锁屏"
+        }
         if bool(DefaultsKey.awayLockProtectRecentInput) {
             let k = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown), m = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .mouseMoved)
             if min(k, m) < 3 { return "检测到最近的键盘或鼠标操作" }
@@ -406,11 +422,39 @@ final class AwayLockService: NSObject, ObservableObject {
         guard bool(DefaultsKey.awayLockAutomaticLearning) else { return }; var learned = learnedThresholds
         for (id, near, rssi, _) in snapshots where near && customThresholds[id] == nil { guard let rssi else { continue }; learningSamples[id, default: []].append(rssi)
             if learningSamples[id, default: []].count > 30 { learningSamples[id]?.removeFirst() }; if let m = AwayLockSupport.median(learningSamples[id] ?? []), (learningSamples[id]?.count ?? 0) >= 10 { learned[id] = Double(max(-90, min(-55, m - 12))) } }
-        UserDefaults.standard.set(learned, forKey: DefaultsKey.awayLockLearnedThresholds)
+        if learned != learnedThresholds {
+            UserDefaults.standard.set(learned, forKey: DefaultsKey.awayLockLearnedThresholds)
+        }
     }
     private func scheduleEnergyPause() {
-        let mode = AwayLockEnergyMode(rawValue: string(DefaultsKey.awayLockEnergyMode)) ?? .balanced; guard mode != .off else { return }; energyTimer?.invalidate()
-        energyTimer = Timer.scheduledTimer(withTimeInterval: mode.scanSeconds, repeats: false) { [weak self] _ in Task { @MainActor in guard let self else { return }; self.central?.stopScan(); self.energyTimer = Timer.scheduledTimer(withTimeInterval: mode.pauseSeconds, repeats: false) { [weak self] _ in Task { @MainActor in self?.startIfPossible() } } } }
+        energyTimer?.invalidate()
+        energyTimer = nil
+        let mode = AwayLockEnergyMode(rawValue: string(DefaultsKey.awayLockEnergyMode)) ?? .balanced
+        guard mode != .off else { return }
+        energyTimer = Timer.scheduledTimer(withTimeInterval: mode.scanSeconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.monitoringWasActive,
+                      AppFeature.awayLock.isAvailable, self.bool(DefaultsKey.awayLockEnabled) else { return }
+                let now = Date()
+                // Keep listening during uncertain departure, discovery and return.
+                // A pause must end before any target's silence timeout expires.
+                let canPause = AwayLockSupport.canPauseScan(
+                    readings: self.selectedIDs.map { id in
+                        (near: self.signals[id]?.wasNear == true, lastSeen: self.signals[id]?.lastSeen)
+                    }, now: now, pauseSeconds: mode.pauseSeconds, scanSeconds: mode.scanSeconds,
+                    lossSeconds: self.lossSeconds,
+                    requiresContinuousScan: self.isRescanning || self.waitingForReturn
+                        || self.weakSince != nil || self.countdownTimer != nil)
+                guard canPause else {
+                    self.scheduleEnergyPause()
+                    return
+                }
+                self.central?.stopScan()
+                self.energyTimer = Timer.scheduledTimer(withTimeInterval: mode.pauseSeconds, repeats: false) { [weak self] _ in
+                    Task { @MainActor in self?.startIfPossible() }
+                }
+            }
+        }
     }
     private func applyEnvironment(_ now: Date) {
         guard bool(DefaultsKey.awayLockAutomaticScenes), now.timeIntervalSince(lastEnvironmentCheck) > 30 else { return }; lastEnvironmentCheck = now
@@ -440,6 +484,7 @@ final class AwayLockService: NSObject, ObservableObject {
         log("显示器唤醒请求 #\(wakeRequestCount) 返回：IOKit=\(result)，assertionID=\(id)；接口返回不等于屏幕已稳定点亮")
         if result == kIOReturnSuccess {
             lastDisplayWakeAt = now
+            displayRecoveryUntil = now.addingTimeInterval(15)
             log("显示器唤醒请求已接受（120 秒内不再重复唤醒）；等待系统显示器状态通知")
         } else {
             log("设备返回后的显示器唤醒请求失败（IOKit 错误 \(result)）")

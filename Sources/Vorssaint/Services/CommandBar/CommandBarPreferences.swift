@@ -2,11 +2,12 @@
 // Copyright (C) 2026 Vorssaint
 
 import Foundation
+import CoreGraphics
 
 /// A kind of result the bar can offer. Raw values are storage ids for the
 /// list of sources the person switched off, so they never change.
 enum CommandBarSource: String, CaseIterable, Identifiable {
-    /// What Vorssaint itself can do. Always on: it is what the bar is for.
+    /// What Vorssaint itself can do.
     case actions
     case apps
     case menus
@@ -33,9 +34,8 @@ enum CommandBarSource: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// The one source that cannot be switched off, because switching it off
-    /// would leave an empty bar and no way back.
-    var isAlwaysOn: Bool { self == .actions }
+    /// All sources can be switched off independently.
+    var isAlwaysOn: Bool { false }
 
     var symbolName: String {
         switch self {
@@ -109,6 +109,14 @@ enum CommandBarPreferences {
         source.isAlwaysOn || !disabledSources(from: disabledRaw).contains(source)
     }
 
+    /// Built-in mini apps have their own individual switches. The catalog
+    /// applies those switches; the general Actions switch must not hide them.
+    static func isRowEnabled(_ rowID: String, disabledSources: Set<CommandBarSource>) -> Bool {
+        if rowID.hasPrefix("action.developer.") || rowID == "action.portLookup" { return true }
+        let source = source(ofRowID: rowID)
+        return source.isAlwaysOn || !disabledSources.contains(source)
+    }
+
     /// The source a row belongs to, decided by its id. Rows with no prefix of
     /// their own are the app's own actions.
     static func source(ofRowID id: String) -> CommandBarSource {
@@ -116,6 +124,26 @@ enum CommandBarPreferences {
             if let prefix = source.idPrefix, id.hasPrefix(prefix) { return source }
         }
         return .actions
+    }
+
+    /// Ignore unknown/duplicate ids and append sources added in newer versions.
+    static func sourceOrder(from raw: String) -> [CommandBarSource] {
+        var seen = Set<CommandBarSource>()
+        let saved = raw.split(separator: ",")
+            .compactMap { CommandBarSource(rawValue: $0.trimmingCharacters(in: .whitespaces)) }
+        return (saved + CommandBarSource.allCases).filter { seen.insert($0).inserted }
+    }
+
+    /// Empty storage preserves automatic ranking; ties keep their original order.
+    static func orderedIndexes(sources: [CommandBarSource], orderRaw: String) -> [Int] {
+        guard !orderRaw.isEmpty else { return Array(sources.indices) }
+        let positions = Dictionary(uniqueKeysWithValues:
+            sourceOrder(from: orderRaw).enumerated().map { ($0.element, $0.offset) })
+        return sources.indices.sorted {
+            let left = positions[sources[$0], default: 0]
+            let right = positions[sources[$1], default: 0]
+            return left == right ? $0 < $1 : left < right
+        }
     }
 
     /// What a kind of row is worth before a single letter of it is read.

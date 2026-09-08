@@ -3,15 +3,11 @@
 
 import SwiftUI
 
-/// Advanced page: a clean way to reset every permission the app holds, and a
-/// full self-uninstall. Both actions are confirmation-gated and scoped entirely
-/// to this app (see `SelfUninstall`).
+/// Backup, a link to centralized permission management, and self-uninstall.
 struct AdvancedSettings: View {
     @ObservedObject private var l10n = L10n.shared
-    @State private var showClearConfirm = false
     @State private var showUninstallConfirm = false
     @State private var working = false
-    @State private var cleared = false
     @State private var exported = false
     @State private var importFailed = false
     @State private var pendingImport: [String: Any]?
@@ -62,22 +58,12 @@ struct AdvancedSettings: View {
                 }
             }
 
-            Section(l10n.s.advancedResetSection) {
-                Text(l10n.s.advancedResetDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button(role: .destructive) {
-                    showClearConfirm = true
+            Section {
+                Button {
+                    SettingsRouter.shared.request(FeatureSettingsDestination(.permissions))
                 } label: {
-                    Label(l10n.s.advancedClearButton, systemImage: "lock.slash")
-                }
-                .disabled(working)
-                if cleared {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-                        Text(l10n.s.advancedCleared).font(.caption).foregroundStyle(.green)
-                    }
+                    Label(PermissionPageStrings(language: l10n.language).title,
+                          systemImage: "checkmark.shield")
                 }
             }
 
@@ -95,19 +81,6 @@ struct AdvancedSettings: View {
             }
         }
         .formStyle(.grouped)
-        .alert(l10n.s.advancedClearConfirmTitle, isPresented: $showClearConfirm) {
-            Button(l10n.s.uninstallerCancel, role: .cancel) {}
-            Button(l10n.s.advancedClearButton, role: .destructive) {
-                working = true
-                cleared = false
-                SelfUninstall.clearPermissions {
-                    working = false
-                    cleared = true
-                }
-            }
-        } message: {
-            Text(l10n.s.advancedClearConfirmBody)
-        }
         .alert(l10n.s.advancedUninstallConfirmTitle, isPresented: $showUninstallConfirm) {
             Button(l10n.s.uninstallerCancel, role: .cancel) {}
             Button(l10n.s.advancedUninstallButton, role: .destructive) {

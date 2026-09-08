@@ -4,6 +4,9 @@ import Foundation
 import IOKit
 import IOKit.pwr_mgt
 import Security
+import OSLog
+
+private let diagnosticLog = Logger(subsystem: BatteryControlIdentifiers.helperID, category: "BatteryBackend")
 
 /// Shared between release/development helpers. Journal precedes ALL writes;
 /// launchd restarts a crashed helper and recovery retries until readback passes.
@@ -76,6 +79,7 @@ private final class BatteryController {
     private var retiring = false
 
     init() {
+        response.codeHash = BatteryControlIdentifiers.runningCodeHash
         probeHardware()
         if ownership.marked, ownership.acquire() { recovering = true; _ = restore() }
         powerConnection = IORegisterForSystemPower(Unmanaged.passUnretained(self).toOpaque(), &port, { context, _, type, argument in
@@ -103,6 +107,8 @@ private final class BatteryController {
     }
 
     func update(_ data: Data, session: UUID) -> Data {
+        diagnosticLog.notice("update begin session=\(session) bytes=\(data.count)")
+        defer { diagnosticLog.notice("update end session=\(session)") }
         guard !retiring else { return failure("电池后台正在安全卸载") }
         guard data.count < 8192, let config = try? JSONDecoder().decode(BatteryControlConfiguration.self, from: data), config.isValid else {
             return failure("配置无效")
@@ -168,6 +174,8 @@ private final class BatteryController {
     func retire() { retiring = true; reset() }
 
     @discardableResult func restore() -> Bool {
+        diagnosticLog.notice("restore begin")
+        defer { diagnosticLog.notice("restore end recovering=\(self.recovering)") }
         releaseAssertion()
         guard ownership.held else { return true }
         do {
@@ -203,6 +211,8 @@ private final class BatteryController {
     }
 
     private func evaluate() {
+        diagnosticLog.info("evaluate begin")
+        defer { diagnosticLog.info("evaluate end command=\(self.response.command.rawValue, privacy: .public)") }
         guard let hardware, var input = BatteryControlHardware.input() else {
             let restored = restore()
             latchedFailure = "电池传感器不可用，已恢复系统充电；请检查后重试"
@@ -229,6 +239,7 @@ private final class BatteryController {
         if input.percent <= 20, target == .discharge { target = .automatic }
         do {
             if try hardware.state() != target { try hardware.apply(target) }
+            diagnosticLog.info("hardware applied target=\(target.rawValue, privacy: .public)")
             response.command = target
             response.override = policy.override
             response.overheated = policy.overheated
@@ -291,6 +302,7 @@ private final class BatteryController {
     }
 
     private func power(_ type: UInt32, argument: UnsafeMutableRawPointer?) {
+        diagnosticLog.notice("power notification type=\(type)")
         switch type {
         // IOMessage.h iokit_common_msg macros are unavailable to Swift.
         case 0xe0000270: // kIOMessageCanSystemSleep
@@ -326,6 +338,7 @@ private final class BatterySession: NSObject, BatteryControlXPCProtocol {
         DispatchQueue.main.async { reply(self.controller.command(name, session: self.id)) }
     }
     func status(withReply reply: @escaping (Data) -> Void) {
+        diagnosticLog.notice("status received session=\(self.id)")
         DispatchQueue.main.async { reply(self.controller.status()) }
     }
     func restore(withReply reply: @escaping (Data) -> Void) {
@@ -340,6 +353,7 @@ private final class Listener: NSObject, NSXPCListenerDelegate {
     let controller: BatteryController
     init(_ controller: BatteryController) { self.controller = controller }
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
+        diagnosticLog.notice("XPC accepted peer pid=\(connection.processIdentifier)")
         let session = BatterySession(controller)
         connection.exportedInterface = NSXPCInterface(with: BatteryControlXPCProtocol.self)
         connection.exportedObject = session
@@ -367,7 +381,8 @@ if CommandLine.arguments.contains("--probe") {
     print(String(data: result.encoded, encoding: .utf8) ?? "{}")
     exit(result.supported && result.error == nil ? 0 : 1)
 }
-if CommandLine.arguments.contains("--verify-signing") {
+let maintenanceRequested = CommandLine.arguments.contains("--retire-for-registration-repair")
+if CommandLine.arguments.contains("--verify-signing") || maintenanceRequested {
     // Read-only installation check: prove our pinned requirement accepts the
     // actual enclosing signed application, without registering or touching SMC.
     let appURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
@@ -381,7 +396,49 @@ if CommandLine.arguments.contains("--verify-signing") {
           SecStaticCodeCheckValidity(code, [], requirement) == errSecSuccess else {
         print("battery-control-helper: enclosing app signing verification failed"); exit(1)
     }
-    print("battery-control-helper: pinned signing requirement accepts installed app")
+    if !maintenanceRequested {
+        print("battery-control-helper: pinned signing requirement accepts installed app")
+        exit(0)
+    }
+}
+if maintenanceRequested {
+    func refuse(_ message: String) -> Never {
+        diagnosticLog.error("维护停止：\(message, privacy: .public)")
+        fputs("\(message)\n", stderr)
+        exit(1)
+    }
+    guard geteuid() == 0 else { refuse("需要管理员授权；未修改后台。") }
+    let ownership = BatteryOwnership()
+    // Holding the same root-owned lock prevents BOTH installed variants from
+    // taking control while launchd retires the old job. Never steal this lock.
+    guard ownership.acquire() else { refuse("其他后台仍持有电池控制权。请先恢复自动充电；连接断开后可稍候再试。未停止任何后台。") }
+    let hardware: BatteryControlHardware
+    do {
+        hardware = try BatteryControlHardware(validating: SMCClient())
+        guard try hardware.state() == .automatic else { refuse("充电或电源输入尚未恢复系统自动状态，未停止后台。") }
+    } catch { refuse("无法读取硬件状态，未停止后台：\(error.localizedDescription)") }
+    let diagnosis = BatteryLaunchDiagnosis.inspect()
+    guard diagnosis.readable else { refuse(diagnosis.summary) }
+    guard BatteryMaintenanceSafety.canStopService(lockHeld: ownership.held, command: try? hardware.state(),
+                                                  jobReadable: diagnosis.readable) else {
+        refuse("停止服务前的安全复查未通过，未停止后台。")
+    }
+    let oldPID = diagnosis.processID
+    guard oldPID != getpid() else { refuse("拒绝停止维护进程自身。") }
+    diagnosticLog.notice("管理员维护：已取得控制权锁且硬件为 automatic；停止服务 \(BatteryControlIdentifiers.helperID, privacy: .public)")
+    // Stop the exact launchd job, not an arbitrary caller-supplied PID. Unlike
+    // killing a process, bootout prevents KeepAlive from relaunching the old job.
+    let result = BoundedProcessRunner.run("/bin/launchctl", ["bootout", "system/" + BatteryControlIdentifiers.helperID],
+                                          timeout: 65, maxOutputBytes: 8192)
+    guard result.status == 0, !result.timedOut else {
+        refuse("系统未确认旧服务退出，结果未知；保留恢复记录。\(String(decoding: result.output, as: UTF8.self))")
+    }
+    if let oldPID {
+        guard kill(oldPID, 0) != 0, errno == ESRCH else { refuse("旧进程退出尚未确认，暂不注册新版。") }
+    }
+    guard (try? hardware.state()) == .automatic else { refuse("停止后硬件状态未确认，保留恢复记录，请检查系统充电。") }
+    ownership.release()
+    print("BATTERY_MAINTENANCE_RETIRED=1")
     exit(0)
 }
 guard geteuid() == 0, let requirement = BatteryControlIdentifiers.requirement(for: BatteryControlIdentifiers.appID) else { exit(1) }

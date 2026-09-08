@@ -13104,12 +13104,17 @@ struct MetricsTests {
                "the mouse page hides only with all six mouse features off")
         expect(!pageVisible(.energy, available: allFeatures.subtracting([.keepAwake, .brightness,
                                                                          .extraBrightness,
-                                                                         .bluetoothSleep,
-                                                                         .batteryManagement])),
-               "energy hides when all five of its features are off")
+                                                                         .bluetoothSleep])),
+               "energy hides when all four of its features are off")
         expect(pageVisible(.energy, available: [.extraBrightness]), "XDR alone keeps the energy page")
         expect(pageVisible(.energy, available: [.brightness]),
                "brightness control alone keeps the energy page")
+        expect(pageVisible(.batteryManagement, available: [.batteryManagement])
+                && !pageVisible(.batteryManagement, available: []),
+               "battery management owns its independent page visibility")
+        expect(AppFeature.batteryManagement.settingsDestination
+                == FeatureSettingsDestination(.batteryManagement),
+               "battery management routes to its independent Settings page")
         expect(!pageVisible(.monitor, available: allFeatures.subtracting(Set(FeatureVisibilitySupport.monitorFeatures))),
                "monitor page hides with every metric off")
         expect(pageVisible(.monitor, available: [.monitorNetwork]), "one metric keeps the monitor page")
@@ -18181,9 +18186,8 @@ struct MetricsTests {
             "snippets", "clipboard", "emoji", "folders", "answers", "calculator",
             "selection", "links", "files", "killProcess",
         ], "source ids are stable (they persist inside the disabled list)")
-        expect(CommandBarSource.actions.isAlwaysOn
-                && CommandBarSource.allCases.filter(\.isAlwaysOn).count == 1,
-               "only the app's own actions cannot be switched off")
+        expect(CommandBarSource.allCases.allSatisfy { !$0.isAlwaysOn },
+               "all sources can be switched off")
         expect(CommandBarClipboardAccess.canUseHistory(captureEnabled: true,
                                                        hasSavedItems: false),
                "clipboard capture makes the command bar history available")
@@ -18460,10 +18464,10 @@ struct MetricsTests {
                "every row knows which source it came from")
         expect(CommandBarPreferences.isEnabled(.folders, disabledRaw: "folders,emoji") == false
                 && CommandBarPreferences.isEnabled(.apps, disabledRaw: "folders,emoji") == true
-                && CommandBarPreferences.isEnabled(.actions, disabledRaw: "actions") == true,
-               "a switched off source stays off, and actions never can be")
+                && CommandBarPreferences.isEnabled(.actions, disabledRaw: "actions") == false,
+               "a switched off source stays off, including actions")
         expect(CommandBarPreferences.storageValue(for: [.emoji, .folders, .actions])
-                == "emoji,folders",
+                == "actions,emoji,folders",
                "the disabled list writes the same way every time")
         expect(CommandBarPreferences.disabledSources(from: "folders, nonsense ,emoji")
                 == Set([.folders, .emoji]),

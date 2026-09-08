@@ -9,6 +9,7 @@ struct CommandBarSettings: View {
     @ObservedObject private var service = CommandBarService.shared
     @AppStorage(DefaultsKey.commandBarShortcutEnabled) private var shortcutEnabled = false
     @AppStorage(DefaultsKey.commandBarCompactMode) private var compactMode = true
+    @AppStorage(DefaultsKey.commandBarSourceOrder) private var sourceOrderRaw = ""
     @AppStorage(DefaultsKey.commandBarDisabledSources) private var disabledSources = ""
     @AppStorage(DefaultsKey.commandBarAliases) private var aliasesRaw = ""
     @AppStorage(DefaultsKey.commandBarPins) private var pinsRaw = ""
@@ -98,13 +99,30 @@ struct CommandBarSettings: View {
                 Text(text.pageTitle)
             }
 
+            CommandBarBuiltinToolsSettings {
+                service.noteHubChange()
+            }
+
             Section {
-                ForEach(CommandBarSource.allCases) { source in
-                    Toggle(isOn: binding(for: source)) {
-                        Label(title(for: source), systemImage: source.symbolName)
+                ForEach(sourceOrder) { source in
+                    HStack {
+                        Toggle(isOn: binding(for: source)) {
+                            Label(title(for: source), systemImage: source.symbolName)
+                        }
+                        Button { moveSource(source, by: -1) } label: {
+                            Image(systemName: "chevron.up")
+                        }
+                        .help(text.sourceMoveUp)
+                        .disabled(source == sourceOrder.first)
+                        Button { moveSource(source, by: 1) } label: {
+                            Image(systemName: "chevron.down")
+                        }
+                        .help(text.sourceMoveDown)
+                        .disabled(source == sourceOrder.last)
                     }
-                    .disabled(source.isAlwaysOn)
                 }
+                Button(text.sourceOrderReset) { sourceOrderRaw = "" }
+                    .disabled(sourceOrderRaw.isEmpty)
             } header: {
                 Text(text.sourcesTitle)
             } footer: {
@@ -397,6 +415,18 @@ struct CommandBarSettings: View {
         CommandBarPreferences.decodeHidden(hiddenRaw)
             .sorted()
             .map { NamedRow(key: $0, title: title(forKey: $0), alias: "") }
+    }
+
+    private var sourceOrder: [CommandBarSource] {
+        CommandBarPreferences.sourceOrder(from: sourceOrderRaw)
+    }
+
+    private func moveSource(_ source: CommandBarSource, by delta: Int) {
+        var order = sourceOrder
+        guard let index = order.firstIndex(of: source),
+              order.indices.contains(index + delta) else { return }
+        order.swapAt(index, index + delta)
+        sourceOrderRaw = order.map(\.rawValue).joined(separator: ",")
     }
 
     private func binding(for source: CommandBarSource) -> Binding<Bool> {

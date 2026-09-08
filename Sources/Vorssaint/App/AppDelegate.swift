@@ -1322,8 +1322,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     // MARK: - Windows
 
     func openSettingsWindow() {
-        // Intentionally does NOT close the panel: the panel uses applicationDefined
-        // dismissal, so it stays open beside Settings for a live preview.
+        // Application-defined popovers do not dismiss when Settings opens.
+        // Finish closing first so its cleanup cannot steal the window's focus.
+        if popover.isShown {
+            closePopover { [weak self] in self?.openSettingsWindow() }
+            return
+        }
         let createdWindow = settingsWindow == nil
         if settingsWindow == nil {
             let host = NSHostingController(rootView: SettingsView())

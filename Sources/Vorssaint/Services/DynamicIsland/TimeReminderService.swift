@@ -135,7 +135,7 @@ final class TimeReminderService: ObservableObject {
             }
         }
         let nextPresentation = candidates.max(by: { $0.priority < $1.priority })
-        presentation = nextPresentation
+        if presentation != nextPresentation { presentation = nextPresentation }
         announceIfNeeded(previous: previousPresentation, current: nextPresentation)
     }
 
@@ -159,7 +159,8 @@ final class TimeReminderService: ObservableObject {
     }
 
     private func refreshTodayEvents() {
-        todayEvents = calendarEvents(on: Date())
+        let events = calendarEvents(on: Date())
+        if todayEvents != events { todayEvents = events }
     }
 
     func calendarEvents(on date: Date) -> [IslandCalendarEvent] {

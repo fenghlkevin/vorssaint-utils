@@ -15,22 +15,20 @@ import ServiceManagement
 enum SelfUninstall {
     private static var bundleID: String { Bundle.main.bundleIdentifier ?? "com.vorssaint.utils" }
 
-    /// Resets every TCC permission the app holds, drops the login item and the
-    /// optional closed-lid sudoers rule, and leaves the app in place. Calls back
-    /// on the main queue. Used by "Clear all permissions".
-    static func clearPermissions(completion: @escaping () -> Void) {
+    /// Resets this app's TCC permissions only. Hardware helpers, login items,
+    /// sudoers rules and feature preferences belong to the uninstall workflow.
+    /// Completion is delivered on the main queue.
+    static func clearPermissions(completion: @escaping (Bool) -> Void) {
         // Stop every input interceptor FIRST (on the main thread), then revoke.
         // Revoking Accessibility while a tap is live makes the tap callback hang
         // on an AX call and freezes the whole machine's input — see the note on
         // `suspendInputInterceptors`.
         DispatchQueue.main.async {
+            PermissionGuideOverlay.shared.dismiss()
             suspendInputInterceptors()
             DispatchQueue.global(qos: .userInitiated).async {
-                guard detachFromSystem() else { DispatchQueue.main.async(execute: completion); return }
-                removeSudoersRuleIfPresent {           // may show one admin prompt
-                    resetTCC()
-                    DispatchQueue.main.async(execute: completion)
-                }
+                let success = resetTCC()
+                DispatchQueue.main.async { completion(success) }
             }
         }
     }
@@ -39,6 +37,7 @@ enum SelfUninstall {
     /// bundle to the Trash and quits. Used by "Uninstall Vorssaint completely".
     static func uninstallCompletely() {
         DispatchQueue.main.async {
+            BatteryManagementService.shared.prepareForTermination()
             suspendInputInterceptors()
             DispatchQueue.global(qos: .userInitiated).async {
                 guard detachFromSystem() else { return }
@@ -61,7 +60,6 @@ enum SelfUninstall {
     /// `suspend`/`deactivate` is idempotent, so calling it when a service is
     /// already off is a no-op.
     private static func suspendInputInterceptors() {
-        BatteryManagementService.shared.prepareForTermination()
         // Deactivating Cleaning Mode re-syncs the services it paused back to
         // their preferences, so it has to happen before the suspends below,
         // or it would re-arm the very taps this teardown just stopped.
@@ -132,8 +130,9 @@ enum SelfUninstall {
     /// `tccutil reset All <bundle id>` clears Accessibility, Screen Recording,
     /// Full Disk Access, Automation and the rest, for this app only. The bundle
     /// id is a constant, so there is nothing to inject.
-    private static func resetTCC() {
-        _ = Shell.run("/usr/bin/tccutil", ["reset", "All", bundleID])
+    @discardableResult
+    private static func resetTCC() -> Bool {
+        Shell.run("/usr/bin/tccutil", ["reset", "All", bundleID]).status == 0
     }
 
     private static func removePreferences() {

@@ -130,7 +130,7 @@ final class BatteryStatusItemController: NSObject, NSPopoverDelegate, NSWindowDe
     private func makePanel(viewport: CGSize = CGSize(width: 320, height: 820)) -> BatteryManagementPanel {
         BatteryManagementPanel(viewport: viewport) { [weak self] in
             self?.popover.performClose(nil)
-            SettingsRouter.shared.page = .energy
+            SettingsRouter.shared.page = .batteryManagement
             (NSApp.delegate as? AppDelegate)?.openSettingsWindow()
         } contentHeightChanged: { [weak self] height in
             guard let self else { return }

@@ -502,6 +502,10 @@ final class BrightnessService: ObservableObject {
 
     /// The active list can include virtual devices with no picture a person
     /// can use. Those must not hide a stranded physical display.
+    static func isVirtualDisplay(_ id: CGDirectDisplayID) -> Bool {
+        displayInfoDictionary(id)?["kCGDisplayIsVirtualDevice"] as? Bool ?? false
+    }
+
     private static func drawableDisplayIDs(online: Set<CGDirectDisplayID>,
                                            active: Set<CGDirectDisplayID>) -> Set<CGDirectDisplayID> {
         let virtual = Set(online.filter {

@@ -43,7 +43,7 @@ final class URLCleanerService: ObservableObject {
         let cleaned: URLCleaning.Result?
     }
 
-    private var timer: Timer?
+    private var timer: UUID?
     private var lastChangeCount = 0
     private var pollInFlight = false
     private var pollToken: PollToken?
@@ -78,7 +78,7 @@ final class URLCleanerService: ObservableObject {
     }
 
     func stop() {
-        timer?.invalidate()
+        ClipboardPollingClock.shared.unsubscribe(timer)
         timer = nil
         cancelPoll()
         isRunning = false
@@ -89,12 +89,9 @@ final class URLCleanerService: ObservableObject {
             isRunning = true
             return
         }
-        let timer = Timer(timeInterval: 0.8, repeats: true) { [weak self] _ in
-            self?.cleanClipboardIfNeeded()
+        timer = ClipboardPollingClock.shared.subscribe { [weak self] count in
+            self?.cleanClipboardIfNeeded(observedCount: count)
         }
-        timer.tolerance = 0.25
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
         isRunning = true
         baselinePasteboard()
     }
@@ -120,8 +117,8 @@ final class URLCleanerService: ObservableObject {
         }
     }
 
-    private func cleanClipboardIfNeeded() {
-        guard !pollInFlight else { return }
+    private func cleanClipboardIfNeeded(observedCount: Int) {
+        guard isRunning, !pollInFlight, observedCount != lastChangeCount else { return }
         let sinceChangeCount = lastChangeCount
         let token = PollToken()
         pollToken = token

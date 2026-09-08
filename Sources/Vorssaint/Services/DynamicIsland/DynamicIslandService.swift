@@ -15,10 +15,16 @@ final class DynamicIslandService: ObservableObject {
         // Every tab shares the calendar design's canvas. Switching content
         // must never resize the AppKit window: that causes the lower edge to
         // jump and makes the tab animation appear to stutter.
-        NSSize(width: 760, height: 268)
+        NSSize(width: 780 * expandedScale, height: 310 * expandedScale)
     }
+    @Published private(set) var expandedScale: CGFloat = 1
+    @Published private(set) var usesLaptopLayout = false
     @Published var enabled: Bool { didSet { UserDefaults.standard.set(enabled, forKey: DefaultsKey.dynamicIslandEnabled); syncWithPreferences() } }
     @Published var selectedDisplay: String { didSet { UserDefaults.standard.set(selectedDisplay, forKey: DefaultsKey.dynamicIslandDisplay); rebuild() } }
+    @Published var showAIHookTab: Bool { didSet { UserDefaults.standard.set(showAIHookTab, forKey: "dynamicIsland.showAIHookTab") } }
+    @Published var showMusicTab: Bool { didSet { UserDefaults.standard.set(showMusicTab, forKey: "dynamicIsland.showMusicTab") } }
+    @Published var showTimerTab: Bool { didSet { UserDefaults.standard.set(showTimerTab, forKey: "dynamicIsland.showTimerTab") } }
+    @Published var showMemoTab: Bool { didSet { UserDefaults.standard.set(showMemoTab, forKey: "dynamicIsland.showMemoTab") } }
     @Published var nowPlaying: RadialNowPlayingSnapshot?
     @Published var isPlaying = false
     @Published var elapsedTime = 0.0
@@ -42,6 +48,14 @@ final class DynamicIslandService: ObservableObject {
     private var localClickMonitor: Any?
     private var refreshTimer: Timer?
     private var hoverTimer: Timer?
+    @Published private(set) var presentationSuspended = false
+    private var screenSleeping = false
+    private var sessionLocked = false
+    private var powerObservers: [(NotificationCenter, NSObjectProtocol)] = []
+    private var lastSuspendedLogRefresh = Date.distantPast
+    private var pendingCodexAttention = false
+    private var pendingTimeAttention = false
+
     private let playerQueryQueue = DispatchQueue(label: "com.vorssaint.dynamic-island.player-query",
                                                   qos: .utility)
     private var playerQueryInFlight = false
@@ -55,7 +69,14 @@ final class DynamicIslandService: ObservableObject {
     private init() {
         enabled = UserDefaults.standard.object(forKey: DefaultsKey.dynamicIslandEnabled) as? Bool ?? true
         selectedDisplay = UserDefaults.standard.string(forKey: DefaultsKey.dynamicIslandDisplay) ?? "active"
+        showAIHookTab = UserDefaults.standard.object(forKey: "dynamicIsland.showAIHookTab") as? Bool ?? true
+        showMusicTab = UserDefaults.standard.object(forKey: "dynamicIsland.showMusicTab") as? Bool ?? true
+        showTimerTab = UserDefaults.standard.object(forKey: "dynamicIsland.showTimerTab") as? Bool ?? true
+        showMemoTab = UserDefaults.standard.object(forKey: "dynamicIsland.showMemoTab") as? Bool ?? true
         activeDisplayNumber = Self.screen(at: NSEvent.mouseLocation)?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+    }
+    var visibleTabCount: Int {
+        [showAIHookTab, showMusicTab, showTimerTab, showMemoTab].filter { $0 }.count
     }
     func syncWithPreferences() {
         guard AppFeature.dynamicIsland.isAvailable, enabled else { stop(); return }
@@ -64,13 +85,19 @@ final class DynamicIslandService: ObservableObject {
     func start() {
         guard enabled, refreshTimer == nil else { return }
         CodexIslandService.shared.syncHookInstallation()
+        installPowerObservers()
         show(); refresh()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            TimeReminderService.shared.tick(); self?.refresh(); self?.show()
+            guard let self else { return }
+            TimeReminderService.shared.tick()
+            if presentationSuspended {
+                let readLogs = Date().timeIntervalSince(lastSuspendedLogRefresh) >= 15
+                if readLogs { lastSuspendedLogRefresh = Date() }
+                CodexIslandService.shared.refresh(includeSessionLogs: readLogs)
+            } else { refresh(); show() }
         }
-        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
-            self?.updateHoverState()
-        }
+        refreshTimer?.tolerance = 0.15
+        startHoverTimer()
         monitor = NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in self?.rebuild() }
         globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             DispatchQueue.main.async { self?.handlePointerClick(at: NSEvent.mouseLocation) }
@@ -80,7 +107,62 @@ final class DynamicIslandService: ObservableObject {
             return event
         }
     }
-    func stop() { if let monitor { NotificationCenter.default.removeObserver(monitor) }; monitor = nil; if let globalClickMonitor { NSEvent.removeMonitor(globalClickMonitor) }; globalClickMonitor = nil; if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }; localClickMonitor = nil; refreshTimer?.invalidate(); refreshTimer = nil; hoverTimer?.invalidate(); hoverTimer = nil; musicLaunchTimeoutWorkItem?.cancel(); musicLaunchTimeoutWorkItem = nil; musicLaunchInProgress = false; hide() }
+    private func startHoverTimer() {
+        guard !presentationSuspended, hoverTimer == nil else { return }
+        hoverTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            self?.updateHoverState()
+        }
+        hoverTimer?.tolerance = 0.02
+    }
+
+    private func installPowerObservers() {
+        guard powerObservers.isEmpty else { return }
+        sessionLocked = (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
+        func observe(_ center: NotificationCenter, _ name: Notification.Name, _ action: @escaping () -> Void) {
+            let token = center.addObserver(forName: name, object: nil, queue: .main) { _ in action() }
+            powerObservers.append((center, token))
+        }
+        observe(DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsLocked")) { [weak self] in
+            self?.sessionLocked = true; self?.syncPresentationSuspension()
+        }
+        observe(DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsUnlocked")) { [weak self] in
+            self?.sessionLocked = false; self?.syncPresentationSuspension()
+        }
+        observe(NSWorkspace.shared.notificationCenter, NSWorkspace.screensDidSleepNotification) { [weak self] in
+            self?.screenSleeping = true; self?.syncPresentationSuspension()
+        }
+        observe(NSWorkspace.shared.notificationCenter, NSWorkspace.screensDidWakeNotification) { [weak self] in
+            self?.screenSleeping = false; self?.syncPresentationSuspension()
+        }
+        syncPresentationSuspension()
+    }
+
+    private func syncPresentationSuspension() {
+        let suspended = sessionLocked || screenSleeping
+        guard presentationSuspended != suspended else { return }
+        presentationSuspended = suspended
+        if suspended {
+            hoverTimer?.invalidate(); hoverTimer = nil
+            collapseWorkItem?.cancel(); collapseWorkItem = nil
+            hide()
+        } else if enabled {
+            startHoverTimer()
+            refresh(); show()
+            if pendingCodexAttention { pendingCodexAttention = false; activateCodex() }
+            if pendingTimeAttention {
+                pendingTimeAttention = false
+                if TimeReminderService.shared.presentation != nil { activateTimeReminder() }
+            }
+        }
+    }
+
+    func stop() {
+        for (center, token) in powerObservers { center.removeObserver(token) }
+        powerObservers.removeAll()
+        pendingCodexAttention = false; pendingTimeAttention = false
+        screenSleeping = false; sessionLocked = false
+        if !presentationSuspended { presentationSuspended = true }
+        if let monitor { NotificationCenter.default.removeObserver(monitor) }; monitor = nil; if let globalClickMonitor { NSEvent.removeMonitor(globalClickMonitor) }; globalClickMonitor = nil; if let localClickMonitor { NSEvent.removeMonitor(localClickMonitor) }; localClickMonitor = nil; refreshTimer?.invalidate(); refreshTimer = nil; hoverTimer?.invalidate(); hoverTimer = nil; musicLaunchTimeoutWorkItem?.cancel(); musicLaunchTimeoutWorkItem = nil; musicLaunchInProgress = false; hide() }
     private var targetScreen: NSScreen? {
         if selectedDisplay == "active" {
             if let activeDisplayNumber,
@@ -119,7 +201,7 @@ final class DynamicIslandService: ObservableObject {
         return nil
     }
     private func show(animated: Bool = false) {
-        guard let screen = targetScreen else { return }
+        guard enabled, !presentationSuspended, let screen = targetScreen else { return }
         if window == nil {
             let w = KeyableDynamicIslandPanel(contentRect: .zero,
                                                styleMask: [.borderless, .nonactivatingPanel],
@@ -133,6 +215,11 @@ final class DynamicIslandService: ObservableObject {
             window = w
         }
         let visible = screen.frame
+        let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        let isBuiltInDisplay = displayID.map { CGDisplayIsBuiltin($0) != 0 } ?? false
+        if usesLaptopLayout != isBuiltInDisplay { usesLaptopLayout = isBuiltInDisplay }
+        let nextExpandedScale: CGFloat = isBuiltInDisplay ? 0.84 : 1
+        if expandedScale != nextExpandedScale { expandedScale = nextExpandedScale }
         let hasNotch = screen.safeAreaInsets.top > 0
         let notchWidth: CGFloat = {
             guard hasNotch,
@@ -152,14 +239,13 @@ final class DynamicIslandService: ObservableObject {
         let preferredCompactWidth: CGFloat = CodexIslandService.shared.enabled ? 270 : 230
         let nextCompactWidth = nextIdleCompact
             ? 96
-            : (hasNotch ? max(preferredCompactWidth, notchWidth + 244) : preferredCompactWidth)
+            : (hasNotch ? (isBuiltInDisplay ? notchWidth + 60 : max(preferredCompactWidth, notchWidth + 244)) : (isBuiltInDisplay ? 190 : preferredCompactWidth))
         if compactWidth != nextCompactWidth { compactWidth = nextCompactWidth }
-        // A physical notch occupies the safe-area height and cannot receive a
-        // pointer. Keep 8 pt of the virtual island below it as a reliable
-        // hover target on 14/16-inch MacBook Pro displays.
+        // On the built-in display, align the bottom with the physical notch.
+        // The side wings and expanded hover hit region still allow activation.
         let nextCompactHeight = nextIdleCompact
             ? 10
-            : (hasNotch ? max(38, screen.safeAreaInsets.top + 8) : 28)
+            : (hasNotch ? screen.safeAreaInsets.top + (isBuiltInDisplay ? 0 : 8) : 28)
         if compactHeight != nextCompactHeight { compactHeight = nextCompactHeight }
         let size = expandedSize
         let frame = NSRect(x: visible.midX - size.width / 2,
@@ -175,13 +261,13 @@ final class DynamicIslandService: ObservableObject {
         } else if window?.frame != frame {
             window?.setFrame(frame, display: true)
         }
-        window?.ignoresMouseEvents = !expanded
-        window?.orderFrontRegardless()
+        if window?.ignoresMouseEvents != !expanded { window?.ignoresMouseEvents = !expanded }
+        if window?.isVisible == false { window?.orderFrontRegardless() }
     }
     private func hide() { window?.orderOut(nil) }
     private func rebuild() { guard enabled else { return }; hide(); show() }
     private func refresh() {
-        guard enabled else { return }
+        guard enabled, !presentationSuspended else { return }
         CodexIslandService.shared.refresh()
         RadialNowPlayingService.shared.refresh { [weak self] state in
             guard let self else { return }
@@ -199,16 +285,21 @@ final class DynamicIslandService: ObservableObject {
     }
 
     private func publish(_ snapshot: RadialNowPlayingSnapshot?) {
+        guard enabled, !presentationSuspended else { return }
         if nowPlaying != snapshot { nowPlaying = snapshot }
         if snapshot != nil {
             musicLaunchTimeoutWorkItem?.cancel()
             musicLaunchTimeoutWorkItem = nil
-            musicLaunchInProgress = false
+            if musicLaunchInProgress { musicLaunchInProgress = false }
         }
-        isPlaying = snapshot?.isPlaying ?? false
-        elapsedTime = snapshot?.elapsedTime ?? 0
-        duration = snapshot?.duration ?? 0
-        outputVolume = AppVolumeMixer.systemOutputVolumeLevel() ?? outputVolume
+        let nextPlaying = snapshot?.isPlaying ?? false
+        let nextElapsed = snapshot?.elapsedTime ?? 0
+        let nextDuration = snapshot?.duration ?? 0
+        let nextVolume = AppVolumeMixer.systemOutputVolumeLevel() ?? outputVolume
+        if isPlaying != nextPlaying { isPlaying = nextPlaying }
+        if elapsedTime != nextElapsed { elapsedTime = nextElapsed }
+        if duration != nextDuration { duration = nextDuration }
+        if outputVolume != nextVolume { outputVolume = nextVolume }
         show()
     }
 
@@ -216,6 +307,7 @@ final class DynamicIslandService: ObservableObject {
     /// visibly playing. Query Music only as a fallback; other players still use
     /// the system-wide route above.
     private func refreshAppleMusicFallback() {
+        guard enabled, !presentationSuspended else { return }
         guard !playerQueryInFlight else { return }
         guard NSWorkspace.shared.runningApplications.contains(where: {
                   $0.bundleIdentifier == "com.apple.Music"
@@ -329,13 +421,43 @@ final class DynamicIslandService: ObservableObject {
         _ = AppVolumeMixer.setSystemOutputVolume(value)
     }
 
+    func toggleMusicShuffle() {
+        runMusicCommand("set shuffle enabled to not shuffle enabled")
+    }
+
+    func cycleMusicRepeat() {
+        playerQueryQueue.async { [weak self] in
+            let script = """
+            tell application "Music"
+                if song repeat is off then
+                    set song repeat to all
+                else if song repeat is all then
+                    set song repeat to one
+                else
+                    set song repeat to off
+                end if
+            end tell
+            """
+            _ = AppleScriptRunner.runDetailed(script)
+            DispatchQueue.main.async { self?.refresh() }
+        }
+    }
+
+    func openMusic() {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Music") {
+            NSWorkspace.shared.openApplication(at: url, configuration: .init())
+        }
+    }
+
     func activateTimeReminder() {
+        guard !presentationSuspended else { pendingTimeAttention = true; return }
         timeReminderActivationID = UUID()
         show()
         if !expanded { setExpanded(true) }
     }
 
     func activateCodex(duration: TimeInterval = 5) {
+        guard !presentationSuspended else { pendingCodexAttention = true; return }
         codexActivationID = UUID()
         codexAttentionDeadline = Date().addingTimeInterval(duration)
         show()
@@ -450,38 +572,52 @@ final class DynamicIslandService: ObservableObject {
     }
 }
 
-private struct CodexActivityIndicator: View {
+struct CodexActivityIndicator: View {
+    @ObservedObject private var island = DynamicIslandService.shared
     let status: CodexIslandSession.Status?
 
     var body: some View {
         if status == .running {
-            TimelineView(.animation(minimumInterval: 0.16)) { timeline in
-                pixelIndicator(phase: Int(timeline.date.timeIntervalSinceReferenceDate / 0.18) % 3)
+            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: island.presentationSuspended)) { timeline in
+                pulseIndicator(phase: timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.25) / 1.25)
             }
         } else {
-            pixelIndicator(phase: nil)
+            pulseIndicator(phase: 0.5)
         }
     }
 
-    private func pixelIndicator(phase: Int?) -> some View {
-        HStack(spacing: 3) {
-            PixelCodexAgent(color: color, intensity: phase == nil ? 0.82 : 1)
-            VStack(spacing: 1.5) {
-                ForEach(0..<3, id: \.self) { index in
-                    RoundedRectangle(cornerRadius: 0.5)
-                        .fill(color)
-                        .frame(width: 2, height: 3)
-                        .opacity(barOpacity(index, phase: phase))
-                }
+    private func pulseIndicator(phase: Double) -> some View {
+        Canvas { context, size in
+            let points: [CGPoint] = [
+                CGPoint(x: 0.02, y: 0.55), CGPoint(x: 0.20, y: 0.55),
+                CGPoint(x: 0.29, y: 0.40), CGPoint(x: 0.38, y: 0.69),
+                CGPoint(x: 0.49, y: 0.10), CGPoint(x: 0.61, y: 0.87),
+                CGPoint(x: 0.72, y: 0.47), CGPoint(x: 0.81, y: 0.55),
+                CGPoint(x: 0.98, y: 0.55)
+            ].map { CGPoint(x: $0.x * size.width, y: $0.y * size.height) }
+
+            var base = Path()
+            base.move(to: points[0])
+            for point in points.dropFirst() { base.addLine(to: point) }
+            context.stroke(base, with: .color(color.opacity(0.48)),
+                           style: StrokeStyle(lineWidth: 1.55, lineCap: .round, lineJoin: .round))
+
+            for index in 0..<(points.count - 1) {
+                let position = (Double(index) + 0.5) / Double(points.count - 1)
+                let distance = abs(position - phase)
+                let wrappedDistance = min(distance, 1 - distance)
+                let intensity = max(0, 1 - wrappedDistance / 0.22)
+                guard intensity > 0 else { continue }
+                var segment = Path()
+                segment.move(to: points[index])
+                segment.addLine(to: points[index + 1])
+                context.stroke(segment, with: .color(color.opacity(0.52 + intensity * 0.48)),
+                               style: StrokeStyle(lineWidth: 1.7 + intensity * 0.45,
+                                                  lineCap: .round, lineJoin: .round))
             }
         }
-        .frame(width: 23, height: 13)
-        .shadow(color: color.opacity(status == .running ? 0.55 : 0.28), radius: 3)
-    }
-
-    private func barOpacity(_ index: Int, phase: Int?) -> Double {
-        guard let phase else { return status == .completed ? 0.58 : 0.82 }
-        return index == phase ? 1 : 0.28
+        .frame(width: 25, height: 20)
+        .shadow(color: color.opacity(status == .running ? 0.62 : 0.25), radius: 2.5)
     }
 
     private var color: Color {
@@ -494,49 +630,19 @@ private struct CodexActivityIndicator: View {
     }
 }
 
-private struct PixelCodexAgent: View {
-    let color: Color
-    let intensity: Double
-
-    // A tiny seven-column agent mark drawn cell-by-cell so it stays crisp at
-    // menu-bar scale and reads like the activity glyph in Vibe Island.
-    private let cells: [(Int, Int)] = [
-        (2, 0), (3, 0), (4, 0),
-        (1, 1), (2, 1), (3, 1), (4, 1), (5, 1),
-        (0, 2), (1, 2), (3, 2), (5, 2), (6, 2),
-        (0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (6, 3),
-        (1, 4), (3, 4), (5, 4)
-    ]
-
-    var body: some View {
-        Canvas { context, _ in
-            for (column, row) in cells {
-                context.fill(
-                    Path(CGRect(x: CGFloat(column * 2), y: CGFloat(row * 2), width: 2, height: 2)),
-                    with: .color(color.opacity(intensity))
-                )
-            }
-        }
-        .frame(width: 14, height: 10)
-    }
-}
-
 private struct DynamicIslandView: View {
     private enum IslandTab: Equatable { case codex, music, time, memo }
-    private enum TimerMode { case countdown, focus }
+    private enum TimerMode { case countdown, focus, rest }
     @ObservedObject private var island = DynamicIslandService.shared
     @ObservedObject private var reminders = TimeReminderService.shared
     @ObservedObject private var codex = CodexIslandService.shared
     @ObservedObject private var islandMemos = IslandMemoService.shared
     @State private var selectedTab: IslandTab = .codex
     @State private var quickMinutes = 25
-    @State private var codexPrompt = ""
     @State private var memoText = ""
     @State private var memoPage = 0
-    @State private var composerSessionID: String?
-    @State private var timerMode: TimerMode = .countdown
+    @State private var timerMode: TimerMode = .focus
     @State private var selectedCalendarDate = Date()
-    @FocusState private var codexPromptFocused: Bool
     @FocusState private var memoFocused: Bool
     var body: some View {
         Group {
@@ -568,8 +674,8 @@ private struct DynamicIslandView: View {
         // the shell's smooth, interruptible transition.
         .animation(.easeOut(duration: island.showsExpandedContent ? 0.18 : 0.10),
                    value: island.showsExpandedContent)
-        .frame(width: island.expanded ? island.expandedSize.width : island.compactWidth,
-               height: island.expanded ? island.expandedSize.height : island.compactHeight)
+        .frame(width: island.expanded ? 780 : island.compactWidth,
+               height: island.expanded ? 310 : island.compactHeight)
         .background(Color.black, in: UnevenRoundedRectangle(topLeadingRadius: 0,
                                                             bottomLeadingRadius: 8,
                                                             bottomTrailingRadius: 8,
@@ -580,91 +686,135 @@ private struct DynamicIslandView: View {
                                          bottomTrailingRadius: 8,
                                          topTrailingRadius: 0,
                                          style: .continuous))
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .topTrailing) {
             if island.showsExpandedContent {
                 modeSwitcher.transition(.opacity.animation(.easeOut(duration: 0.10)))
             }
         }
         .animation(.easeInOut(duration: 0.16), value: selectedTab)
+        .onAppear { ensureSelectedTabIsVisible() }
+        .onChange(of: visibleTabsSignature) { _, _ in ensureSelectedTabIsVisible() }
         .onChange(of: reminders.presentation) { oldValue, newValue in
-            if oldValue == nil, newValue != nil { selectedTab = .time }
-            if newValue == nil { selectedTab = .codex }
+            if oldValue == nil, newValue != nil, island.showTimerTab { selectedTab = .time }
+            if newValue == nil, island.showAIHookTab { selectedTab = .codex }
         }
-        .onChange(of: island.timeReminderActivationID) { _, _ in selectedTab = .time }
-        .onChange(of: island.codexActivationID) { _, _ in selectedTab = .codex }
+        .onChange(of: island.timeReminderActivationID) { _, _ in
+            if island.showTimerTab { selectedTab = .time }
+        }
+        .onChange(of: island.codexActivationID) { _, _ in
+            if island.showAIHookTab { selectedTab = .codex }
+        }
         .onChange(of: selectedTab) { _, value in
             island.setCodexTabActive(value == .codex)
             island.setExpandedCanvas(value == .time ? "time" : "codex")
         }
+        .scaleEffect(island.expanded ? island.expandedScale : 1, anchor: .top)
+        .frame(width: island.expanded ? island.expandedSize.width : island.compactWidth,
+               height: island.expanded ? island.expandedSize.height : island.compactHeight,
+               alignment: .top)
+        // The hosting window retains the expanded canvas when collapsed.
+        // Fill it only AFTER sizing the island, so AppKit cannot stretch the
+        // root's compact frame or anchor it at the window's leading edge.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
     private var modeSwitcher: some View {
         HStack(spacing: 2) {
             Spacer()
-            Button { selectedTab = .codex } label: {
-                Label("Codex", systemImage: "terminal.fill").labelStyle(.iconOnly)
-                    .foregroundStyle(.white)
-                    .font(.system(size: 11)).frame(width: 25, height: 22).background(selectedTab == .codex ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+            if island.showAIHookTab {
+                Button { selectedTab = .codex } label: {
+                    Label("AI Hook", systemImage: "terminal.fill").labelStyle(.iconOnly)
+                        .foregroundStyle(.white)
+                        .font(.system(size: 11)).frame(width: 25, height: 22).background(selectedTab == .codex ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                }
             }
-            Button { selectedTab = .music } label: {
-                Label("音乐", systemImage: "music.note").labelStyle(.iconOnly)
-                    .foregroundStyle(.white)
-                    .font(.system(size: 11)).frame(width: 25, height: 22).background(selectedTab == .music ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+            if island.showMusicTab {
+                Button { selectedTab = .music } label: {
+                    Label("音乐", systemImage: "music.note").labelStyle(.iconOnly)
+                        .foregroundStyle(.white)
+                        .font(.system(size: 11)).frame(width: 25, height: 22).background(selectedTab == .music ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                }
             }
-            Button { selectedTab = .time } label: {
-                Label("时间", systemImage: "timer").labelStyle(.iconOnly)
-                    .foregroundStyle(.white)
-                    .font(.system(size: 11)).frame(width: 25, height: 22).background(selectedTab == .time ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+            if island.showTimerTab {
+                Button { selectedTab = .time } label: {
+                    Label("定时器", systemImage: "timer").labelStyle(.iconOnly)
+                        .foregroundStyle(.white)
+                        .font(.system(size: 11)).frame(width: 25, height: 22).background(selectedTab == .time ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                }
             }
-            Button { selectedTab = .memo } label: {
-                Label("备忘", systemImage: "square.and.pencil").labelStyle(.iconOnly)
-                    .foregroundStyle(.white)
-                    .font(.system(size: 11)).frame(width: 25, height: 22).background(selectedTab == .memo ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+            if island.showMemoTab {
+                Button { selectedTab = .memo } label: {
+                    Label("备忘", systemImage: "square.and.pencil").labelStyle(.iconOnly)
+                        .foregroundStyle(.white)
+                        .font(.system(size: 11)).frame(width: 25, height: 22).background(selectedTab == .memo ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
+                }
             }
         }.padding(.top, 6).padding(.trailing, 10)
     }
 
-    private var timeSetupContent: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                focusTimerCard
-                    .frame(width: 270)
-                calendarCard
-            }
-            nextMeetingFooter
+    private var visibleTabsSignature: String {
+        "\(island.showAIHookTab)-\(island.showMusicTab)-\(island.showTimerTab)-\(island.showMemoTab)"
+    }
+
+    private func isVisible(_ tab: IslandTab) -> Bool {
+        switch tab {
+        case .codex: return island.showAIHookTab
+        case .music: return island.showMusicTab
+        case .time: return island.showTimerTab
+        case .memo: return island.showMemoTab
         }
-        .padding(.horizontal, 14).padding(.top, 34).padding(.bottom, 8)
+    }
+
+    private func ensureSelectedTabIsVisible() {
+        guard !isVisible(selectedTab) else { return }
+        if island.showAIHookTab { selectedTab = .codex }
+        else if island.showMusicTab { selectedTab = .music }
+        else if island.showTimerTab { selectedTab = .time }
+        else if island.showMemoTab { selectedTab = .memo }
+    }
+
+    private var timeSetupContent: some View {
+        HStack(alignment: .top, spacing: 12) {
+            focusTimerCard
+                .frame(width: 365)
+            calendarCard
+        }
+        .frame(maxHeight: .infinity)
+        .padding(.horizontal, 14).padding(.top, 34).padding(.bottom, 12)
     }
 
     private var focusTimerCard: some View {
-        VStack(spacing: 4) {
-            HStack(spacing: 12) {
-                Button { quickMinutes = max(1, quickMinutes - 1) } label: {
-                    Image(systemName: "minus.circle")
-                        .font(.system(size: 19, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.55))
+        VStack(spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("专注当下").font(.system(size: 17, weight: .bold))
+                    Text("更好的自己，从专注开始").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
                 }
+                Spacer()
+                Label(timerMode == .rest ? "放松片刻" : "保持专注 · 高效生活", systemImage: "leaf.fill")
+                    .font(.system(size: 9)).foregroundStyle(.orange)
+                    .padding(.horizontal, 10).frame(height: 25)
+                    .background(.white.opacity(0.06), in: Capsule())
+            }
+            HStack(spacing: 20) {
+                Button { quickMinutes = max(1, quickMinutes - 1) } label: {
+                    Image(systemName: "minus")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .frame(width: 30, height: 30)
+                        .background(.white.opacity(0.07), in: Circle())
+                }
+                .accessibilityLabel("减少一分钟")
                 ZStack {
-                    Circle().stroke(.white.opacity(0.09), lineWidth: 1)
-                    ForEach(0..<60, id: \.self) { index in
-                        Capsule()
-                            .fill(index <= Int(Double(quickMinutes) / 60 * 59) ? Color.orange : Color.white.opacity(0.12))
-                            .frame(width: 1.5, height: index % 5 == 0 ? 7 : 4)
-                            .offset(y: -49)
-                            .rotationEffect(.degrees(Double(index) * 6))
-                    }
-                    Circle()
-                        .fill(.orange)
-                        .frame(width: 7, height: 7)
-                        .shadow(color: .orange.opacity(0.65), radius: 3)
-                        .offset(y: -49)
-                        .rotationEffect(.degrees(Double(quickMinutes % 60) * 6))
+                    Circle().stroke(.white.opacity(0.10), lineWidth: 9)
+                    Circle().trim(from: 0, to: min(Double(quickMinutes) / 60, 1))
+                        .stroke(.orange, style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
                     VStack(spacing: 4) {
                         Text(String(format: "%02d:00", quickMinutes))
-                            .font(.system(size: 32, weight: .semibold, design: .rounded)).monospacedDigit()
-                        Text(timerMode == .focus ? "专注倒计时" : "普通倒计时")
-                            .font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.55))
+                            .font(.system(size: 30, weight: .semibold, design: .rounded)).monospacedDigit()
+                        Text(timerMode == .rest ? "休息时间" : "专注进行中")
+                            .font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.55))
                     }
                 }
                 .frame(width: 112, height: 112)
@@ -674,35 +824,33 @@ private struct DynamicIslandView: View {
                 .accessibilityLabel("拖动调整倒计时分钟")
                 .accessibilityValue("\(quickMinutes) 分钟")
                 Button { quickMinutes = min(240, quickMinutes + 1) } label: {
-                    Image(systemName: "plus.circle")
-                        .font(.system(size: 19, weight: .regular))
-                        .foregroundStyle(.white.opacity(0.55))
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .frame(width: 30, height: 30)
+                        .background(.white.opacity(0.07), in: Circle())
                 }
+                .accessibilityLabel("增加一分钟")
             }
-            HStack(spacing: 9) {
-                ForEach([15, 25, 45], id: \.self) { minutes in
-                    Button("\(minutes)分") { quickMinutes = minutes }
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(width: 58, height: 20)
-                        .background(quickMinutes == minutes ? Color.orange.opacity(0.16) : .clear,
-                                    in: Capsule())
-                        .overlay(Capsule().stroke(quickMinutes == minutes ? Color.orange : Color.white.opacity(0.18)))
-                        .foregroundStyle(quickMinutes == minutes ? .orange : .white.opacity(0.62))
-                }
-            }
-            HStack(spacing: 3) {
-                timerModeButton(.countdown, title: "倒计时", symbol: "timer")
-                timerModeButton(.focus, title: "专注", symbol: "moon.stars.fill")
-            }
-            .padding(3)
-            .frame(maxWidth: .infinity, minHeight: 30)
-            .background(.white.opacity(0.065), in: Capsule())
+            .frame(maxWidth: .infinity)
+            HStack(spacing: 6) {
+                timerModeButton(.focus, title: "专注", symbol: "scope")
+                timerModeButton(.rest, title: "休息", symbol: "cup.and.saucer.fill")
             Button { startSelectedTimer() } label: {
-                Label(timerMode == .focus ? "开始专注" : "开始倒计时", systemImage: "play.fill")
-                    .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 28)
+                Label("开始", systemImage: "play.fill")
+                    .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 32)
             }.buttonStyle(.plain).background(.orange, in: Capsule())
+                .accessibilityLabel(timerMode == .rest ? "开始休息" : "开始专注")
+            }
+            HStack {
+                Image(systemName: "quote.opening")
+                Text("专注不是排除干扰，而是选择重要的事。")
+                Spacer()
+                Image(systemName: "quote.closing")
+            }.font(.system(size: 9)).foregroundStyle(.white.opacity(0.42))
         }
-        .padding(7)
+        .padding(10)
+        .frame(maxHeight: .infinity)
         .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.08)))
     }
@@ -718,20 +866,31 @@ private struct DynamicIslandView: View {
                 Button { shiftSelectedDate(days: 7) } label: { Image(systemName: "chevron.right") }
             }.foregroundStyle(.white.opacity(0.75))
             weekStrip
+                .padding(6)
+                .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 9))
             VStack(spacing: 6) {
+                HStack {
+                    Label("当天日程", systemImage: "calendar").font(.system(size: 10, weight: .semibold))
+                    Spacer()
+                }.foregroundStyle(.orange)
                 if selectedDateEvents.isEmpty {
-                    HStack {
-                        Image(systemName: "calendar.badge.clock").foregroundStyle(.orange)
+                    VStack(spacing: 5) {
+                        Image(systemName: "doc.text").font(.system(size: 19)).foregroundStyle(.white.opacity(0.4))
                         Text(reminders.calendarEnabled ? "当天暂无日程" : "开启日历后显示日程")
-                            .font(.system(size: 12)).foregroundStyle(.white.opacity(0.5))
-                        Spacer()
-                    }.frame(maxHeight: .infinity)
+                            .font(.system(size: 11)).foregroundStyle(.white.opacity(0.6))
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    ForEach(Array(selectedDateEvents.prefix(3))) { event in calendarEventRow(event) }
+                    ScrollView {
+                        VStack(spacing: 6) {
+                            ForEach(selectedDateEvents) { event in calendarEventRow(event) }
+                        }
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .padding(11)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.08)))
     }
@@ -775,12 +934,17 @@ private struct DynamicIslandView: View {
 
     private func startSelectedTimer() {
         if timerMode == .focus { reminders.startFocus(minutes: quickMinutes) }
+        else if timerMode == .rest { reminders.startCountdown(title: "休息", minutes: quickMinutes) }
         else { reminders.startCountdown(title: "倒计时", minutes: quickMinutes) }
     }
 
     private func timerModeButton(_ mode: TimerMode, title: String, symbol: String) -> some View {
         let selected = timerMode == mode
-        return Button { timerMode = mode } label: {
+        return Button {
+            timerMode = mode
+            if mode == .rest { quickMinutes = 10 }
+            if mode == .focus, quickMinutes == 10 { quickMinutes = 25 }
+        } label: {
             Label(title, systemImage: symbol)
                 .font(.system(size: 10.5, weight: .semibold))
                 .frame(maxWidth: .infinity, minHeight: 24)
@@ -857,6 +1021,29 @@ private struct DynamicIslandView: View {
 
     private var notchCompactContent: some View {
         HStack(spacing: 0) {
+            if island.usesLaptopLayout {
+                Group {
+                    if reminders.presentation != nil || !codex.enabled {
+                        Image(systemName: compactSymbol).font(.system(size: 13))
+                    } else {
+                        CodexActivityIndicator(status: codex.activeSession?.status)
+                    }
+                }.frame(width: 30)
+
+                Color.clear.frame(width: island.displayNotchWidth)
+
+                Group {
+                    if let reminder = reminders.presentation {
+                        Text(compactTitle(reminder)).lineLimit(1)
+                    } else if codex.enabled {
+                        Text("\(codex.sessions.count)").monospacedDigit()
+                    } else {
+                        compactTrailingContent
+                    }
+                }
+                .font(.system(size: 10, weight: .medium))
+                .frame(width: 30)
+            } else {
             compactLeadingContent
                 .frame(width: 154, alignment: .leading)
                 .padding(.leading, 10)
@@ -867,6 +1054,7 @@ private struct DynamicIslandView: View {
             compactTrailingContent
                 .frame(width: 70, alignment: .trailing)
                 .padding(.trailing, 10)
+            }
         }
     }
 
@@ -1240,26 +1428,6 @@ private struct DynamicIslandView: View {
                     }
                     .frame(height: 36)
                 }
-                if let active = codex.activeSession, composerSessionID == active.id {
-                    HStack(spacing: 8) {
-                        TextField("给当前 Codex 任务补充指令…", text: $codexPrompt)
-                            .focused($codexPromptFocused)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12.5))
-                            .padding(.horizontal, 11).padding(.vertical, 7)
-                            .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.white.opacity(0.1)))
-                            .onSubmit { submitCodexPrompt(active) }
-                        Button { submitCodexPrompt(active) } label: {
-                            Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold))
-                                .frame(width: 25, height: 25)
-                        }.buttonStyle(.borderedProminent)
-                            .disabled(codexPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        Button { composerSessionID = nil; codexPrompt = "" } label: {
-                            Image(systemName: "xmark").foregroundStyle(.white.opacity(0.55))
-                        }
-                    }.frame(height: 34).padding(.leading, 44)
-                }
             } else {
                 HStack(spacing: 10) {
                     CodexActivityIndicator(status: nil)
@@ -1289,10 +1457,6 @@ private struct DynamicIslandView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    private func submitCodexPrompt(_ session: CodexIslandSession) {
-        if codex.submit(codexPrompt, to: session) { codexPrompt = "" }
-    }
-
     private func codexSessionRow(_ session: CodexIslandSession, fontSize: Double) -> some View {
         HStack(spacing: 10) {
                 CodexActivityIndicator(status: session.status)
@@ -1316,18 +1480,6 @@ private struct DynamicIslandView: View {
                     Button("拒绝") { codex.respondToApproval(for: session, allow: false) }
                         .buttonStyle(.bordered)
                 } else {
-                    Button {
-                        composerSessionID = composerSessionID == session.id ? nil : session.id
-                        if composerSessionID != nil {
-                            DispatchQueue.main.async { codexPromptFocused = true }
-                        }
-                    } label: {
-                        Image(systemName: "text.bubble")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.68))
-                            .frame(width: 24, height: 22)
-                            .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
-                    }
                     codexSessionTrailing(session)
                 }
             }
@@ -1400,13 +1552,27 @@ private struct DynamicIslandView: View {
     }
 
     private var expandedContent: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 16) {
+        VStack(spacing: 12) {
+            HStack(spacing: 26) {
             if let track = island.nowPlaying {
                 artwork(for: track)
-                VStack(alignment: .leading, spacing: 5) {
+                    .scaleEffect(1.8)
+                    .frame(width: 155, height: 128)
+                    .background(alignment: .trailing) {
+                        ZStack {
+                            Circle().fill(Color(white: 0.055))
+                            ForEach(0..<5) { index in
+                                Circle().stroke(.white.opacity(0.07), lineWidth: 1)
+                                    .padding(CGFloat(index * 6 + 5))
+                            }
+                            Circle().fill(.pink.opacity(0.45)).frame(width: 28, height: 28)
+                        }.frame(width: 124, height: 124).offset(x: 30)
+                    }
+                VStack(alignment: .leading, spacing: 7) {
+                    Label(island.isPlaying ? "NOW PLAYING" : "已暂停", systemImage: "waveform")
+                        .font(.system(size: 9, weight: .medium)).foregroundStyle(.pink)
                     Text(track.title ?? "正在播放")
-                        .font(.system(size: 16, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
+                        .font(.system(size: 26, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
                     Text([track.artist, track.album].compactMap { value in
                         guard let value, !value.isEmpty else { return nil }
                         return value
@@ -1416,26 +1582,31 @@ private struct DynamicIslandView: View {
             } else {
                 Rectangle()
                     .fill(LinearGradient(colors: [.purple, .pink, .orange], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 68, height: 68)
+                    .frame(width: 96, height: 96)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(Image(systemName: "music.note").font(.title2).foregroundStyle(.white))
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Apple Music").font(.system(size: 16, weight: .semibold))
+                    Label("音乐随时待命", systemImage: "waveform").font(.system(size: 10)).foregroundStyle(.orange)
+                    Text("Apple Music").font(.system(size: 22, weight: .semibold))
                     Text(island.musicLaunchInProgress ? "正在打开 Apple Music…" : "点击播放以打开音乐并继续播放")
                         .font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.62)).lineLimit(1)
                 }
             }
             Spacer()
-            HStack(spacing: 20) {
+            HStack(spacing: 12) {
                 if island.nowPlaying != nil {
                     Button(action: { DynamicIslandService.sendMediaKey(20) }) { Image(systemName: "backward.fill") }
                 }
                 Button(action: { island.togglePlayback() }) {
+                    Group {
                     if island.musicLaunchInProgress {
                         ProgressView().controlSize(.small).tint(.white)
                     } else {
                         Image(systemName: island.isPlaying ? "pause.fill" : "play.fill")
                     }
+                    }
+                    .frame(width: 58, height: 58)
+                    .background(LinearGradient(colors: [.pink, .orange], startPoint: .topLeading, endPoint: .bottomTrailing), in: Circle())
                 }
                 if island.nowPlaying != nil {
                     Button(action: { DynamicIslandService.sendMediaKey(19) }) { Image(systemName: "forward.fill") }
@@ -1443,25 +1614,34 @@ private struct DynamicIslandView: View {
             }
             .font(.system(size: 17, weight: .semibold))
             }
+            .frame(height: 128)
             if island.duration > 0 {
-                HStack(spacing: 8) {
-                    Text(time(island.elapsedTime)).monospacedDigit()
+                VStack(spacing: 7) {
+                    HStack {
+                        Label("播放进度", systemImage: "timeline.selection")
+                        Spacer()
+                        Text("剩余 \(time(max(island.duration - island.elapsedTime, 0)))")
+                    }
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.46))
+                    HStack(spacing: 9) {
+                        Text(time(island.elapsedTime)).monospacedDigit()
                     ContrastSlider(value: Binding(get: { island.elapsedTime }, set: { island.seek(to: $0) }),
                                    range: 0...max(island.duration, 1))
-                    Text(time(island.duration)).monospacedDigit()
+                        Text(time(island.duration)).monospacedDigit()
+                    }
+                    .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.84))
                 }
-                .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.82))
+                .padding(.horizontal, 13).padding(.vertical, 9)
+                .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.065)))
             }
-            HStack(spacing: 8) {
-                Image(systemName: "speaker.wave.2.fill").font(.caption)
-                ContrastSlider(value: Binding(get: { island.outputVolume }, set: { island.setVolume($0) }),
-                               range: 0...1)
-                Text("\(Int((island.outputVolume * 100).rounded()))%")
-                    .font(.caption.monospacedDigit()).frame(width: 38, alignment: .trailing)
-            }
-            .foregroundStyle(.white.opacity(0.82))
+            HStack {
+                Label("好音乐，总能让生活多一点色彩。", systemImage: "music.note")
+                Spacer()
+            }.font(.system(size: 9)).foregroundStyle(.white.opacity(0.35))
         }
-        .padding(.horizontal, 28).padding(.top, 12).padding(.bottom, 10)
+        .padding(.horizontal, 28).padding(.top, 34).padding(.bottom, 13)
     }
 
     private func time(_ seconds: Double) -> String {

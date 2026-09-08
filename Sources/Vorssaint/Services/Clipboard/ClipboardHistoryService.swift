@@ -43,7 +43,7 @@ final class ClipboardHistoryService: ObservableObject {
         forKey: DefaultsKey.clipboardHistoryQuickPreview
     )
 
-    private var timer: Timer?
+    private var timer: UUID?
     private var lastChangeCount = 0
     /// The poll reads the pasteboard off the main thread: while a password
     /// prompt is up the pasteboard server can take seconds to answer, and a
@@ -513,19 +513,16 @@ final class ClipboardHistoryService: ObservableObject {
             isRunning = true
             return
         }
-        let timer = Timer(timeInterval: 0.8, repeats: true) { [weak self] _ in
-            self?.captureIfChanged()
+        timer = ClipboardPollingClock.shared.subscribe { [weak self] count in
+            self?.captureIfChanged(observedCount: count)
         }
-        timer.tolerance = 0.25
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
         isRunning = true
         ClipboardIgnoredApps.shared.setHistoryRunning(true)
         baselinePasteboard()
     }
 
     private func stop() {
-        timer?.invalidate()
+        ClipboardPollingClock.shared.unsubscribe(timer)
         timer = nil
         isRunning = false
         ClipboardIgnoredApps.shared.setHistoryRunning(false)
@@ -567,11 +564,16 @@ final class ClipboardHistoryService: ObservableObject {
         }
     }
 
-    private func captureIfChanged() {
+    private func captureIfChanged(observedCount: Int) {
         // Only ever one read in flight: while a password prompt holds the
         // pasteboard server, a read can take seconds, and letting ticks pile
         // up would spawn a thread each time.
-        guard !captureInFlight else { return }
+        guard isRunning, !captureInFlight else { return }
+        if observedCount <= lastChangeCount {
+            // End the same source-attribution window even on an unchanged tick.
+            _ = ClipboardIgnoredApps.shared.excludedSourceSinceLastCheck()
+            return
+        }
         let sinceChangeCount = lastChangeCount
         let includeImagesFiles = UserDefaults.standard.bool(
             forKey: DefaultsKey.clipboardHistoryIncludeImagesFiles)

@@ -18,7 +18,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
     /// Localized display name, reused from the existing section titles.
     func title(_ s: Strings) -> String {
         switch self {
-        case .keepAwake: return s.keepAwakeTitle
+        case .keepAwake: return "电源与显示器"
         case .awayLock: return AwayLockStrings.current.title
         case .brightness: return FeatureStrings.brightness(L10n.shared.language).pageTitle
         case .mixer: return s.mixerSection
@@ -37,7 +37,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
 
     var symbolName: String {
         switch self {
-        case .keepAwake: return "moon.zzz.fill"
+        case .keepAwake: return "display.2"
         case .awayLock: return "lock.laptopcomputer"
         case .brightness: return "display.2"
         case .mixer: return "slider.horizontal.3"

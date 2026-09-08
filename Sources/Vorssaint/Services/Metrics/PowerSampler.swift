@@ -7,7 +7,7 @@ import IOKit.ps
 
 /// One power reading. Every field is optional: a Mac mini has no battery, a
 /// desktop may expose no SMC power key, so the UI shows only what is real.
-struct PowerReading {
+struct PowerReading: Equatable {
     var systemWatts: Double?       // total the Mac is consuming (SMC PSTR)
     var adapterWatts: Double?      // real-time draw from the adapter (SMC PDTR)
     var adapterMaxWatts: Double?   // the charger's rated wattage

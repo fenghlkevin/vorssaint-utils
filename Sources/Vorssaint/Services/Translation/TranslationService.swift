@@ -139,6 +139,7 @@ final class TranslationService: ObservableObject {
         guard Permissions.shared.screenRecording else { Permissions.shared.requestScreenRecording(); return }
         cancel()
         let id = generation
+        let restoreWindowOnCancel = TranslationWindowController.shared.isVisible
         TranslationWindowController.shared.hide()
         let controller = ScreenshotSelectionController(freeze: true, includePointer: false,
             showLastRegion: false, purpose: TranslationStrings.current[.capture],
@@ -164,7 +165,8 @@ final class TranslationService: ObservableObject {
                         else { self.report("OCR: no text / maximum 20000 characters") }
                     }
                 }
-            case .cancelled: self.show()
+            case .cancelled:
+                if restoreWindowOnCancel { self.show() }
             default: self.report("captureFailed"); self.show()
             }
         }

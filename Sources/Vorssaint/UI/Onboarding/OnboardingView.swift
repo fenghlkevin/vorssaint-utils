@@ -68,12 +68,6 @@ struct OnboardingView: View {
         .frame(width: 540, height: 600)
         .onAppear {
             if !steps.indices.contains(index) { index = 0 }
-            // Onboarding narrates the permission trip itself; the floating
-            // guide card would just double the voice.
-            PermissionGuideOverlay.suppressed = true
-        }
-        .onDisappear {
-            PermissionGuideOverlay.suppressed = false
         }
     }
 

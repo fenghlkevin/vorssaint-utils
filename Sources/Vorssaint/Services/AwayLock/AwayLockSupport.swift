@@ -4,6 +4,17 @@
 import Foundation
 
 enum AwayLockSupport {
+    /// Reserve a complete scan window after a pause before silence can expire.
+    static func canPauseScan(readings: [(near: Bool, lastSeen: Date?)], now: Date,
+                             pauseSeconds: TimeInterval, scanSeconds: TimeInterval,
+                             lossSeconds: Int, requiresContinuousScan: Bool) -> Bool {
+        guard !requiresContinuousScan, !readings.isEmpty else { return false }
+        return readings.allSatisfy { reading in
+            guard reading.near, let seen = reading.lastSeen, seen <= now else { return false }
+            return now.timeIntervalSince(seen) + pauseSeconds + scanSeconds < Double(lossSeconds)
+        }
+    }
+
     static func median(_ samples: [Int]) -> Int? {
         guard !samples.isEmpty else { return nil }
         let sorted = samples.sorted()

@@ -105,6 +105,7 @@ final class CommandBarService: ObservableObject {
     private var catalog: [CommandBarEntry] = []
     let scriptRunner = CommandBarScriptRunner()
     let fileSearch = CommandBarFileSearch()
+    private let portProvider = CommandBarPortProvider()
     /// Which row answered which few letters, for as long as the app runs. Not
     /// stored: the bar forgets everything typed into it when it goes.
     private var queryMemory = CommandBarQueryMemory()
@@ -176,6 +177,7 @@ final class CommandBarService: ObservableObject {
         hotkey.onPress = { [weak self] in self?.toggle() }
         scriptRunner.onResult = { [weak self] in self?.refreshResults() }
         fileSearch.onResult = { [weak self] in self?.refreshResults() }
+        portProvider.onResult = { [weak self] in self?.refreshResults() }
     }
 
     // MARK: - Lifecycle
@@ -270,6 +272,7 @@ final class CommandBarService: ObservableObject {
 
     @discardableResult
     private func beginPresentation() -> UUID {
+        portProvider.reset()
         deferredRowShortcut.cancel()
         scriptRunner.reset()
         fileSearch.reset()
@@ -336,6 +339,7 @@ final class CommandBarService: ObservableObject {
     }
 
     func hide() {
+        portProvider.reset()
         if AppFeature.textSnippets.isAvailable {
             TextSnippetService.shared.setCommandBarVisible(false)
         }
@@ -371,7 +375,11 @@ final class CommandBarService: ObservableObject {
         // What was typed is remembered for the next opening, where the first
         // keystroke replaces it. It never reaches disk: the promise is that
         // nothing typed here is saved, and memory is not saving.
-        lastQuery = query
+        if let match = CommandBarBuiltinPreferences.match(query, in: CommandBarBuiltinSettings.current) {
+            lastQuery = CommandBarBuiltinSettings.trigger(match.tool)
+        } else {
+            lastQuery = query
+        }
         query = ""
         presentationLifecycle.hide()
         clearIndex()
@@ -772,6 +780,7 @@ final class CommandBarService: ObservableObject {
     /// Pinning, naming, hiding and forgetting all write through here so the
     /// list refreshes the instant the person changes their mind.
     func togglePin(_ entry: CommandBarEntry) {
+        guard !entry.id.hasPrefix("port.") else { return }
         let next = CommandBarPreferences.togglingPin(entry.stableKey, in: pins)
         UserDefaults.standard.set(CommandBarPreferences.encodePins(next), forKey: DefaultsKey.commandBarPins)
         refreshAfterPreferenceChange()
@@ -918,6 +927,7 @@ final class CommandBarService: ObservableObject {
         case .search:
             let trimmed = query.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty {
+                portProvider.reset()
                 let showsBrowse = CommandBarHome.showsBrowseList(
                     compact: compactMode,
                     hasCategory: activeCategory != nil,
@@ -1024,8 +1034,7 @@ final class CommandBarService: ObservableObject {
         // preferences for every row would parse the same string ninety times.
         let disabled = CommandBarPreferences.disabledSources(from: disabledSourcesRaw)
         func allowed(_ entry: CommandBarEntry) -> Bool {
-            let source = CommandBarPreferences.source(ofRowID: entry.id)
-            return source.isAlwaysOn || !disabled.contains(source)
+            return CommandBarPreferences.isRowEnabled(entry.id, disabledSources: disabled)
         }
         var rows: [CommandBarEntry] = []
         var titles: [Int: String] = [:]
@@ -1159,6 +1168,23 @@ final class CommandBarService: ObservableObject {
 
     private func searchRows(for trimmed: String) -> [CommandBarEntry] {
         let bar = FeatureStrings.commandBar(L10n.shared.language)
+        if activeCategory == nil || activeCategory == .actions {
+            let portQuery = CommandBarBuiltinPreferences.portQuery(query, in: CommandBarBuiltinSettings.current) ?? ""
+            if !hiddenKeys.contains("action.portLookup"), let portRows = portProvider.rows(for: portQuery) {
+                fileSearch.cancelPending()
+                scriptRunner.cancelPending()
+                return portRows
+            }
+            if hiddenKeys.contains("action.portLookup") { portProvider.reset() }
+            if let match = CommandBarBuiltinSettings.matchText(query),
+               !hiddenKeys.contains("action.developer.\(match.tool.rawValue)") {
+                fileSearch.cancelPending()
+                scriptRunner.cancelPending()
+                return [CommandBarCatalog.developerEntry(match.tool)]
+            }
+        } else {
+            portProvider.reset()
+        }
         // Inside a category, typing filters that category and nothing else:
         // no answer row, no caps per kind, just the ranking over one list.
         if let category = activeCategory {
@@ -1195,7 +1221,8 @@ final class CommandBarService: ObservableObject {
             : nil
         // A web address typed into the bar is opened, not searched: the row
         // leads so Return opens it at once, the way a sum's answer does.
-        let openURL = CommandBarCatalog.openURLEntry(for: trimmed, bar: bar)
+        let openURL = isEnabled(.actions)
+            ? CommandBarCatalog.openURLEntry(for: trimmed, bar: bar) : nil
 
         // A saved script answers the same way a sum does, once it has run:
         // the row leads, and Return copies what it printed. Same as any
@@ -1303,7 +1330,7 @@ final class CommandBarService: ObservableObject {
         sources.reserveCapacity(pool.count)
         for entry in pool where !hidden.contains(entry.stableKey) {
             let source = CommandBarPreferences.source(ofRowID: entry.id)
-            guard source.isAlwaysOn || !disabled.contains(source) else { continue }
+            guard CommandBarPreferences.isRowEnabled(entry.id, disabledSources: disabled) else { continue }
             kept.append(entry)
             sources.append(source)
         }
@@ -1342,7 +1369,11 @@ final class CommandBarService: ObservableObject {
                                     + (pinnedKeys.contains(entry.stableKey)
                                         ? CommandBarPreferences.pinTieBreak : 0))
         }
-        let ranked = CommandBarSearch.rankedIndexes(candidates: candidates, matching: effectiveQuery)
+        let relevanceRanked = CommandBarSearch.rankedIndexes(candidates: candidates, matching: effectiveQuery)
+        let orderRaw = UserDefaults.standard.string(forKey: DefaultsKey.commandBarSourceOrder) ?? ""
+        let ranked = CommandBarPreferences.orderedIndexes(
+            sources: relevanceRanked.map { sources[$0] }, orderRaw: orderRaw)
+            .map { relevanceRanked[$0] }
 
         // A fact about the Mac only shows when it was asked for by name:
         // "st" must not answer "Storage" over what the person meant.
@@ -1366,9 +1397,15 @@ final class CommandBarService: ObservableObject {
                 counts[kind.prefix] = used + 1
             }
             result.append(entry)
-            if result.count >= 12 { break }
+            if orderRaw.isEmpty && result.count >= 12 { break }
         }
-        return result
+        let resultSources = result.map { entry -> CommandBarSource in
+            if entry.id == answer?.id { return .calculator }
+            if entry.id == scriptAnswer?.id { return .links }
+            return CommandBarPreferences.source(ofRowID: entry.id)
+        }
+        return CommandBarPreferences.orderedIndexes(sources: resultSources, orderRaw: orderRaw)
+            .prefix(12).map { result[$0] }
     }
 
     // MARK: - Selection
@@ -1381,10 +1418,11 @@ final class CommandBarService: ObservableObject {
         select(next < 0 ? next + rows.count : next)
     }
 
-    /// Tab completes what is selected into the field, the way every launcher
-    /// does, so the next keystroke refines instead of starting over.
+    /// Tab completes the selected result into the search field.
     func completeSelection() {
         guard case .search = mode, let entry = selectedEntry, !entry.isAnswer else { return }
+        if entry.id == "action.portLookup" { query = CommandBarBuiltinSettings.trigger(.port) + " "; return }
+        if entry.id.hasPrefix("port.") { return }
         query = entry.title
     }
 
@@ -1943,6 +1981,7 @@ final class CommandBarService: ObservableObject {
         queryWhenRun = query
         selectionWhenRun = selectedText
         guard !entry.keepsBarOpen else {
+            if case .confirm = mode { mode = .search }
             entry.run(value)
             return
         }

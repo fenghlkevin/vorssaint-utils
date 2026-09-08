@@ -86,6 +86,25 @@ enum AdminShell {
         }
     }
 
+    /// Like run(), but retain bounded diagnostics for privileged maintenance.
+    static func runWithResult(_ command: String, prompt: String,
+                              completion: @escaping (Int32, String) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            promptLock.lock()
+            guard !prompting else {
+                promptLock.unlock()
+                DispatchQueue.main.async { completion(-1, "已有管理员授权请求，请完成后重试") }
+                return
+            }
+            prompting = true; promptLock.unlock()
+            bringAppToFront()
+            let result = Shell.run("/usr/bin/osascript", ["-e", appleScriptSource(command: command, prompt: prompt)],
+                                   timeout: 600, maxOutputBytes: 16384)
+            promptLock.lock(); prompting = false; promptLock.unlock()
+            DispatchQueue.main.async { completion(result.status, result.output) }
+        }
+    }
+
     /// Runs the administrator request inside this signed process so system
     /// policy can identify the app that initiated it. Reserved for the updater;
     /// other administrative tools retain their bounded subprocess behavior.

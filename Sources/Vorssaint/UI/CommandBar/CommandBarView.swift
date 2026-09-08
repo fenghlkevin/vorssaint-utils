@@ -11,7 +11,13 @@ struct CommandBarView: View {
     /// Short enough to sit on one line, chosen to show three different things
     /// the bar can do that a list of commands would never reveal.
     static var examples: [String] {
-        ["100 km to mi", "2+2*3", "battery", "fire"].filter {
+        let settings = CommandBarBuiltinSettings.current
+        var examples = ["100 km to mi", "2+2*3"]
+        for tool in [CommandBarBuiltinTool.json, .port] {
+            let config = CommandBarBuiltinPreferences.configuration(tool, in: settings)
+            if config.enabled { examples.append(config.trigger + (tool == .port ? " 8080" : "")) }
+        }
+        return (examples + ["battery", "fire"]).filter {
             $0 != "battery" || PowerSampler.hasInternalBattery
         }
     }

@@ -46,6 +46,7 @@ struct ScreenshotCaptureSettings: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle(strings.hideVorssaintWindowsToggle, isOn: $hideVorssaintWindows)
+            DisclosureGroup("工具栏布局与更多工具") { CaptureToolbarConfiguration() }
             HStack {
                 Text("截图缩略图消失时间")
                 Spacer()

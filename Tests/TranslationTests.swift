@@ -59,6 +59,7 @@ enum TranslationTests {
         defaults.set("google", forKey: TranslationProviderSelection.key)
         try expect(TranslationProviderSelection.restored(from: defaults) == "system", "removed provider falls back safely")
         try expect(serviceSource.contains("requiresDraggedRegion: true, editsSelectedImage: false"), "translation OCR skips screenshot editor")
+        try expect(serviceSource.contains("if restoreWindowOnCancel { self.show() }"), "cancelled global OCR capture stays dismissed")
         let settingsSource = try source("UI/Translation/AITranslationSettings.swift")
         try expect(settingsSource.contains("prompt: Text(hasStoredKey ? \"••••••••\""), "saved key has a masked placeholder")
         try expect(settingsSource.contains("addProfile()") && settingsSource.contains("removeProfile()"), "AI settings manage multiple profiles")

@@ -3130,11 +3130,62 @@ private final class InlineCaptureEditorState: ObservableObject {
     }
 }
 
+struct CaptureToolbarConfiguration: View {
+    static let ids = ["rect", "ellipse", "line", "arrow", "freehand", "highlight", "text", "counter", "note", "pixelate", "magnifier", "watermark"]
+    static let names = ["矩形", "椭圆", "直线", "箭头", "画笔", "荧光笔", "文本", "标点", "备注", "马赛克", "放大镜", "文字水印"]
+    @AppStorage("inlineCaptureToolbarOrder") private var order = ""
+    @AppStorage("inlineCaptureToolbarHidden") private var hidden = "ellipse,line,watermark"
+
+    static func ordered(_ raw: String) -> [String] {
+        var result: [String] = []
+        for id in raw.split(separator: ",").map(String.init) + ids
+        where ids.contains(id) && !result.contains(id) { result.append(id) }
+        return result
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("自定义截图工具栏").font(.headline)
+            Text("勾选的工具显示在主栏，其余收进右侧“…”；使用箭头调整顺序。")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            ScrollView(.vertical) {
+            ForEach(Self.ordered(order), id: \.self) { id in
+                HStack {
+                    Toggle(Self.names[Self.ids.firstIndex(of: id)!], isOn: Binding(
+                        get: { !hidden.split(separator: ",").contains(Substring(id)) },
+                        set: { shown in
+                            var values = Set(hidden.split(separator: ",").map(String.init))
+                            if shown { values.remove(id) } else { values.insert(id) }
+                            hidden = values.sorted().joined(separator: ",")
+                        }))
+                    Spacer()
+                    Button { move(id, by: -1) } label: { Image(systemName: "arrow.up") }
+                        .disabled(Self.ordered(order).first == id).help("向前移动")
+                    Button { move(id, by: 1) } label: { Image(systemName: "arrow.down") }
+                        .disabled(Self.ordered(order).last == id).help("向后移动")
+                }
+                .frame(minHeight: 30)
+            }
+            }
+            .frame(height: 260)
+            Button("恢复默认工具栏") { order = ""; hidden = "ellipse,line,watermark" }
+        }.padding(12).frame(width: 340)
+    }
+
+    private func move(_ id: String, by delta: Int) {
+        var values = Self.ordered(order)
+        guard let index = values.firstIndex(of: id), values.indices.contains(index + delta) else { return }
+        values.swapAt(index, index + delta)
+        order = values.joined(separator: ",")
+    }
+}
+
 private struct InlineCaptureToolbar: View {
     // Main row: 36 pt buttons + 4 pt group padding on both sides.
     // The outer material uses exactly 8 pt on all four edges.
     static func contentHeight(hasSettings: Bool) -> CGFloat {
-        44 + 16 + (hasSettings ? 7 + 34 : 0)
+        48 + (hasSettings ? 10 + 46 : 0)
     }
     @ObservedObject var state: InlineCaptureEditorState
     let canScrollCapture: Bool
@@ -3146,6 +3197,10 @@ private struct InlineCaptureToolbar: View {
     @State private var hoverPoint: CGPoint = .zero
     @State private var pendingHoverTitle: String?
     @State private var hoverTask: Task<Void, Never>?
+    @AppStorage("inlineCaptureToolbarOrder") private var toolbarOrder = ""
+    @AppStorage("inlineCaptureToolbarHidden") private var toolbarHidden = "ellipse,line,watermark"
+    @State private var showingMore = false
+    @State private var showingConfiguration = false
 
     private struct ToolItem: Identifiable {
         let id: String
@@ -3164,25 +3219,51 @@ private struct InlineCaptureToolbar: View {
         .init(id: "highlight", symbol: "highlighter", title: "荧光笔", base: .highlight, special: nil),
         .init(id: "text", symbol: "character.cursor.ibeam", title: "文本", base: nil, special: .text),
         .init(id: "counter", symbol: "1.circle", title: "标点", base: .counter, special: nil),
-        .init(id: "note", symbol: "note.text", title: "备注", base: nil, special: .note),
+        .init(id: "note", symbol: "text.bubble", title: "备注", base: nil, special: .note),
         .init(id: "pixelate", symbol: "square.grid.3x3.fill", title: "马赛克", base: .pixelate, special: nil),
         .init(id: "magnifier", symbol: "plus.magnifyingglass", title: "放大镜", base: nil, special: .magnifier),
         .init(id: "watermark", symbol: "textformat.abc.dottedunderline", title: "文字水印", base: nil, special: .watermark),
     ]
 
+    /// Keep the capture rail focused on the tools used most often. Less
+    /// frequent tools remain one click away in the trailing overflow menu,
+    /// matching 1Capture's compact/customizable toolbar pattern.
+    private var primaryDrawingTools: [ToolItem] {
+        tools.filter { ["rect", "arrow", "freehand", "highlight"].contains($0.id) }
+    }
+
+    private var primaryAnnotationTools: [ToolItem] {
+        tools.filter { ["text", "counter", "note"].contains($0.id) }
+    }
+
+    private var primaryEffectTools: [ToolItem] {
+        tools.filter { ["pixelate", "magnifier"].contains($0.id) }
+    }
+
+    private var overflowTools: [ToolItem] {
+        orderedTools.filter { toolbarHidden.split(separator: ",").contains(Substring($0.id)) }
+    }
+    private var orderedTools: [ToolItem] {
+        CaptureToolbarConfiguration.ordered(toolbarOrder).compactMap { id in tools.first { $0.id == id } }
+    }
+    private var visibleTools: [ToolItem] {
+        orderedTools.filter { !toolbarHidden.split(separator: ",").contains(Substring($0.id)) }
+    }
+
     var body: some View {
-        VStack(spacing: 7) {
-            HStack(spacing: 10) {
-                toolGroup("绘图", items: Array(tools[0...5]))
-                toolGroup("标注", items: Array(tools[6...8]))
-                toolGroup("效果", items: Array(tools[9...11]))
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                toolGroup("工具", items: visibleTools)
+                toolbarDivider
                 actionGroup
+                overflowMenu
             }
+            .padding(6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.16), radius: 6, y: 3)
             if state.hasSettings { optionRow.transition(.opacity.combined(with: .move(edge: .top))) }
         }
-        .padding(8)
         .frame(height: Self.contentHeight(hasSettings: state.hasSettings), alignment: .top)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
         .coordinateSpace(name: "inlineCaptureToolbar")
         .overlay(alignment: .topLeading) {
             if let hoverTip {
@@ -3209,7 +3290,7 @@ private struct InlineCaptureToolbar: View {
     }
 
     private func toolGroup(_: String, items: [ToolItem]) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             ForEach(items) { tool in
                 hoverTracked(tool.title, width: 36) {
                     Button { select(tool) } label: {
@@ -3226,13 +3307,56 @@ private struct InlineCaptureToolbar: View {
                 }
             }
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var toolbarDivider: some View {
+        Divider().frame(height: 24).padding(.horizontal, 2)
+    }
+
+    private var overflowMenu: some View {
+        hoverTracked("更多工具", width: 36) {
+            Button { showingMore.toggle() } label: {
+                ScreenshotToolIcon(symbol: "ellipsis")
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+                    .background(overflowTools.contains(where: isSelected)
+                                ? Color.accentColor.opacity(0.22) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showingMore, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 10) {
+                    if showingConfiguration {
+                        Button { showingConfiguration = false } label: {
+                            Label("返回更多工具", systemImage: "chevron.left")
+                        }.buttonStyle(.plain)
+                        CaptureToolbarConfiguration()
+                    } else {
+                    ScrollView(.vertical) {
+                    VStack(alignment: .leading, spacing: 12) {
+                    if overflowTools.isEmpty { Text("所有工具已显示在主栏").foregroundStyle(.secondary) }
+                    ForEach(overflowTools) { tool in
+                        Button { select(tool); showingMore = false } label: {
+                            Label(tool.title, systemImage: tool.symbol).frame(maxWidth: .infinity, alignment: .leading)
+                        }.buttonStyle(.plain)
+                    }
+                    }
+                    }
+                    .frame(height: CGFloat(max(1, overflowTools.count)) * 30)
+                    Divider()
+                    Button("自定义工具栏…") { showingConfiguration = true }
+                    }
+                }.padding(14).frame(minWidth: 180)
+            }
+            .onChange(of: showingMore) { _, visible in
+                if !visible { showingConfiguration = false }
+            }
+            .accessibilityLabel("更多工具")
+        }
     }
 
     private var actionGroup: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
                 if canScrollCapture {
                     hoverTracked("滚动截图", width: 36) {
                         Button(action: scrollCapture) {
@@ -3269,9 +3393,6 @@ private struct InlineCaptureToolbar: View {
                     }.buttonStyle(.plain)
                 }
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
     }
 
     private func hoverTracked<Content: View>(_ title: String,
@@ -3400,8 +3521,10 @@ private struct InlineCaptureToolbar: View {
         }
         .font(.system(size: 11))
         .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity, minHeight: 34, maxHeight: 34, alignment: .leading)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+        .frame(height: 46, alignment: .leading)
+        .fixedSize(horizontal: true, vertical: false)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.16), radius: 6, y: 3)
     }
 
 }

@@ -21,6 +21,7 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
     private var dividerItem: NSStatusItem?
     private let defaults = UserDefaults.standard
     private var autoCollapseTimer: Timer?
+    private var startupCollapseWork: DispatchWorkItem?
 
     private override init() {
         let enabled = UserDefaults.standard.bool(forKey: DefaultsKey.menuBarIconCollapserEnabled)
@@ -37,14 +38,21 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
     func attach(to mainStatusItem: NSStatusItem) {
         self.mainStatusItem = mainStatusItem
         guard AppFeature.menuBarIcons.isAvailable, isEnabled else { return }
+        startupCollapseWork?.cancel()
+        let shouldCollapseAfterPlacement = isCollapsed
+        // A newly restored status item does not have a trustworthy frame yet.
+        // Keep the divider at its ordinary width until AppKit has restored both
+        // saved positions; expanding it to 10,000 points first moves the very
+        // frame used by the safety check and makes a cold launch look unsafe.
+        if shouldCollapseAfterPlacement { isCollapsed = false }
         installDividerIfNeeded()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self else { return }
-            self.refreshPlacement()
-            if self.isCollapsed {
-                self.setCollapsed(true)
-            } else {
-                self.scheduleAutoCollapse()
+        applyAppearance()
+        if shouldCollapseAfterPlacement {
+            scheduleStartupCollapse(attemptsLeft: 20)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.refreshPlacement()
+                self?.scheduleAutoCollapse()
             }
         }
     }
@@ -74,6 +82,8 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
 
     func setCollapsed(_ collapsed: Bool) {
         guard AppFeature.menuBarIcons.isAvailable, isEnabled else { return }
+        startupCollapseWork?.cancel()
+        startupCollapseWork = nil
         installDividerIfNeeded()
         refreshPlacement()
         if collapsed && !placementIsSafe {
@@ -145,6 +155,8 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
     }
 
     private func removeDivider(preservingPreference: Bool = false) {
+        startupCollapseWork?.cancel()
+        startupCollapseWork = nil
         if isCollapsed {
             dividerItem?.length = NSStatusItem.squareLength
         }
@@ -168,6 +180,21 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
                                accessibilityDescription: MenuBarIconCollapserStrings.current.dividerTooltip)
         button.image?.isTemplate = true
         button.toolTip = MenuBarIconCollapserStrings.current.dividerTooltip
+    }
+
+    private func scheduleStartupCollapse(attemptsLeft: Int) {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.startupCollapseWork = nil
+            self.refreshPlacement()
+            if self.placementIsSafe {
+                self.setCollapsed(true)
+            } else if attemptsLeft > 1 {
+                self.scheduleStartupCollapse(attemptsLeft: attemptsLeft - 1)
+            }
+        }
+        startupCollapseWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
     @objc private func dividerClicked() {

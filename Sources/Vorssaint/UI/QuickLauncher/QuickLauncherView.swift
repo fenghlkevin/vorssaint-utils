@@ -384,7 +384,11 @@ struct QuickLauncherView: View {
                 // Same guard as the panel's Keep awake card: enabling the
                 // closed-lid rule can run an admin setup step, and flipping
                 // the switch again mid-setup would race it.
-                Toggle(l10n.s.clamshellTitle, isOn: $keepAwake.clamshellPreferred)
+                Toggle("合盖使用外屏", isOn: Binding(get: { keepAwake.currentProfile.closedLid }, set: { enabled in
+                    var profile = keepAwake.currentProfile
+                    profile.closedLid = enabled
+                    keepAwake.updateProfile(profile, onBattery: keepAwake.onBattery)
+                }))
                     .disabled(keepAwake.clamshellSetupInProgress)
                 Picker(l10n.s.defaultDurationLabel, selection: $defaultDuration) {
                     Text(l10n.s.minutes15).tag(15)

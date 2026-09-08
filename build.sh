@@ -90,18 +90,11 @@ fixed_dev_identity_available() {
         | grep -Fq "\"$DEV_SIGNING_IDENTITY\""
 }
 
-# The Developer build exists for iterative local work, where an ad-hoc
-# signature is a trap: macOS ties Accessibility and Screen Recording grants to
-# the exact binary hash, so every rebuild orphans them while System Settings
-# keeps showing them as granted, and no new prompt ever appears. When no
-# identity is installed, create the stable local one up front instead of
-# falling through to ad-hoc — setup-signing.sh is free, offline and idempotent.
-if (( DEV && ! INSTALL_EXISTING )) && ! fixed_dev_identity_available; then
-    echo "▸ Fixed Developer signing identity is unavailable; repairing it…"
-    ./Tools/setup-signing.sh
-fi
+# A locked/unavailable keychain is not permission to create a new identity.
+# Certificate continuity is required by the privileged helper's peer checks.
 if (( DEV )) && ! fixed_dev_identity_available; then
     echo "✗ Developer builds require the selected '$DEV_SIGNING_IDENTITY' identity." >&2
+    echo "  Unlock the existing signing keychain. First-time setup is explicit: Tools/setup-signing.sh" >&2
     exit 1
 fi
 
@@ -237,10 +230,19 @@ install_existing_bundle() {
         fi
     done
     install_dest="/Applications/$APP_NAME.app"
-    rm -rf "$install_dest"
+    backup_installed_app "$install_dest"
     ditto --noextattr --noqtn "$source" "$install_dest"
     finalize_installed_bundle_after_child "$install_dest"
     echo "✓ Installed existing build: $install_dest"
+}
+
+backup_installed_app() {
+    local installed="$1" backup
+    if [[ -d "$installed" ]]; then
+        backup="$(mktemp -d "/Applications/.vorssaint-install-backup.XXXXXX")"
+        mv "$installed" "$backup/$APP_NAME.app"
+        echo "  Previous App preserved at: $backup/$APP_NAME.app"
+    fi
 }
 
 if (( INSTALL_EXISTING )); then
@@ -255,6 +257,7 @@ if (( INSTALL && ! TEST )) && [[ "${VORSSAINT_INSTALL_CHILD:-0}" != "1" ]]; then
         exit "$child_status"
     fi
     finalize_installed_bundle_after_child "/Applications/$APP_NAME.app"
+    echo "✓ App installed and signature verified: /Applications/$APP_NAME.app"
     exit 0
 fi
 
@@ -474,6 +477,30 @@ if (( TEST )); then
     # `set -e` would end the script on a failing run before the sweep below.
     test_status=0
     ./build/metrics-tests || test_status=$?
+    if swiftc -Onone -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" \
+        Sources/Vorssaint/Services/PowerDisplayPolicy.swift \
+        Tests/PowerDisplayPolicyTests.swift -o build/power-display-tests; then
+        ./build/power-display-tests || test_status=1
+    else
+        test_status=1
+    fi
+    # Incremental Codex reads must preserve lifecycle events across partial writes.
+    if swiftc -Onone -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" \
+        Sources/Vorssaint/Services/DynamicIsland/CodexIncrementalLog.swift \
+        Tests/CodexIncrementalLogTests.swift -o build/codex-log-tests; then
+        ./build/codex-log-tests || test_status=1
+    else
+        test_status=1
+    fi
+    if swiftc -Onone -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" \
+        Sources/Vorssaint/Services/AwayLock/AwayLockSupport.swift \
+        Sources/Vorssaint/Services/Clipboard/ClipboardPollingClock.swift \
+        Sources/Vorssaint/Services/GeneralPasteboardAccess.swift \
+        Tests/EnergyOptimizationTests.swift -o build/energy-optimization-tests; then
+        ./build/energy-optimization-tests || test_status=1
+    else
+        test_status=1
+    fi
     # Exercise the real scrolling compositor independently of app/UI services.
     swiftc -Onone -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" \
         Sources/Vorssaint/Services/QuickTools/ScrollingImageStitcher.swift \
@@ -492,6 +519,7 @@ if (( TEST )); then
     if [[ -x build/translation-tests ]]; then
         ./build/translation-tests || test_status=1
     fi
+    bash Tools/test-command-bar.sh || test_status=1
     exit $test_status
 fi
 
@@ -528,6 +556,9 @@ swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIAN
 
 echo "▸ Compiling protected battery helper…"
 swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" \
+    Sources/Vorssaint/Services/Battery/BatteryMaintenanceSafety.swift \
+    Sources/Vorssaint/Services/BoundedProcessRunner.swift \
+    Sources/Vorssaint/Services/Battery/BatteryLaunchDiagnosis.swift \
     Sources/Vorssaint/Services/Metrics/TemperatureSensorSelector.swift \
     Sources/Vorssaint/Services/FanControl/FanControlSupport.swift \
     Sources/Vorssaint/Services/SystemMonitor/SMCClient.swift \
@@ -775,8 +806,8 @@ if (( INSTALL )); then
         fi
     done
     INSTALL_DEST="/Applications/$APP_NAME.app"
-    rm -rf "$INSTALL_DEST"
+    backup_installed_app "$INSTALL_DEST"
     ditto --noextattr --noqtn "$STAGE" "$INSTALL_DEST"
     sign_installed_bundle "$INSTALL_DEST"
-    echo "✓ Installed: $INSTALL_DEST"
+    echo "▸ App copied; awaiting final signature: $INSTALL_DEST"
 fi

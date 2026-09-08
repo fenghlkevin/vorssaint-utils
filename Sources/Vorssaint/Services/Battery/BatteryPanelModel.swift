@@ -31,6 +31,9 @@ final class BatteryPanelModel: ObservableObject {
     private var previouslyFull: Bool?
     private var lowAlert = BatteryLowAlertPolicy()
     private var previousNotificationState: String?
+    private var historyDirty = false
+    private var lastHistorySave = Date.distantPast
+    private var terminationObserver: NSObjectProtocol?
 
     private init() {
         let defaults = UserDefaults.standard
@@ -40,6 +43,9 @@ final class BatteryPanelModel: ObservableObject {
         }
         lastDischarge = defaults.object(forKey: "batteryManagement.lastDischarge") as? Date
         lastFullCharge = defaults.object(forKey: "batteryManagement.lastFullCharge") as? Date
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.saveHistory() }
         sample()
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.sample() }
         timer?.tolerance = 5
@@ -60,8 +66,8 @@ final class BatteryPanelModel: ObservableObject {
             let reading = self.sampler.sample()
             let apps = includeApps ? ProcessUsageService.shared.topEnergy(limit: 3) : nil
             DispatchQueue.main.async {
-                self.reading = reading
-                self.temperature = reading.temperature
+                if self.reading != reading { self.reading = reading }
+                if self.temperature != reading.temperature { self.temperature = reading.temperature }
                 self.observedAt = Date()
                 if let apps { self.apps = apps }
                 self.appsLoading = false
@@ -90,7 +96,15 @@ final class BatteryPanelModel: ObservableObject {
         guard history.last.map({ now.timeIntervalSince($0.date) >= 60 }) ?? true else { return }
         history = history.filter { $0.date > now.addingTimeInterval(-43200) && $0.date <= now }
         history.append(.init(date: now, percent: percent, pluggedIn: reading.externalConnected))
-        if let data = try? JSONEncoder().encode(history) { UserDefaults.standard.set(data, forKey: historyKey) }
+        historyDirty = true
+        if now.timeIntervalSince(lastHistorySave) >= 300 { saveHistory(at: now) }
+    }
+
+    private func saveHistory(at now: Date = Date()) {
+        guard historyDirty, let data = try? JSONEncoder().encode(history) else { return }
+        UserDefaults.standard.set(data, forKey: historyKey)
+        historyDirty = false
+        lastHistorySave = now
     }
 
     var stateText: String {

@@ -33,6 +33,16 @@ struct DynamicIslandSettings: View {
                         }.labelsHidden().frame(width: 170)
                     }
                 }
+                sectionTitle("显示的 Tab")
+                settingsCard {
+                    tabVisibilityRow("AI Hook", symbol: "terminal.fill", color: .blue, isOn: $service.showAIHookTab)
+                    Divider().padding(.leading, 58)
+                    tabVisibilityRow("音乐", symbol: "music.note", color: .pink, isOn: $service.showMusicTab)
+                    Divider().padding(.leading, 58)
+                    tabVisibilityRow("定时器", symbol: "timer", color: .orange, isOn: $service.showTimerTab)
+                    Divider().padding(.leading, 58)
+                    tabVisibilityRow("备忘", symbol: "square.and.pencil", color: .green, isOn: $service.showMemoTab)
+                }
                 sectionTitle("集成")
                 settingsCard {
                     settingRow(icon: "terminal.fill", tint: .blue, title: "AI Hook", detail: codex.lastError ?? (codex.hookInstalled ? "已连接 Codex，正在接收 AI 任务状态" : "启用后显示 AI 任务状态")) {
@@ -204,11 +214,18 @@ struct DynamicIslandSettings: View {
             VStack(alignment: .leading, spacing: 3) { Text("灵动岛").font(.title2.weight(.semibold)); Text("集中管理音乐、倒计时和重要提醒").foregroundStyle(.secondary) }
         }
     }
+    private func tabVisibilityRow(_ title: String, symbol: String, color: Color, isOn: Binding<Bool>) -> some View {
+        settingRow(icon: symbol, tint: color, title: title, detail: "在灵动岛顶部显示此 Tab") {
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .disabled(isOn.wrappedValue && service.visibleTabCount == 1)
+        }
+    }
     private var codexPreview: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Image(systemName: "waveform.path.ecg")
-                    .font(.system(size: 14, weight: .bold)).foregroundStyle(.blue).frame(width: 34)
+                CodexActivityIndicator(status: .running)
+                    .frame(width: 34)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 5) {
                         if codex.showProjectName {

@@ -279,7 +279,7 @@ struct MenuPanelView: View {
 
     private var estimatedNavigableContentHeight: CGFloat {
         switch activeSection {
-        case .keepAwake: return 250
+        case .keepAwake: return 400
         case .awayLock: return 280
         case .brightness: return 140
         case .mixer: return 250
@@ -337,6 +337,7 @@ struct MenuPanelView: View {
         // The section only earns its navigation tab while the feature is on;
         // it is switched on in Settings, not from an empty panel screen.
         case .brightness: return showBrightness && brightnessEnabled
+            && !(showKeepAwake && AppFeature.keepAwake.isAvailable)
         case .mixer: return showMixer
         case .system: return showSystem
         case .network: return showNetwork
@@ -440,11 +441,14 @@ struct MenuPanelView: View {
                 appDelegate()?.openSettingsWindow()
             }
 
-            footerButton(l10n.s.panelQuit,
-                         systemImage: "power",
-                         horizontalPadding: 7) {
-                NSApp.terminate(nil)
+            Menu {
+                Button(l10n.s.panelQuit) { NSApp.terminate(nil) }
+            } label: {
+                Label("更多", systemImage: "ellipsis")
+                    .padding(.horizontal, 7)
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
         }
         .frame(maxWidth: .infinity)
         .frame(height: 30)
@@ -2341,348 +2345,13 @@ struct UpdateBanner: View {
 // MARK: - Keep awake
 
 struct KeepAwakeCard: View {
-    @ObservedObject private var l10n = L10n.shared
-    @ObservedObject private var awake = KeepAwakeManager.shared
-    @ObservedObject private var permissions = Permissions.shared
-    @AppStorage(DefaultsKey.defaultDuration) private var defaultDuration: Int = 0
-    @AppStorage(DefaultsKey.keepAwakeAutoStart) private var keepAwakeAutoStart = false
-    @AppStorage(DefaultsKey.keepAwakeAllowDisplaySleep) private var keepAwakeAllowDisplaySleep = false
-    @AppStorage(DefaultsKey.keepAwakeExternalDisplay) private var keepAwakeExternalDisplay = false
-    @AppStorage(DefaultsKey.keepAwakeConnectedToPower) private var keepAwakeConnectedToPower = false
-    @AppStorage(DefaultsKey.keepAwakeIconTint) private var keepAwakeIconTint = KeepAwakeIconTint.orange.rawValue
-    @AppStorage(DefaultsKey.keepAwakeActiveIcon) private var keepAwakeActiveIcon = KeepAwakeActiveIcon.vorssaint.rawValue
-    @AppStorage(DefaultsKey.keepAwakeMouseJiggleEnabled) private var keepAwakeMouseJiggle = false
-    @AppStorage(DefaultsKey.keepAwakeMouseJiggleInterval) private var keepAwakeMouseJiggleInterval = 5
-    @State private var optionsExpanded = false
-    @State private var automationExpanded = false
     var collapsible = true
-
     var body: some View {
-        // The collapsible header supplies the "Keep awake" title, so the card's
-        // first row is just the live status and the on/off switch.
-        PanelSection(.keepAwake, title: l10n.s.keepAwakeTitle, collapsible: collapsible) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    statusLine
-                    Spacer()
-                    Toggle("", isOn: activeBinding)
-                        .toggleStyle(.switch)
-                        .labelsHidden()
-                }
-
-                if awake.isActive, awake.endDate != nil {
-                    HStack(spacing: 6) {
-                        extendButton(15)
-                        extendButton(30)
-                        extendButton(60)
-                        Spacer()
-                    }
-                }
-
-                if !awake.isActive {
-                    HStack {
-                        Text(l10n.s.durationLabel)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        DurationPicker(selection: $defaultDuration)
-                    }
-                }
-
-                optionsDisclosure
-
-                Divider()
-
-                optionRow(title: l10n.s.clamshellTitle,
-                          caption: clamshellCaption,
-                          isOn: $awake.clamshellPreferred,
-                          disabled: awake.clamshellSetupInProgress,
-                          captionIsError: awake.clamshellSetupFailed)
-            }
-            .panelCard()
+        PanelSection(.keepAwake, title: "电源与显示器", collapsible: collapsible) {
+            PowerDisplayPanel().panelCard()
         }
-        .onAppear {
-            defaultDuration = Defaults.sanitizedDefaultDuration(defaultDuration)
-            keepAwakeIconTint = Defaults.sanitizedKeepAwakeIconTint(keepAwakeIconTint).rawValue
-            keepAwakeActiveIcon = Defaults.sanitizedKeepAwakeActiveIcon(keepAwakeActiveIcon).rawValue
-            keepAwakeMouseJiggleInterval = Defaults.sanitizedKeepAwakeMouseJiggleInterval(keepAwakeMouseJiggleInterval)
-        }
-    }
-
-    private var optionsDisclosure: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button {
-                optionsExpanded.toggle()
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: optionsExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 12)
-                    Text(l10n.s.keepAwakeOptions)
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if optionsExpanded {
-                VStack(alignment: .leading, spacing: 8) {
-                    KeepAwakeIconPicker(iconValue: $keepAwakeActiveIcon,
-                                        tintValue: $keepAwakeIconTint,
-                                        compact: true)
-                    compactOptionToggle(
-                        icon: "display",
-                        title: displaySleepStrings.allowDisplaySleep,
-                        isOn: $keepAwakeAllowDisplaySleep
-                    )
-                    compactOptionToggle(
-                        icon: "play.circle",
-                        title: l10n.s.keepAwakeAutoStart,
-                        isOn: $keepAwakeAutoStart
-                    )
-                    automationDisclosure
-                    compactOptionToggle(
-                        icon: "cursorarrow.motionlines",
-                        title: l10n.s.keepAwakeMouseJiggle,
-                        isOn: $keepAwakeMouseJiggle,
-                        errorText: mouseJiggleNeedsAccessibility ? mouseJiggleCaption : nil
-                    )
-                    if keepAwakeMouseJiggle {
-                        mouseJiggleIntervalRow
-                        if mouseJiggleNeedsAccessibility {
-                            Button(l10n.s.permissionRequest) {
-                                grantAccessibility()
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                    }
-                }
-                .padding(.leading, 19)
-            }
-        }
-    }
-
-    private var automationDisclosure: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Button {
-                automationExpanded.toggle()
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 15)
-                    Text(automationStrings.automationSection)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Spacer(minLength: 6)
-                    automationSummaryBadges
-                    Image(systemName: automationExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8.5, weight: .bold))
-                        .foregroundStyle(.tertiary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if automationExpanded {
-                KeepAwakeAutomationEditor(compact: true)
-                    .padding(.leading, 22)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var automationSummaryBadges: some View {
-        if !keepAwakeExternalDisplay,
-           !keepAwakeConnectedToPower {
-            Text(automationStrings.automationOff)
-                .font(.system(size: 9.5, weight: .medium))
-                .foregroundStyle(.tertiary)
-        } else {
-            HStack(spacing: 4) {
-                if keepAwakeExternalDisplay {
-                    automationSystemBadge("display")
-                }
-                if keepAwakeConnectedToPower {
-                    automationSystemBadge("powerplug.fill")
-                }
-            }
-        }
-    }
-
-    private func automationSystemBadge(_ icon: String) -> some View {
-        Image(systemName: icon)
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(Color.accentColor)
-            .frame(width: 17, height: 17)
-            .background(Circle().fill(Color.accentColor.opacity(0.12)))
-    }
-
-    private func compactOptionToggle(icon: String,
-                                     title: String,
-                                     isOn: Binding<Bool>,
-                                     errorText: String? = nil) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 7) {
-                Image(systemName: icon)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 15)
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 8)
-                Toggle("", isOn: isOn)
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .labelsHidden()
-            }
-            if let errorText {
-                Text(errorText)
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.red)
-                    .padding(.leading, 22)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private var mouseJiggleIntervalRow: some View {
-        HStack(spacing: 8) {
-            Text(l10n.s.keepAwakeMouseJiggleInterval)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 0)
-            KeepAwakeMouseJiggleIntervalPicker(selection: $keepAwakeMouseJiggleInterval)
-        }
-    }
-
-    private var mouseJiggleNeedsAccessibility: Bool {
-        keepAwakeMouseJiggle && !permissions.accessibility
-    }
-
-    private var mouseJiggleCaption: String {
-        mouseJiggleNeedsAccessibility
-            ? "\(l10n.s.permissionRequired): \(l10n.s.permissionAccessibility)"
-            : l10n.s.keepAwakeMouseJiggleCaption
-    }
-
-    private var statusLine: some View {
-        Group {
-            if awake.isActive {
-                if awake.sessionTrigger == .automation {
-                    Text(automationStrings.activeStatus(for: awake.activeAutomationConditions))
-                } else if let end = awake.endDate {
-                    TimelineView(.periodic(from: .now, by: 1)) { _ in
-                        Text("\(l10n.s.keepAwakeEndsIn) \(Self.remainingText(until: end))")
-                    }
-                } else {
-                    Text(l10n.s.keepAwakeUntilDisabled)
-                }
-            } else {
-                Text(l10n.s.keepAwakeNormalRules)
-            }
-        }
-        .font(.system(size: 11))
-        .foregroundStyle(.secondary)
-    }
-
-    private var automationStrings: KeepAwakeAutomationStrings {
-        FeatureStrings.keepAwakeAutomation(l10n.language)
-    }
-
-    private var displaySleepStrings: KeepAwakeDisplaySleepStrings {
-        FeatureStrings.keepAwakeDisplaySleep(l10n.language)
-    }
-
-    private var clamshellCaption: String {
-        if awake.clamshellSetupInProgress {
-            return l10n.s.configuring
-        }
-        if awake.clamshellSetupFailed {
-            return l10n.s.sudoersFailed
-        }
-        if awake.clamshellActive {
-            return l10n.s.clamshellOnCaption
-        }
-        if awake.clamshellPreferred {
-            return l10n.s.clamshellNeedsSession
-        }
-        return awake.passwordlessClamshell ? l10n.s.clamshellReady : l10n.s.clamshellNeedsPassword
-    }
-
-    private var activeBinding: Binding<Bool> {
-        Binding(
-            get: { awake.isActive },
-            set: { on in
-                if on {
-                    awake.activate(minutes: defaultDuration)
-                } else if awake.isActive {
-                    awake.toggle()
-                }
-            }
-        )
-    }
-
-    private func grantAccessibility() {
-        Permissions.shared.requestAccessibility()
-        Permissions.shared.openAccessibilitySettings()
-    }
-
-    private func optionRow(title: String,
-                           caption: String?,
-                           isOn: Binding<Bool>,
-                           disabled: Bool,
-                           captionIsError: Bool = false) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.system(size: 12))
-                if let caption {
-                    Text(caption)
-                        .font(.system(size: 10))
-                        .foregroundStyle(captionIsError ? Color.red : Color.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Spacer(minLength: 8)
-            Toggle("", isOn: isOn)
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .labelsHidden()
-                .disabled(disabled)
-        }
-    }
-
-    private func extendButton(_ minutes: Int) -> some View {
-        Button("+\(minutes) min") {
-            awake.extend(minutes: minutes)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .font(.system(size: 10))
-    }
-
-    private static func remainingText(until end: Date) -> String {
-        let total = max(0, Int(end.timeIntervalSinceNow))
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let seconds = total % 60
-        if hours > 0 { return String(format: "%d h %02d min", hours, minutes) }
-        if minutes > 0 { return String(format: "%d min %02d s", minutes, seconds) }
-        return "\(seconds) s"
     }
 }
-
-/// Session duration picker shared by the panel and Settings.
 struct DurationPicker: View {
     @ObservedObject private var l10n = L10n.shared
     @Binding var selection: Int

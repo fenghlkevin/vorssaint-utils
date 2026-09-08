@@ -511,8 +511,10 @@ enum DefaultsKey {
     /// Compact mode: an empty field shows nothing but itself. Off by default
     static let commandBarCompactMode = "commandBarCompactMode"
     static let commandBarUsage = "commandBarUsage"           // per-command run counts, never queries
+    static let commandBarSourceOrder = "commandBarSourceOrder" // empty means automatic ranking
     static let commandBarDisabledSources = "commandBarDisabledSources" // kinds of result switched off
     static let commandBarAliases = "commandBarAliases"       // {row id: the name the person gave it}
+    static let commandBarBuiltinTools = "commandBarBuiltinTools" // per-tool enable switches and text triggers
     static let commandBarPins = "commandBarPins"             // row keys kept at the top, in order
     static let commandBarHidden = "commandBarHidden"         // row keys the person never wants offered
     static let commandBarLinks = "commandBarLinks"           // Data: [CommandBarLink] JSON
@@ -1266,7 +1268,9 @@ enum Defaults {
         // Keep the command bar as an empty field until the user starts typing.
         DefaultsKey.commandBarCompactMode: true,
         DefaultsKey.commandBarDisabledSources: "",
+        DefaultsKey.commandBarSourceOrder: "",
         DefaultsKey.commandBarAliases: "",
+        DefaultsKey.commandBarBuiltinTools: "{}",
         DefaultsKey.commandBarPins: "",
         DefaultsKey.commandBarHidden: "",
         DefaultsKey.commandBarFileScopes: "",

@@ -77,9 +77,15 @@ enum SettingsDirectory {
                                        featureKeywords: AppFeature.allCases.map {
                                         ($0, [$0.hubTitle(s, hub: FeatureStrings.hub(language))])
                                        }),
-                SettingsDirectoryItem(page: .energy, title: s.tabEnergy, icon: "bolt.fill",
+                SettingsDirectoryItem(page: .permissions,
+                                      title: PermissionPageStrings(language: language).title,
+                                      icon: "checkmark.shield",
+                                      keywords: AppPermission.allCases.map {
+                                          $0.name(FeatureStrings.hub(language))
+                                      } + [s.advancedClearButton]),
+                SettingsDirectoryItem(page: .energy, title: "电源与显示器", icon: "display.2",
                                        featureKeywords: [
-                                        (.keepAwake, [s.keepAwakeTitle, s.clamshellTitle,
+                                        (.keepAwake, ["合盖使用外屏", "使用电池", "接通电源", "屏幕常亮", "锁屏", "立即休眠", s.keepAwakeTitle, s.clamshellTitle,
                                                       s.defaultDurationLabel, s.showCountdown,
                                                       s.keepAwakeActiveIconLabel,
                                                       s.keepAwakeActiveIconCoffee,
@@ -90,13 +96,20 @@ enum SettingsDirectory {
                                                         .powerToggle,
                                                       FeatureStrings.keepAwakeDisplaySleep(language)
                                                         .allowDisplaySleep]),
-                                        (.batteryManagement, ["电池管理", "充放电与睡眠", "MagSafe 灯效", "充电自动化", "电池菜单内容", "电池状态图标", "低电量提醒"]),
                                         (.brightness, [FeatureStrings.brightness(language).pageTitle,
                                                        FeatureStrings.brightness(language).osdToggle]),
                                         (.extraBrightness, [s.extraBrightnessName]),
                                         (.bluetoothSleep, [FeatureStrings.bluetoothSleep(language).pageTitle,
                                                            FeatureStrings.bluetoothSleep(language).enable]),
                                        ]),
+                SettingsDirectoryItem(
+                    page: .batteryManagement,
+                    title: AppFeature.batteryManagement.hubTitle(s, hub: FeatureStrings.hub(language)),
+                    icon: "battery.100percent",
+                    featureKeywords: [
+                        (.batteryManagement, ["充放电与睡眠", "MagSafe 灯效", "充电自动化",
+                                              "电池菜单内容", "电池状态图标", "低电量提醒"]),
+                    ]),
                 SettingsDirectoryItem(page: .monitor, title: s.tabMonitor, icon: "chart.line.uptrend.xyaxis",
                                        keywords: [s.menuBarSpacingLabel, s.menuBarHideIconToggle],
                                        featureKeywords: [

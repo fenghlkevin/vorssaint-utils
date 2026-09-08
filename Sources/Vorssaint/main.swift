@@ -3,6 +3,13 @@
 
 import AppKit
 
+if CommandLine.arguments.contains("--battery-install-prepare") {
+    BatteryRegistrationRepair.installPhaseAndExit(prepare: true)
+}
+if CommandLine.arguments.contains("--battery-install-verify") {
+    BatteryRegistrationRepair.installPhaseAndExit(prepare: false)
+}
+
 if CommandLine.arguments.contains("--vorssaint-codex-hook") {
     CodexHookBridge.runAndExit()
 }

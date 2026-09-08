@@ -6,9 +6,7 @@ import SwiftUI
 /// The Features hub. One switch per feature, grouped in plain language: off
 /// means the feature disappears from the whole app (Settings, panel, menu
 /// bar, shortcuts) and costs nothing; its configuration is kept for its
-/// return. The Permissions tab is the transparency portal: what each system
-/// permission does, which features use it right now, and a gentle nudge when
-/// one is granted with nothing using it.
+/// return. Permission management is available from its own Settings page.
 struct FeatureHubSettings: View {
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var features = FeatureRuntime.shared
@@ -16,7 +14,6 @@ struct FeatureHubSettings: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(DefaultsKey.superKeySource) private var superKeySourceRaw =
         SuperKeySource.capsLock.rawValue
-    @State private var tab: Tab = .features
     /// Tracks the feature-target request currently being revealed, so a
     /// delayed retry from an older request cannot act after a newer one has
     /// already taken over (same convention as `SettingsSectionFocusModifier`).
@@ -26,7 +23,6 @@ struct FeatureHubSettings: View {
     /// gives an ordinary page anchor.
     @State private var highlightedFeature: AppFeature?
 
-    private enum Tab { case features, permissions }
 
     private var hub: FeatureHubStrings { FeatureStrings.hub(l10n.language) }
 
@@ -41,16 +37,15 @@ struct FeatureHubSettings: View {
     private var content: some View {
         Form {
             Section {
-                Picker("", selection: $tab) {
-                    Text(hub.tabFeatures).tag(Tab.features)
-                    Text(hub.tabPermissions).tag(Tab.permissions)
+                Button {
+                    router.request(FeatureSettingsDestination(.permissions))
+                } label: {
+                    Label(PermissionPageStrings(language: l10n.language).title,
+                          systemImage: "checkmark.shield")
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                Text(tab == .features ? hub.intro : hub.permissionsIntro)
+                Text(hub.intro)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if tab == .features {
                     HStack(spacing: 8) {
                         Text(String(format: hub.activeCountFormat,
                                     features.availableCount, features.installableCount))
@@ -67,7 +62,6 @@ struct FeatureHubSettings: View {
                         .disabled(features.availableCount == 0)
                     }
                     .controlSize(.small)
-                }
             }
             // The restart notice lives at the very top, never behind a
             // scroll: uninstalling anything makes it impossible to miss.
@@ -90,19 +84,12 @@ struct FeatureHubSettings: View {
                     .listRowBackground(Color.accentColor.opacity(0.12))
                 }
             }
-            if tab == .features {
-                featureSections
-            } else {
-                Section {
-                    PermissionsPortalSections(hub: hub)
-                }
-            }
+            featureSections
         }
         .formStyle(.grouped)
     }
 
-    /// Consumes a pending Feature Hub target: switches off the Permissions
-    /// tab if needed and scrolls the requested row into view. Retried once
+    /// Consumes a pending Feature Hub target and scrolls the requested row into view. Retried once
     /// after the first run-loop turn, the same allowance
     /// `SettingsSectionFocusModifier` gives a freshly installed Form to
     /// register its row identities.
@@ -110,7 +97,6 @@ struct FeatureHubSettings: View {
         guard let request = router.pendingFeatureTarget else { return }
         router.consumeFeatureTarget(id: request.id)
         revealID = request.id
-        if tab == .permissions { tab = .features }
         DispatchQueue.main.async {
             guard self.revealID == request.id else { return }
             reveal(request.feature, using: proxy)
@@ -361,20 +347,24 @@ struct PermissionsPortalSections: View {
     @ObservedObject private var permissions = Permissions.shared
     let hub: FeatureHubStrings
     let visiblePermissions: [AppPermission]
-    @State private var automation: [Permissions.AutomationTarget: Permissions.AutomationStatus] = [:]
+    var compact = false
+    var refreshID: UUID?
     @State private var pollingDemandID = UUID()
 
     init(hub: FeatureHubStrings,
-         visiblePermissions: [AppPermission] = AppPermission.allCases) {
+         visiblePermissions: [AppPermission] = AppPermission.allCases,
+         compact: Bool = false, refreshID: UUID? = nil) {
         self.hub = hub
         self.visiblePermissions = visiblePermissions
+        self.compact = compact
+        self.refreshID = refreshID
     }
 
     var body: some View {
         ForEach(visiblePermissions, id: \.self) { permission in
             PermissionPortalRow(permission: permission,
                                 hub: hub,
-                                status: status(for: permission))
+                                status: status(for: permission), compact: compact)
         }
         .onAppear {
             // Statuses that only refresh at launch/activation get a fresh
@@ -385,17 +375,19 @@ struct PermissionsPortalSections: View {
                 || visiblePermissions.contains(.screenRecording) {
                 permissions.setActivePermissionSurface(pollingDemandID, visible: true)
             }
-            DispatchQueue.global(qos: .userInitiated).async {
-                let finder = Permissions.automationStatus(for: .finder)
-                let terminal = Permissions.automationStatus(for: .terminal)
-                DispatchQueue.main.async {
-                    automation = [.finder: finder, .terminal: terminal]
-                }
-            }
+            refreshAutomation()
         }
         .onDisappear {
             permissions.setActivePermissionSurface(pollingDemandID, visible: false)
         }
+        .onChange(of: refreshID) { _, _ in refreshAutomation() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            refreshAutomation()
+        }
+    }
+
+    private func refreshAutomation() {
+        permissions.refreshAutomation()
     }
 
     private func status(for permission: AppPermission) -> PermissionPortalRow.Status {
@@ -404,40 +396,36 @@ struct PermissionsPortalSections: View {
         case .screenRecording: return permissions.screenRecording ? .granted : .missing
         case .fullDiskAccess: return permissions.fullDiskAccess ? .granted : .missing
         case .filesAndFolders:
-            guard AppFeature.cleaner.isAvailable,
-                  WhatsAppDownloadSupport.isEnabled else {
-                return .unknown
-            }
-            switch WhatsAppDownloadManager.shared.accessStatus {
-            case .available: return .granted
+            switch permissions.downloadsAccess {
+            case .granted: return .granted
             case .denied: return .missing
-            case .unknown: return .unknown
+            case .unknown, .undetermined: return .unknown
             }
         case .notifications:
             switch permissions.notifications {
             case .granted: return .granted
-            case .denied, .undetermined: return .missing
+            case .denied: return .missing
+            case .undetermined: return .undetermined
             case .unknown: return .unknown
             }
         case .automationFinder: return automationStatus(.finder)
         case .automationTerminal: return automationStatus(.terminal)
         case .audioCapture:
-            // No public check exists for system audio capture; the mixer
-            // reports a failed tap, which is the one readable signal.
-            if AppFeature.mixer.isAvailable, AppVolumeMixer.shared.needsPermission {
-                return .missing
-            }
+            // Tap creation can fail for device/routing reasons too; never
+            // present a generic engine failure as a confirmed TCC denial.
             return .unknown
         case .microphone:
             switch permissions.microphone {
             case .granted: return .granted
-            case .denied, .undetermined: return .missing
+            case .denied: return .missing
+            case .undetermined: return .undetermined
             case .unknown: return .unknown
             }
         case .camera:
             switch permissions.camera {
             case .granted: return .granted
-            case .denied, .undetermined: return .missing
+            case .denied: return .missing
+            case .undetermined: return .undetermined
             case .unknown: return .unknown
             }
         case .appManagement:
@@ -448,23 +436,53 @@ struct PermissionsPortalSections: View {
     }
 
     private func automationStatus(_ target: Permissions.AutomationTarget) -> PermissionPortalRow.Status {
-        switch automation[target] {
+        switch permissions.automation[target] {
         case .granted: return .granted
-        case .denied, .undetermined: return .missing
+        case .denied: return .missing
+        case .undetermined: return .undetermined
         case .notDeterminable, .none: return .unknown
         }
     }
 }
 
 private struct PermissionPortalRow: View {
-    enum Status { case granted, missing, unknown }
+    enum Status { case granted, missing, undetermined, unknown }
 
     @ObservedObject private var l10n = L10n.shared
+    @ObservedObject private var permissions = Permissions.shared
     let permission: AppPermission
     let hub: FeatureHubStrings
     let status: Status
+    var compact = false
 
+    @ViewBuilder
     var body: some View {
+        if compact {
+            HStack(spacing: 12) {
+                Image(systemName: permission.symbolName)
+                    .font(.system(size: 21))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 30)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(permission.name(hub)).fontWeight(.medium)
+                    Text(permission.explainer(hub))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(usedByLine)
+                }
+                Spacer(minLength: 8)
+                statusChip
+                Button(actionTitle) {
+                    if status != .granted && hasRequestFlow { request() }
+                    else { openSystemSettings() }
+                }
+                .frame(minWidth: 64)
+                .disabled((permission == .automationFinder || permission == .automationTerminal)
+                          && permissions.requestingAutomation)
+                .help(hub.openSystemSettings)
+            }
+            .padding(.vertical, 8)
+        } else {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: permission.symbolName)
                 .font(.system(size: 14, weight: .semibold))
@@ -497,6 +515,7 @@ private struct PermissionPortalRow: View {
         }
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
+        }
     }
 
     private var activeFeatures: [AppFeature] {
@@ -526,15 +545,32 @@ private struct PermissionPortalRow: View {
         switch status {
         case .granted: return .green
         case .missing: return .orange
-        case .unknown: return .secondary
+        case .unknown, .undetermined: return .secondary
         }
     }
 
     private var chipText: String {
+        let text = PermissionPageStrings(language: l10n.language)
+        if permission == .filesAndFolders {
+            switch status {
+            case .granted: return text.downloadsAccessible
+            case .missing: return text.downloadsDenied
+            default: return text.notChecked
+            }
+        }
+        if status == .unknown {
+            switch permission {
+            case .automationFinder, .automationTerminal: return text.targetNotChecked
+            case .audioCapture: return text.checkWhileUsing
+            case .appManagement: return text.checkInSettings
+            default: break
+            }
+        }
         switch status {
         case .granted: return hub.statusGranted
         case .missing: return hub.statusMissing
         case .unknown: return hub.statusUnknown
+        case .undetermined: return PermissionPageStrings(language: l10n.language).notRequested
         }
     }
 
@@ -556,8 +592,9 @@ private struct PermissionPortalRow: View {
         case .notifications: return Permissions.shared.notifications == .undetermined
         case .camera: return Permissions.shared.camera == .undetermined
         case .microphone: return Permissions.shared.microphone == .undetermined
-        case .filesAndFolders, .automationFinder, .automationTerminal, .audioCapture,
-             .appManagement: return false
+        case .filesAndFolders: return true
+        case .automationFinder, .automationTerminal: return status != .missing
+        case .audioCapture, .appManagement: return false
         }
     }
 
@@ -573,9 +610,23 @@ private struct PermissionPortalRow: View {
             }
         case .camera: Permissions.shared.requestCamera()
         case .microphone: Permissions.shared.requestMicrophone()
-        case .filesAndFolders, .automationFinder, .automationTerminal, .audioCapture,
-             .appManagement:
+        case .filesAndFolders:
+            if status == .missing { permissions.openFilesAndFoldersSettings() }
+            else { permissions.checkDownloadsAccess() }
+        case .automationFinder: permissions.requestAutomation(.finder)
+        case .automationTerminal: permissions.requestAutomation(.terminal)
+        case .audioCapture, .appManagement:
             break
+        }
+    }
+
+    private var actionTitle: String {
+        let text = PermissionPageStrings(language: l10n.language)
+        switch permission {
+        case .filesAndFolders: return status == .missing ? hub.openSystemSettings : text.checkDownloads
+        case .audioCapture: return text.authorizationHelp
+        case .appManagement: return hub.openSystemSettings
+        default: return status != .granted && hasRequestFlow ? hub.requestButton : text.manage
         }
     }
 
@@ -584,10 +635,19 @@ private struct PermissionPortalRow: View {
         case .accessibility: Permissions.shared.openAccessibilitySettings()
         case .screenRecording: Permissions.shared.openScreenRecordingSettings()
         case .fullDiskAccess: Permissions.shared.openFullDiskAccessSettings()
-        case .filesAndFolders: Permissions.shared.openFilesAndFoldersSettings()
+        case .filesAndFolders: permissions.checkDownloadsAccess()
         case .notifications: Permissions.shared.openNotificationSettings()
         case .automationFinder, .automationTerminal: Permissions.shared.openAutomationSettings()
-        case .audioCapture: Permissions.shared.openAudioCaptureSettings()
+        case .audioCapture:
+            let text = PermissionPageStrings(language: l10n.language)
+            let alert = NSAlert()
+            alert.messageText = text.authorizationHelp
+            alert.informativeText = text.audioInstructions
+            alert.addButton(withTitle: hub.openSystemSettings)
+            alert.addButton(withTitle: l10n.s.uninstallerCancel)
+            if alert.runModal() == .alertFirstButtonReturn {
+                Permissions.shared.openAudioCaptureSettings()
+            }
         case .microphone: Permissions.shared.openMicrophoneSettings()
         case .camera: Permissions.shared.openCameraSettings()
         case .appManagement: Permissions.shared.openAppManagementSettings()

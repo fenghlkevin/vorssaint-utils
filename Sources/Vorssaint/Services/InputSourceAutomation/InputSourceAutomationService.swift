@@ -18,6 +18,7 @@ final class InputSourceAutomationService: ObservableObject {
     private var inputSourceObserver: NSObjectProtocol?
     private var browserTimer: Timer?
     private var domainRequestInFlight = false
+    private var domainGeneration = 0
     private var lastAppliedContext: String?
     private var programmaticChangeUntil = Date.distantPast
     private var manualOverrides: [String: (sourceID: String, expiresAt: Date)] = [:]
@@ -40,6 +41,10 @@ final class InputSourceAutomationService: ObservableObject {
         if activeApplication?.processIdentifier != app.processIdentifier {
             activeApplication = app
             activeDomain = nil
+        }
+        // Domain discovery is still available when creating the first rule.
+        if Self.browserBundleIDs.contains(app.bundleIdentifier ?? "") {
+            requestDomain(for: app)
         }
     }
 
@@ -67,6 +72,7 @@ final class InputSourceAutomationService: ObservableObject {
                         .filter(\.forceEnglishPunctuation).map(\.bundleID)))
                 if let context = self.currentContextKey { self.manualOverrides.removeValue(forKey: context) }
                 self.applyCurrentContext(force: true)
+                if let app = self.activeApplication { self.configureBrowserPolling(for: app) }
             }
         }
         let inputSourceChanged = Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String)
@@ -81,6 +87,7 @@ final class InputSourceAutomationService: ObservableObject {
     private func stop() {
         guard isRunning else { return }
         isRunning = false
+        domainGeneration &+= 1
         let center = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach(center.removeObserver)
         workspaceObservers.removeAll()
@@ -110,7 +117,8 @@ final class InputSourceAutomationService: ObservableObject {
     private func configureBrowserPolling(for app: NSRunningApplication) {
         browserTimer?.invalidate()
         browserTimer = nil
-        guard Self.browserBundleIDs.contains(app.bundleIdentifier ?? "") else { return }
+        guard isRunning, !InputSourceRuleStore.shared.domainRules.isEmpty,
+              Self.browserBundleIDs.contains(app.bundleIdentifier ?? "") else { return }
         requestDomain(for: app)
         browserTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self, weak app] _ in
             Task { @MainActor [weak self, weak app] in
@@ -124,12 +132,14 @@ final class InputSourceAutomationService: ObservableObject {
         guard !domainRequestInFlight, app.processIdentifier == activeApplication?.processIdentifier else { return }
         domainRequestInFlight = true
         let pid = app.processIdentifier
+        let generation = domainGeneration
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let domain = BrowserDomainResolver.domain(processIdentifier: pid)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.domainRequestInFlight = false
-                guard self.activeApplication?.processIdentifier == pid else { return }
+                guard self.domainGeneration == generation,
+                      self.activeApplication?.processIdentifier == pid else { return }
                 if self.activeDomain != domain {
                     self.activeDomain = domain
                     self.applyCurrentContext(force: true)
@@ -139,7 +149,7 @@ final class InputSourceAutomationService: ObservableObject {
     }
 
     private func applyCurrentContext(force: Bool) {
-        guard let bundleID = activeApplication?.bundleIdentifier else { return }
+        guard isRunning, let bundleID = activeApplication?.bundleIdentifier else { return }
         let store = InputSourceRuleStore.shared
         let domainRule = activeDomain.flatMap {
             InputSourceRuleSupport.matchingRule(for: $0, rules: store.domainRules)

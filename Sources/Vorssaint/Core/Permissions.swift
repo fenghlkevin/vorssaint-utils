@@ -16,6 +16,72 @@ final class Permissions: ObservableObject {
 
     @Published private(set) var accessibility = false
     @Published private(set) var screenRecording = false
+    @Published private(set) var downloadsAccess: NotificationPermissionState = .unknown
+    @Published private(set) var automation: [AutomationTarget: AutomationStatus] = [:]
+    @Published private(set) var requestingAutomation = false
+    private var automationRefreshID = UUID()
+
+    /// Explicit user action only: enumerate names in Downloads to exercise
+    /// its access gate, without scanning file contents or deleting anything.
+    func checkDownloadsAccess() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let state: NotificationPermissionState
+            do {
+                let root = try FileManager.default.url(for: .downloadsDirectory,
+                    in: .userDomainMask, appropriateFor: nil, create: false)
+                _ = try FileManager.default.contentsOfDirectory(at: root,
+                    includingPropertiesForKeys: nil, options: [.skipsSubdirectoryDescendants])
+                state = .granted
+            } catch let error as NSError {
+                state = error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoPermissionError
+                    ? .denied : .unknown
+            }
+            DispatchQueue.main.async { self.downloadsAccess = state }
+        }
+    }
+
+    func refreshAutomation() {
+        guard !requestingAutomation else { return }
+        let requestID = UUID()
+        automationRefreshID = requestID
+        DispatchQueue.global(qos: .userInitiated).async {
+            let states = Dictionary(uniqueKeysWithValues: AutomationTarget.allCases.map {
+                ($0, Self.automationStatus(for: $0))
+            })
+            DispatchQueue.main.async {
+                guard !self.requestingAutomation, self.automationRefreshID == requestID else { return }
+                self.automation = states
+            }
+        }
+    }
+
+    func requestAutomation(_ target: AutomationTarget) {
+        guard !requestingAutomation,
+              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: target.rawValue) else { return }
+        requestingAutomation = true
+        automationRefreshID = UUID()
+        // A stopped target cannot answer the preflight. Launch only after the
+        // user presses Request; never run a Terminal command or move a file.
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, error in
+            guard error == nil else {
+                DispatchQueue.main.async {
+                    self.requestingAutomation = false
+                    self.automation[target] = .notDeterminable
+                }
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let state = Self.automationStatus(for: target, askUserIfNeeded: true)
+                DispatchQueue.main.async {
+                    self.requestingAutomation = false
+                    self.automation[target] = state
+                    if state == .denied { self.openAutomationSettings() }
+                }
+            }
+        }
+    }
     /// Optional — only used to make the uninstaller's scan more thorough by
     /// reaching protected locations. There is no API prompt for it; the user
     /// grants it in System Settings.
@@ -121,6 +187,7 @@ final class Permissions: ObservableObject {
 
     /// Full refresh including Full Disk Access. Runs at launch and on activation.
     func refresh() {
+        downloadsAccess = .unknown
         refreshActivePermissions()
         refreshNotificationPermission()
         refreshCameraPermission()
@@ -237,15 +304,10 @@ final class Permissions: ObservableObject {
         return gatedDirs.contains { (try? fm.contentsOfDirectory(atPath: $0)) != nil }
     }
 
-    /// Shows the system Accessibility prompt (once per TCC reset) and floats
-    /// the little guide card for the System Settings round trip.
+    /// Open the permission list with the app drag card. macOS owns consent.
     func requestAccessibility() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
         refreshActivePermissions()
-        if !accessibility {
-            PermissionGuideOverlay.shared.show(for: .accessibility)
-        }
+        openAccessibilitySettings()
     }
 
     /// Shows the system Screen Recording prompt (once per TCC reset) and
@@ -253,58 +315,33 @@ final class Permissions: ObservableObject {
     func requestScreenRecording() {
         CGRequestScreenCaptureAccess()
         refreshActivePermissions()
-        if !screenRecording {
-            PermissionGuideOverlay.shared.show(for: .screenRecording)
-        }
+        openScreenRecordingSettings()
     }
 
     func openAccessibilitySettings() {
         open(pane: "Privacy_Accessibility")
+        PermissionGuideOverlay.shared.show(for: .accessibility)
     }
 
     func openScreenRecordingSettings() {
         open(pane: "Privacy_ScreenCapture")
+        PermissionGuideOverlay.shared.show(for: .screenRecording)
     }
 
     func openFullDiskAccessSettings() {
         open(pane: "Privacy_AllFiles")
+        PermissionGuideOverlay.shared.show(for: .fullDiskAccess)
     }
 
     func openFilesAndFoldersSettings() {
         open(pane: "Privacy_FilesAndFolders")
     }
 
-    /// Full Disk Access has no prompt API, and an app only shows up (toggled
-    /// off) in its System Settings list once it has attempted to read a
-    /// protected location. Touch likely protected paths to register the app,
-    /// then open the pane after a short delay so tccd has recorded the denial
-    /// before System Settings reads the list. If it still does not appear, the
-    /// user can add the app with the list's "+" button.
+    /// Full Disk Access has no prompt API. The guide supplies the current app
+    /// bundle to drag into the permission list without probing protected data
+    /// merely to make macOS register an entry.
     func requestFullDiskAccess() {
-        DispatchQueue.global(qos: .userInitiated).async {
-            let home = NSHomeDirectory()
-            let fm = FileManager.default
-            // The TCC database is the classic trigger when present. Some macOS
-            // versions omit it, so the protected directories below are the
-            // fallback registration attempts.
-            let tccDB = (home as NSString)
-                .appendingPathComponent("Library/Application Support/com.apple.TCC/TCC.db")
-            _ = try? Data(contentsOf: URL(fileURLWithPath: tccDB), options: .mappedIfSafe)
-            if let handle = FileHandle(forReadingAtPath: tccDB) {
-                _ = try? handle.read(upToCount: 1)
-                try? handle.close()
-            }
-            // Protected locations, harmless when absent. The TCC directory is
-            // useful for registration but is not part of the access probe.
-            let dirs = (["Library/Application Support/com.apple.TCC"] + Self.fdaGatedDirectories)
-                .map { (home as NSString).appendingPathComponent($0) }
-            for path in dirs { _ = try? fm.contentsOfDirectory(atPath: path) }
-
-            // Let tccd persist the denial before the pane loads its list.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
-                self.openFullDiskAccessSettings()
-            }
-        }
+        openFullDiskAccessSettings()
     }
 
     /// Shows the system camera prompt on first use; afterwards the state can
@@ -346,6 +383,7 @@ final class Permissions: ObservableObject {
     }
 
     func openAppManagementSettings() {
+        PermissionGuideOverlay.shared.show(for: .appManagement)
         let pane = URL(string:
             "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AppBundles")!
         if NSWorkspace.shared.open(pane) { return }
@@ -375,7 +413,8 @@ final class Permissions: ObservableObject {
     /// Never prompts (askUserIfNeeded false). A target that is not running
     /// cannot be checked and reads as notDeterminable. Call off the main
     /// thread; the check can block briefly.
-    static func automationStatus(for target: AutomationTarget) -> AutomationStatus {
+    static func automationStatus(for target: AutomationTarget,
+                                 askUserIfNeeded: Bool = false) -> AutomationStatus {
         var descriptor = AEAddressDesc()
         let bundleID = target.rawValue
         let created = bundleID.withCString { pointer in
@@ -383,7 +422,7 @@ final class Permissions: ObservableObject {
         }
         guard created == noErr else { return .notDeterminable }
         defer { AEDisposeDesc(&descriptor) }
-        switch AEDeterminePermissionToAutomateTarget(&descriptor, typeWildCard, typeWildCard, false) {
+        switch AEDeterminePermissionToAutomateTarget(&descriptor, typeWildCard, typeWildCard, askUserIfNeeded) {
         case noErr: return .granted
         case OSStatus(errAEEventNotPermitted): return .denied
         case OSStatus(errAEEventWouldRequireUserConsent): return .undetermined

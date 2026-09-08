@@ -9,6 +9,7 @@ final class TranslationWindowController: NSObject, NSWindowDelegate {
     static let shared = TranslationWindowController()
     private var panel: NSPanel?
     private var translationKeyMonitor: Any?
+    var isVisible: Bool { panel?.isVisible == true }
     func show() {
         if panel == nil {
             let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 880, height: 550),

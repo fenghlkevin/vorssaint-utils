@@ -163,6 +163,12 @@ final class QuickTogglesService: ObservableObject {
         }
     }
 
+    /// Power management is available independently of the Quick Toggles feature.
+    func lockForPowerManagement() -> Bool {
+        guard let lock = Self.lockScreenFunction else { return false }
+        return lock() == 0
+    }
+
     func turnDisplayOff() {
         guard available, beginRun(.displayOff) else { return }
         workQueue.async {

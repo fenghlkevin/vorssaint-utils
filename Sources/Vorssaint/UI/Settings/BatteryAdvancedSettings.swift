@@ -12,6 +12,20 @@ struct BatteryAdvancedSettings: View {
     @State private var editing: BatteryAutomationRule?
 
     var body: some View {
+        Section("电池诊断与事件") {
+            DisclosureGroup("最近日志") {
+                ForEach(Array(service.diagnosticEvents.prefix(20).enumerated()), id: \.offset) { _, entry in
+                    Text(entry).font(.caption.monospaced()).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack {
+                Button("复制全部日志") { service.copyDiagnosticEvents() }
+                Button("清空事件") { service.clearDiagnosticEvents() }
+                Text("共 \(service.diagnosticEvents.count) 条，最多保留 1000 条；重启后保留")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
         Section("充放电与睡眠") {
             Toggle("超过充电上限时主动放电至上限", isOn: $discharge)
                 .disabled(service.backendReady && !service.dischargeSupported)
