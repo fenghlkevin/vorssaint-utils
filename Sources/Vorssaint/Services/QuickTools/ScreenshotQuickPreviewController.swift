@@ -46,6 +46,8 @@ final class ScreenshotQuickPreviewController {
     private let compactDelay: TimeInterval = 3
     private var closed = false
     private let createdAt = Date()
+    private var collapsing = false
+    private var collapseGeneration = 0
     var id = UUID()
     var onLayoutChange: (() -> Void)?
     private var stackOffset: CGFloat = 0
@@ -60,7 +62,9 @@ final class ScreenshotQuickPreviewController {
     }
 
     func setStackOffset(_ offset: CGFloat) {
+        guard offset != stackOffset else { return }
         stackOffset = offset
+        guard !collapsing else { return }
         panel?.setFrame(previewFrame(for: stackSize), display: true, animate: true)
     }
 
@@ -359,15 +363,31 @@ final class ScreenshotQuickPreviewController {
             scheduleAutoDismiss()
             return
         }
-        model.isCompact = true
         dismissWork = nil
-        panel?.setFrame(compactFrame(), display: true, animate: true)
-        onLayoutChange?()
-        scheduleAutoDismiss()
+        guard let panel, !collapsing else { return }
+        collapsing = true
+        collapseGeneration += 1
+        let generation = collapseGeneration
+        // Keep the expanded contents visible while the window contracts. Switching
+        // SwiftUI to the small fixed-size view first makes the shrink look instant.
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.32
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(compactFrame(), display: true)
+        } completionHandler: { [weak self] in
+            guard let self, !self.closed, self.collapseGeneration == generation else { return }
+            self.collapsing = false
+            self.model.isCompact = true
+            self.panel?.setFrame(self.compactFrame(), display: true)
+            self.onLayoutChange?()
+            self.scheduleAutoDismiss()
+        }
     }
 
     private func restoreFromCompact() {
-        guard !closed, model.isCompact else { return }
+        guard !closed, model.isCompact || collapsing else { return }
+        collapseGeneration += 1
+        collapsing = false
         dismissWork?.cancel()
         dismissWork = nil
         model.isCompact = false
