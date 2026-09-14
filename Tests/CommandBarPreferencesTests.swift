@@ -18,6 +18,12 @@ struct CommandBarPreferencesTests {
         })
         precondition(CommandBarPreferences.isEnabled(.actions, disabledRaw: ""))
         precondition(!CommandBarPreferences.isEnabled(.actions, disabledRaw: "actions"))
+        precondition(CommandBarPreferences.source(ofRowID: "networkinfo.open") == .networkInfo)
+        precondition(CommandBarPreferences.isRowEnabled("networkinfo.open", disabledSources: [.actions]))
+        precondition(!CommandBarPreferences.isRowEnabled("networkinfo.open", disabledSources: [.networkInfo]))
+        precondition(CommandBarPreferences.orderedIndexes(sources: [.apps, .networkInfo, .actions], orderRaw: "networkInfo,apps") == [1, 0, 2])
+        precondition(CommandBarPreferences.acceptsPin(rowID: "networkinfo.open"))
+        precondition(CommandBarPreferences.listedPins(["networkinfo.open"], present: []).isEmpty)
         print("Command bar preferences tests passed")
     }
 }

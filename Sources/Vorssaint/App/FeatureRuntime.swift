@@ -235,6 +235,11 @@ final class FeatureRuntime: ObservableObject {
         .radialMenu: { RadialMenuService.shared.syncWithPreferences() },
         .scratchpad: { ScratchpadService.shared.syncWithPreferences() },
         .translation: { TranslationService.shared.syncWithPreferences() },
+        .networkInfo: {
+            Task { @MainActor in
+                if !AppFeature.networkInfo.isAvailable { NetworkInfoService.shared.stop() }
+            }
+        },
         .commandBar: { CommandBarService.shared.syncWithPreferences() },
         .cleaner: {
             CleanerScheduler.shared.syncWithPreferences()

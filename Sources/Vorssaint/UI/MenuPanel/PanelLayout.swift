@@ -11,7 +11,7 @@ protocol PanelOrderItem: RawRepresentable, CaseIterable, Hashable where RawValue
 /// renaming a case would orphan a user's stored layout — keep them stable.
 enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
     case keepAwake, awayLock, brightness, mixer, system, network, disk, power, fanControl, utilities, controls,
-         inputSourceAutomation, toggles
+         inputSourceAutomation, toggles, networkInfo
 
     var id: String { rawValue }
 
@@ -21,6 +21,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
         case .keepAwake: return "电源与显示器"
         case .awayLock: return AwayLockStrings.current.title
         case .brightness: return FeatureStrings.brightness(L10n.shared.language).pageTitle
+        case .networkInfo: return NetworkInfoStrings(language: L10n.shared.language).title
         case .mixer: return s.mixerSection
         case .system: return s.systemSection
         case .network: return s.networkSection
@@ -40,6 +41,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
         case .keepAwake: return "display.2"
         case .awayLock: return "lock.laptopcomputer"
         case .brightness: return "display.2"
+        case .networkInfo: return "globe"
         case .mixer: return "slider.horizontal.3"
         case .system: return "cpu"
         case .network: return "network"
@@ -61,6 +63,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
         case .keepAwake: return DefaultsKey.panelShowKeepAwake
         case .awayLock: return DefaultsKey.panelShowAwayLock
         case .brightness: return DefaultsKey.panelShowBrightness
+        case .networkInfo: return DefaultsKey.panelShowNetworkInfo
         case .mixer: return DefaultsKey.monitorShowMixer
         case .system: return DefaultsKey.monitorShowSystem
         case .network: return DefaultsKey.monitorShowNetwork
@@ -86,6 +89,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
         case .keepAwake: return [.keepAwake]
         case .awayLock: return [.awayLock]
         case .brightness: return [.brightness]
+        case .networkInfo: return [.networkInfo]
         case .mixer: return [.mixer]
         case .system: return [.monitorCPU, .monitorGPU, .monitorMemory]
         case .network: return [.monitorNetwork]

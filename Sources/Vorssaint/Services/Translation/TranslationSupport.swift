@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Vorssaint
 
 import Foundation
+import NaturalLanguage
 import Security
 
 enum TranslationProviderSelection {
@@ -27,6 +28,17 @@ enum TranslationProviderSelection {
         let choices = available(aiIDs: aiIDs)
         let index = choices.firstIndex(of: current) ?? 0
         return choices[(index + (backwards ? choices.count - 1 : 1)) % choices.count]
+    }
+}
+
+enum TranslationLanguageDetection {
+    static func systemSource(text: String, requested: String, supported: [String]) -> String? {
+        guard requested == "auto" else { return supported.contains(requested) ? requested : nil }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        guard let detected = recognizer.dominantLanguage?.rawValue,
+              supported.contains(detected) else { return nil }
+        return detected
     }
 }
 

@@ -520,7 +520,7 @@ final class CommandBarService: ObservableObject {
     /// The chip order. Fixed, so the row never reshuffles under a pointer.
     private static let chipOrder: [CommandBarSource] = [
         .actions, .apps, .clipboard, .windows, .menus, .settingsPages, .macSettings,
-        .snippets, .emoji, .folders, .links,
+        .snippets, .emoji, .folders, .links, .networkInfo,
     ]
 
     /// Walks the chips with the arrow keys. Only while the field is empty:
@@ -594,7 +594,7 @@ final class CommandBarService: ObservableObject {
         case .emoji:
             let hidden = hiddenKeys
             return emojiEntries.contains { !hidden.contains($0.stableKey) }
-        case .actions, .settingsPages, .snippets, .folders, .links:
+        case .actions, .settingsPages, .snippets, .folders, .links, .networkInfo:
             // Asked once per chip on every pass with an empty field, so it
             // stops at the first row that qualifies instead of building a copy
             // of the catalog five times over.
@@ -625,7 +625,7 @@ final class CommandBarService: ObservableObject {
         case .windows: rows = windowEntries
         case .menus: rows = menuEntries
         case .emoji: rows = emojiEntries
-        case .settingsPages, .snippets, .folders, .links:
+        case .settingsPages, .snippets, .folders, .links, .networkInfo:
             rows = catalog.filter { CommandBarPreferences.source(ofRowID: $0.id) == source }
         case .clipboard:
             rows = CommandBarCatalog.clipboardBrowseEntries(limit: limit, bar: bar) { [weak self] entry in
@@ -651,6 +651,7 @@ final class CommandBarService: ObservableObject {
     func categoryTitle(_ source: CommandBarSource) -> String {
         let bar = FeatureStrings.commandBar(L10n.shared.language)
         switch source {
+        case .networkInfo: return NetworkInfoStrings(language: L10n.shared.language).title
         case .actions: return bar.sourceActions
         case .apps: return bar.sourceApps
         case .menus: return bar.kindMenu
@@ -1130,7 +1131,7 @@ final class CommandBarService: ObservableObject {
         case .snippets: return bar.kindSnippet
         case .folders: return bar.kindFolder
         case .actions, .apps, .menus, .windows, .quitApps, .settingsPages, .macSettings,
-             .clipboard, .emoji, .calculator, .selection, .files, .killProcess:
+             .clipboard, .emoji, .calculator, .selection, .files, .killProcess, .networkInfo:
             return entry.subtitle.isEmpty ? bar.everythingTitle : entry.subtitle
         }
     }

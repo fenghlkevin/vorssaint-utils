@@ -106,7 +106,12 @@ final class InputSourceAutomationService: ObservableObject {
     }
 
     private func refreshActiveApplication() {
-        guard isRunning, let app = Self.externalFrontmostApplication() else { return }
+        // Normal activation must include Vorssaint itself. The Settings window can
+        // have its own app rule; filtering our PID here left the previous external
+        // app cached, so a rule for the Developer build never took effect. Only
+        // refreshMenuContext() deliberately skips our process, because opening the
+        // menu bar panel should continue to describe the app behind the panel.
+        guard isRunning, let app = NSWorkspace.shared.frontmostApplication else { return }
         activeApplication = app
         activeDomain = nil
         punctuation.setActiveBundleID(app.bundleIdentifier)

@@ -3,6 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 test_dir="$(mktemp -d /private/tmp/vorssaint-battery-tests.XXXXXX)"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/vorssaint-module-cache}"
+swiftc Sources/Vorssaint/Services/Battery/BatteryTelemetryTracker.swift Tests/BatteryTelemetryTests.swift -o "$test_dir/telemetry"
+"$test_dir/telemetry"
 swiftc Sources/Vorssaint/Services/Battery/BatteryDiagnosticSnapshot.swift Tests/BatteryDiagnosticSnapshotTests.swift -o "$test_dir/snapshot"
 "$test_dir/snapshot"
 shared=(

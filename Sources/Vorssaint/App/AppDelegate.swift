@@ -351,9 +351,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     // MARK: - Main panel
 
     private func setUpPopover() {
-        // Application-defined (not .transient) so the panel stays open while the
-        // user works in our own Settings window and sees changes live. Click
-        // monitors below dismiss it when it would block that same Settings window.
+        // Application-defined so internal actions can keep the panel open.
+        // Click monitors below explicitly dismiss it when the user clicks outside.
         popover.behavior = .applicationDefined
         // We animate the underlying popover window ourselves so applicationDefined
         // dismissal, right-click menus and live Settings previews stay predictable.
@@ -371,6 +370,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             return
         }
         showPopover(anchor: button)
+    }
+
+    func showNetworkInfoPanel() {
+        guard AppFeature.networkInfo.isAvailable else { return }
+        PanelLayout.setShown(true, for: .networkInfo)
+        MenuPanelFocus.shared.focus(.networkInfo)
+        showPopover(allowRecentClose: true)
+        MenuPanelFocus.shared.focus(.networkInfo)
     }
 
     private func toggleMainPopover() {
@@ -881,14 +888,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
             guard let self, self.popover.isShown else { return }
-            guard !PanelInteractionState.shared.preventsPopoverDismissal else { return }
+            guard !PanelInteractionState.shared.isPresentingPopoverModal else { return }
             guard self.statusController.containsStatusItem(at: NSEvent.mouseLocation) == false else { return }
             self.closePopover()
         }
 
-        // Local events cover our own Settings window. Keep Settings + panel open
-        // when they sit side by side for live reordering, but close the panel if it
-        // overlaps Settings and the user clicks Settings to get it out of the way.
+        // Local events cover clicks in our own windows. Explicit outside clicks
+        // dismiss even when a utility suppresses automatic popover dismissal.
         popoverLocalDismissMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] event in
@@ -921,13 +927,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     private func shouldDismissPopover(forLocalEvent event: NSEvent) -> Bool {
-        guard !PanelInteractionState.shared.preventsPopoverDismissal else { return false }
-        guard event.window === settingsWindow,
-              let settingsFrame = settingsWindow?.frame,
-              let popoverFrame = popover.contentViewController?.view.window?.frame else {
+        guard !PanelInteractionState.shared.isPresentingPopoverModal,
+              let popoverWindow = popover.contentViewController?.view.window else {
             return false
         }
-        return settingsFrame.intersects(popoverFrame)
+        // Preserve controls, child popovers and native picker/context menus.
+        var window = event.window
+        while let current = window {
+            if current === popoverWindow { return false }
+            window = current.parent
+        }
+        if let window = event.window, window.level >= .popUpMenu { return false }
+        let location = event.window.map {
+            $0.convertPoint(toScreen: event.locationInWindow)
+        } ?? NSEvent.mouseLocation
+        guard !popoverWindow.frame.contains(location),
+              !statusController.containsStatusItem(at: location) else { return false }
+        return true
     }
 
     private func handlePopoverKeyDown(_ event: NSEvent) -> NSEvent? {

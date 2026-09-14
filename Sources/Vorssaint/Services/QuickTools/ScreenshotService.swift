@@ -22,7 +22,7 @@ final class ScreenshotService: ObservableObject {
     private let fullScreenHotkey = QuickToolHotkey(id: 23)
     private let clipboardHotkey = QuickToolHotkey(id: 24)
     private var session: ScreenshotSelectionController?
-    private var preview: ScreenshotQuickPreviewController?
+    private var previews: [ScreenshotQuickPreviewController] = []
     private var editors: [ScreenshotEditorController] = []
     private var countdown: DispatchWorkItem?
     private var countdownRemaining = 0
@@ -47,7 +47,7 @@ final class ScreenshotService: ObservableObject {
 
     private var protectedWindowIDs: Set<CGWindowID> {
         var ids = session?.protectedWindowIDs ?? []
-        ids.formUnion(preview?.protectedWindowIDs ?? [])
+        for preview in previews { ids.formUnion(preview.protectedWindowIDs) }
         for editor in editors {
             ids.formUnion(editor.protectedWindowIDs)
         }
@@ -143,8 +143,9 @@ final class ScreenshotService: ObservableObject {
         QuickToolHUD.dismissScrollingCapture()
         session?.cancel()
         session = nil
-        preview?.close()
-        preview = nil
+        let closingPreviews = previews
+        previews.removeAll()
+        for preview in closingPreviews { preview.close() }
         for editor in editors {
             editor.close()
         }
@@ -231,8 +232,6 @@ final class ScreenshotService: ObservableObject {
                 .map { "\($0.title.isEmpty ? "<untitled>" : $0.title)" }
             activationLog.notice("screenshot-begin mode=\(String(describing: mode), privacy: .public) hideVorssaintWindows=\(self.hideVorssaintWindows) visibleWindows=\(visible.joined(separator: " | "), privacy: .public)")
         }
-        preview?.close()
-        preview = nil
         let defaults = UserDefaults.standard
         let controller = ScreenshotSelectionController(
             freeze: mode == .scrolling
@@ -279,8 +278,6 @@ final class ScreenshotService: ObservableObject {
         guard directCaptureTask == nil, !ScreenshotSelectionController.isSessionOnScreen else {
             return
         }
-        preview?.close()
-        preview = nil
         let pointer = NSEvent.mouseLocation
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) })
                 ?? NSScreen.main,
@@ -419,7 +416,6 @@ final class ScreenshotService: ObservableObject {
     /// exists to reach for.
     private func route(_ capture: ScreenshotSelectionController.Capture) {
         capture.trace?.event("route-result", image: capture.image, details: "delivery=\(capture.delivery) defaultAction=\(ScreenshotDefaultAction.current)")
-        preview?.close()
         RecentCaptureService.shared.recordScreenshot(capture)
         if UserDefaults.standard.bool(
             forKey: DefaultsKey.screenshotLastCaptureShortcutEnabled) {
@@ -449,13 +445,13 @@ final class ScreenshotService: ObservableObject {
     /// A history item returns to the same floating preview without repeating
     /// automatic copy or save actions that already ran when it was captured.
     func restorePreview(_ capture: ScreenshotSelectionController.Capture) {
-        preview?.close()
         presentPreview(capture, defaultAction: .none)
     }
 
     private func presentPreview(_ capture: ScreenshotSelectionController.Capture,
                                 defaultAction: ScreenshotDefaultAction) {
         var saved: SaveOutcome?
+        let previewID = UUID()
         let controller = ScreenshotQuickPreviewController(
             capture: capture,
             strings: strings,
@@ -499,9 +495,25 @@ final class ScreenshotService: ObservableObject {
                 }
                 self.shareDirect(capture, duration: duration, completion: completion)
             },
-            onClose: { [weak self] in self?.preview = nil })
-        preview = controller
+            onClose: { [weak self] in
+                self?.previews.removeAll { $0.id == previewID }
+                self?.layoutPreviews()
+            })
+        controller.id = previewID
+        controller.onLayoutChange = { [weak self] in self?.layoutPreviews() }
+        previews.append(controller)
         controller.show()
+        layoutPreviews()
+    }
+
+    private func layoutPreviews() {
+        var offsets: [String: CGFloat] = [:]
+        for preview in previews {
+            let key = NSStringFromRect(preview.stackVisibleFrame)
+            let offset = offsets[key, default: 0]
+            preview.setStackOffset(offset)
+            offsets[key] = offset + preview.stackSize.height + 10
+        }
     }
 
     func openEditor(with capture: ScreenshotSelectionController.Capture) {
@@ -542,8 +554,6 @@ final class ScreenshotService: ObservableObject {
             QuickToolHUD.show(icon: "camera.viewfinder", message: strings.lastCaptureMissing)
             return
         }
-        preview?.close()
-        preview = nil
         openEditor(with: capture)
     }
 

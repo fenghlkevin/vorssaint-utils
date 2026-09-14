@@ -12,7 +12,7 @@ final class TranslationService: ObservableObject {
     struct SystemRequest: Identifiable {
         let id: UUID
         let text: String
-        let source: String
+        let source: String?
         let target: String
     }
     @Published var text = "" { didSet { if text != oldValue { cancel() } } }
@@ -196,7 +196,9 @@ final class TranslationService: ObservableObject {
         let id = generation
         if provider == "system" {
             if #available(macOS 15.0, *) {
-                systemRequest = SystemRequest(id: id, text: text, source: source, target: target)
+                systemRequest = SystemRequest(id: id, text: text,
+                    source: TranslationLanguageDetection.systemSource(text: text, requested: source,
+                                                                      supported: Self.languages), target: target)
             } else { report("Apple Translation requires macOS 15+") }
             return
         }

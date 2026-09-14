@@ -45,6 +45,24 @@ final class ScreenshotQuickPreviewController {
     private var autoDismissDuration: TimeInterval = 5
     private let compactDelay: TimeInterval = 3
     private var closed = false
+    private let createdAt = Date()
+    var id = UUID()
+    var onLayoutChange: (() -> Void)?
+    private var stackOffset: CGFloat = 0
+    lazy var stackVisibleFrame: CGRect = ScreenshotSupport.quickPreviewVisibleFrame(
+        anchor: capture.anchorRect,
+        pointer: NSEvent.mouseLocation,
+        screens: NSScreen.screens.map { (frame: $0.frame, visibleFrame: $0.visibleFrame) },
+        fallback: NSScreen.pointerVisibleFrame)
+
+    var stackSize: CGSize {
+        model.isCompact ? Self.compactSize : Self.size(showingLink: model.sharedRecord != nil)
+    }
+
+    func setStackOffset(_ offset: CGFloat) {
+        stackOffset = offset
+        panel?.setFrame(previewFrame(for: stackSize), display: true, animate: true)
+    }
 
     var protectedWindowIDs: Set<CGWindowID> {
         guard let panel, panel.isVisible, panel.windowNumber > 0 else { return [] }
@@ -73,6 +91,14 @@ final class ScreenshotQuickPreviewController {
             image: Self.thumbnail(for: capture.image),
             strings: strings,
             model: model,
+            createdAt: createdAt,
+            dimensions: "\(capture.image.width) × \(capture.image.height)",
+            dismiss: { [weak self] in self?.close() },
+            pin: { [weak self] in
+                guard let self else { return }
+                ScreenshotPinController.shared.pin(image: self.capture.image, scale: self.capture.scale)
+                self.close()
+            },
             perform: { [weak self] action in self?.perform(action) },
             dragItem: { [weak self] in
                 guard let self else { return NSItemProvider() }
@@ -86,12 +112,17 @@ final class ScreenshotQuickPreviewController {
             showQR: { [weak self] in self?.showQRResult() },
             restore: { [weak self] in self?.restoreFromCompact() },
             hoverChanged: { [weak self] inside in
+                guard let self else { return }
                 if inside {
-                    if self?.model.isCompact == true {
-                        self?.restoreFromCompact()
-                    }
+                    self.dismissWork?.cancel()
+                    self.dismissWork = nil
+                    self.restoreFromCompact()
                 } else {
-                    self?.scheduleAutoDismiss()
+                    if self.model.isCompact {
+                        self.scheduleAutoDismiss()
+                    } else {
+                        self.scheduleCompactTransition(after: 0.25)
+                    }
                 }
             })
         let host = NSHostingController(rootView: content)
@@ -288,17 +319,14 @@ final class ScreenshotQuickPreviewController {
     }
 
     fileprivate static func size(showingLink: Bool) -> CGSize {
-        CGSize(width: 350, height: showingLink ? 268 : 210)
+        CGSize(width: 350, height: showingLink ? 326 : 268)
     }
+
+    fileprivate static let compactSize = CGSize(width: 220, height: 64)
 
     private func previewFrame(for size: CGSize) -> CGRect {
         let pointer = NSEvent.mouseLocation
-        let screens = NSScreen.screens.map { (frame: $0.frame, visibleFrame: $0.visibleFrame) }
-        let visibleFrame = ScreenshotSupport.quickPreviewVisibleFrame(
-            anchor: capture.anchorRect,
-            pointer: pointer,
-            screens: screens,
-            fallback: NSScreen.pointerVisibleFrame)
+        let visibleFrame = stackVisibleFrame
         // The completion card has a stable home: the top-right corner of the
         // display that owns the capture. It must not float beside the selected
         // region or cover the content the person just captured.
@@ -308,30 +336,33 @@ final class ScreenshotQuickPreviewController {
             anchor: capture.anchorRect,
             pointer: pointer,
             visibleFrame: visibleFrame,
-            position: effectivePosition)
+            position: effectivePosition).offsetBy(dx: 0, dy: -stackOffset)
     }
 
     private func resizePanel(showingLink: Bool) {
         panel?.setFrame(previewFrame(for: Self.size(showingLink: showingLink)),
                         display: true,
                         animate: true)
+        onLayoutChange?()
     }
 
-    private func scheduleCompactTransition() {
+    private func scheduleCompactTransition(after delay: TimeInterval? = nil) {
+        guard !closed else { return }
         dismissWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.enterCompactMode() }
         dismissWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + compactDelay, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (delay ?? compactDelay), execute: work)
     }
 
     private func enterCompactMode() {
-        guard !closed, !model.isCompact, model.sharedRecord == nil else {
+        guard !closed, !model.isCompact, !model.sharing else {
             scheduleAutoDismiss()
             return
         }
         model.isCompact = true
         dismissWork = nil
         panel?.setFrame(compactFrame(), display: true, animate: true)
+        onLayoutChange?()
         scheduleAutoDismiss()
     }
 
@@ -341,16 +372,10 @@ final class ScreenshotQuickPreviewController {
         dismissWork = nil
         model.isCompact = false
         resizePanel(showingLink: model.sharedRecord != nil)
-        scheduleAutoDismiss()
     }
 
     private func compactFrame() -> CGRect {
-        let visible = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })?.visibleFrame
-            ?? NSScreen.main?.visibleFrame ?? NSScreen.screens[0].visibleFrame
-        let size = CGSize(width: 156, height: 38)
-        return CGRect(x: visible.maxX - size.width - 18,
-                      y: visible.maxY - size.height - 18,
-                      width: size.width, height: size.height)
+        previewFrame(for: Self.compactSize)
     }
 
     private func scheduleAutoDismiss() {
@@ -411,6 +436,10 @@ private struct ScreenshotQuickPreviewView: View {
     let image: CGImage
     let strings: ScreenshotFeatureStrings
     @ObservedObject var model: ScreenshotQuickPreviewModel
+    let createdAt: Date
+    let dimensions: String
+    let dismiss: () -> Void
+    let pin: () -> Void
     let perform: (ScreenshotQuickPreviewController.Action) -> Void
     let dragItem: () -> NSItemProvider
     let share: (ScreenshotShareDuration) -> Void
@@ -424,30 +453,31 @@ private struct ScreenshotQuickPreviewView: View {
     var body: some View {
         Group {
             if model.isCompact {
-                Button(action: restore) {
-                    Label("截图已完成", systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.primary)
+                HStack(spacing: 8) {
+                    Button(action: restore) {
+                        HStack(spacing: 8) {
+                            thumbnail(width: 68, height: 46)
+                            metadata
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    Spacer(minLength: 0)
+                    actionButton(symbol: "doc.on.doc", title: strings.copyButton, shortcut: "⌘C") {
+                        perform(.copy)
+                    }
                 }
-                .buttonStyle(.plain)
-                .frame(width: 156, height: 38)
             } else {
         VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                thumbnail(width: 52, height: 36)
+                metadata
+                Spacer()
+                actionButton(symbol: "xmark", title: "关闭预览", shortcut: "Esc", action: dismiss)
+            }
             Button {
                 perform(.edit)
             } label: {
-                Image(decorative: image, scale: 1)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
-                    .frame(maxWidth: 320, maxHeight: 138)
-                    .frame(width: 320, height: 138)
-                    .background(Color.black.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-                    )
+                thumbnail(width: 326, height: 164)
             }
             .buttonStyle(.plain)
             .onDrag(dragItem)
@@ -460,13 +490,16 @@ private struct ScreenshotQuickPreviewView: View {
             }
 
             HStack(spacing: 5) {
+                actionButton(symbol: "pencil", title: strings.editButton, shortcut: "⏎") {
+                    perform(.edit)
+                }
                 Button {
                     perform(.discard)
                 } label: {
                     ScreenshotToolIcon(symbol: "trash")
                         .frame(width: 22, height: 18)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
                 .controlSize(.small)
                 .screenshotSafeHelp("\(strings.discardConfirm)  (⌫)")
                 .accessibilityLabel(strings.discardConfirm)
@@ -490,31 +523,46 @@ private struct ScreenshotQuickPreviewView: View {
                     shareMenu
                 }
                 Spacer(minLength: 4)
-                Button {
-                    perform(.edit)
-                } label: {
-                    ScreenshotToolIcon(symbol: "pencil.tip.crop.circle")
-                        .frame(width: 22, height: 18)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .screenshotSafeHelp("⏎")
-                .accessibilityLabel(strings.editButton)
+                actionButton(symbol: "pin", title: "置顶截图", shortcut: "", action: pin)
             }
         }
         }
         }
-        .padding(10)
-        .frame(width: model.isCompact ? 156 : ScreenshotQuickPreviewController.size(showingLink: false).width,
-               height: model.isCompact ? 38 : ScreenshotQuickPreviewController.size(
+        .padding(model.isCompact ? 9 : 12)
+        .frame(width: model.isCompact ? ScreenshotQuickPreviewController.compactSize.width : ScreenshotQuickPreviewController.size(showingLink: false).width,
+               height: model.isCompact ? ScreenshotQuickPreviewController.compactSize.height : ScreenshotQuickPreviewController.size(
                    showingLink: model.sharedRecord != nil).height)
-        .background(.regularMaterial,
-                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(Color(nsColor: .windowBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
         )
         .onHover(perform: hoverChanged)
+    }
+
+    private var metadata: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(createdAt, format: .dateTime.hour().minute())
+                .font(.system(size: 12, weight: .medium))
+            Text(dimensions)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+    }
+
+    private func thumbnail(width: CGFloat, height: CGFloat) -> some View {
+        Image(decorative: image, scale: 1)
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: width, height: height)
+            .background(Color.primary.opacity(0.045))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5))
     }
 
     private func sharedLinkRow(_ record: ScreenshotShareRecord) -> some View {
@@ -575,7 +623,7 @@ private struct ScreenshotQuickPreviewView: View {
             ScreenshotToolIcon(symbol: "qrcode")
                 .frame(width: 22, height: 18)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.plain)
         .controlSize(.small)
         .screenshotSafeHelp(L10n.shared.s.qrResultTitle)
         .accessibilityLabel(L10n.shared.s.qrResultTitle)
@@ -598,7 +646,7 @@ private struct ScreenshotQuickPreviewView: View {
             .frame(width: 22, height: 18)
         }
         .menuStyle(.button)
-        .buttonStyle(.bordered)
+        .buttonStyle(.plain)
         .controlSize(.small)
         .disabled(model.sharing)
         .screenshotSafeHelp(model.sharing ? strings.sharingHUD : strings.shareButton)
@@ -612,9 +660,9 @@ private struct ScreenshotQuickPreviewView: View {
                               action: @escaping () -> Void) -> some View {
         Button(action: action) {
             ScreenshotToolIcon(symbol: symbol)
-                .frame(width: 22, height: 18)
+                .frame(width: 26, height: 24)
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.plain)
         .controlSize(.small)
         .disabled(disabled)
         .opacity(disabled ? 0.4 : 1)

@@ -3,6 +3,7 @@
 
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct InputSourceAutomationSettings: View {
     @ObservedObject private var l10n = L10n.shared
@@ -31,7 +32,7 @@ struct InputSourceAutomationSettings: View {
                 }
             }
 
-            Section(text.appRules) {
+            Section {
                 if store.appRules.isEmpty {
                     Text(text.noAppRules).foregroundStyle(.secondary)
                 }
@@ -55,6 +56,16 @@ struct InputSourceAutomationSettings: View {
                         .buttonStyle(.plain).help(text.remove)
                     }
                     .padding(.vertical, 5)
+                }
+            } header: {
+                HStack {
+                    Text(text.appRules)
+                    Spacer()
+                    Button(action: chooseApp) {
+                        Label(text.addApp, systemImage: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                    .textCase(nil)
                 }
             }
 
@@ -101,6 +112,24 @@ struct InputSourceAutomationSettings: View {
             return NSWorkspace.shared.icon(forFile: url.path)
         }
         return NSImage(systemSymbolName: "app", accessibilityDescription: nil) ?? NSImage()
+    }
+
+    private func chooseApp() {
+        let panel = NSOpenPanel()
+        panel.title = text.chooseApp
+        panel.prompt = text.addApp
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.applicationBundle]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url,
+              let bundleID = Bundle(url: url)?.bundleIdentifier,
+              let sourceID = ManagedInputSource.current?.id ?? sources.first?.id else { return }
+        let displayName = FileManager.default.displayName(atPath: url.path)
+        let appName = (displayName as NSString).deletingPathExtension
+        store.setAppRule(bundleID: bundleID, appName: appName, sourceID: sourceID)
     }
 
     private func appSourceBinding(_ rule: InputSourceAppRule) -> Binding<String> {

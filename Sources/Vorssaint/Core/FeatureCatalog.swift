@@ -28,7 +28,7 @@ enum AppFeature: String, CaseIterable {
     // Tools
     case quickLauncher, quickToggles, colorPicker, screenOCR, cleaningMode, mediaTools,
          cleaner, uninstaller, homebrew, appUpdates, screenshot, cameraPreview, radialMenu, scratchpad,
-         commandBar, screenRecorder, killProcess, translation
+         commandBar, screenRecorder, killProcess, translation, networkInfo
     // App management
     case menuBarIcons
     // System monitor, one entry per metric family (temperatures live with
@@ -75,7 +75,7 @@ extension AppFeature {
             return boolFor(DefaultsKey.windowLayoutShortcutsEnabled)
                 || boolFor(DefaultsKey.windowGestureEnabled)
                 || boolFor(DefaultsKey.windowEdgeSnapEnabled)
-        case .screenOCR, .cleaningMode, .screenshot, .commandBar, .screenRecorder, .translation:
+        case .screenOCR, .cleaningMode, .screenshot, .commandBar, .screenRecorder, .translation, .networkInfo:
             return false
         default:
             return true
@@ -102,7 +102,7 @@ extension AppFeature {
             return .energyDisplay
         case .quickLauncher, .quickToggles, .colorPicker, .screenOCR, .cleaningMode, .mediaTools,
              .cleaner, .uninstaller, .homebrew, .appUpdates, .screenshot, .cameraPreview, .radialMenu,
-             .scratchpad, .commandBar, .screenRecorder, .killProcess, .translation:
+             .scratchpad, .commandBar, .screenRecorder, .killProcess, .translation, .networkInfo:
             return .tools
         case .menuBarIcons, .awayLock:
             return .appManagement
@@ -166,6 +166,7 @@ extension AppFeature {
         case .cameraPreview: return "web.camera"
         case .radialMenu: return "circle.grid.cross"
         case .scratchpad: return "note.text"
+        case .networkInfo: return "globe"
         case .translation: return "character.bubble"
         case .commandBar: return "command"
         case .killProcess: return "xmark.octagon"
@@ -235,7 +236,7 @@ extension AppFeature {
         case .windowLayout, .diskImageInstaller, .mixer, .micMute, .keepAwake,
              .quickLauncher, .quickToggles, .colorPicker, .screenOCR, .cleaningMode, .mediaTools,
              .cleaner, .uninstaller, .homebrew, .appUpdates, .screenshot, .cameraPreview, .scratchpad,
-             .commandBar, .screenRecorder, .killProcess, .translation,
+             .commandBar, .screenRecorder, .killProcess, .translation, .networkInfo,
              .monitorCPU, .monitorGPU, .monitorMemory, .monitorNetwork, .monitorDisk, .monitorPower,
              .fanControl:
             return []
@@ -282,7 +283,7 @@ extension AppFeature {
         case .dynamicIsland, .clipboardHistory, .shelf, .urlCleaner, .awayLock,
              .soundOutputSwitcher, .musicBlock,
              .extraBrightness, .bluetoothSleep, .quickLauncher, .colorPicker, .micMute, .mediaTools,
-             .scratchpad, .monitorGPU, .monitorNetwork, .fanControl, .killProcess, .menuBarIcons:
+             .scratchpad, .monitorGPU, .monitorNetwork, .fanControl, .killProcess, .menuBarIcons, .networkInfo:
             return []
         }
     }

@@ -36,9 +36,12 @@ enum TranslationTests {
                 .replacingOccurrences(of: #"(?m)//.*$"#, with: "", options: .regularExpression)
         }
         let viewSource = try source("UI/Translation/TranslationView.swift")
-        try expect(viewSource.contains(".keyboardShortcut(.return, modifiers: .shift)"), "translation exposes Shift Return")
-        try expect(viewSource.contains("request.source == \"auto\" ? nil"), "Apple auto source delegates to system detection")
         let serviceSource = try source("Services/Translation/TranslationService.swift")
+        try expect(viewSource.contains(".keyboardShortcut(.return, modifiers: .shift)"), "translation exposes Shift Return")
+        try expect(serviceSource.contains("TranslationLanguageDetection.systemSource"), "Apple auto source uses local detection first")
+        let supported = ["zh-Hans", "zh-Hant", "en", "ja"]
+        try expect(TranslationLanguageDetection.systemSource(text: "worker", requested: "auto", supported: supported) == "en", "short English word is detected locally")
+        try expect(TranslationLanguageDetection.systemSource(text: "ignored", requested: "ja", supported: supported) == "ja", "explicit Apple source is preserved")
         try expect(viewSource.contains("service.cycleProvider(backwards:"), "panel shortcut cycles translation provider")
         try expect(serviceSource.components(separatedBy: "self.translateAcquiredText(").count == 3, "selection and OCR both auto-submit acquired text")
         let suite = "VorssaintTranslationTests." + UUID().uuidString

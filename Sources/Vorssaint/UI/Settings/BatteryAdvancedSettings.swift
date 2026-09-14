@@ -13,6 +13,11 @@ struct BatteryAdvancedSettings: View {
 
     var body: some View {
         Section("电池诊断与事件") {
+            DisclosureGroup("最近电池采样（电流 / 功率 / 电量变化）") {
+                Text(service.latestPowerObservation ?? "等待本次启动后的电池采样；历史采样可在诊断报告查看。")
+                    .font(.caption.monospaced()).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             DisclosureGroup("最近日志") {
                 ForEach(Array(service.diagnosticEvents.prefix(20).enumerated()), id: \.offset) { _, entry in
                     Text(entry).font(.caption.monospaced()).textSelection(.enabled)
@@ -21,8 +26,8 @@ struct BatteryAdvancedSettings: View {
             }
             HStack {
                 Button("复制全部日志") { service.copyDiagnosticEvents() }
-                Button("清空事件") { service.clearDiagnosticEvents() }
-                Text("共 \(service.diagnosticEvents.count) 条，最多保留 1000 条；重启后保留")
+                Button("清空全部日志") { service.clearDiagnosticEvents() }
+                Text("连接事件 \(service.diagnosticEvents.count)/1000；电池采样另存最近3000条，复制时一并导出；重启后保留")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

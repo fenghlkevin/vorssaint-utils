@@ -441,6 +441,7 @@ struct CommandBarSettings: View {
 
     private func title(for source: CommandBarSource) -> String {
         switch source {
+        case .networkInfo: return NetworkInfoStrings(language: l10n.language).title
         case .actions: return text.sourceActions
         case .apps: return text.sourceApps
         case .menus: return text.sourceMenus

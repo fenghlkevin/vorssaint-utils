@@ -22,6 +22,27 @@ struct PowerReading: Equatable {
     var temperature: Double?      // VirtualTemperature, matching BatFi's display
     var rawTemperature: Double?   // Temperature; retained for diagnostics/protection
     var usesVirtualTemperature = false
+    var voltageMillivolts: Int?
+    var amperageMilliamps: Int?
+    var instantAmperageMilliamps: Int?
+    var rawCurrentCapacity: Int?
+    var rawMaxCapacity: Int?
+    var measuredSystemWatts: Double? // PSTR before any UI fallback
+
+    var batteryDiagnosticValues: String {
+        func value<T>(_ input: T?) -> String { input.map { String(describing: $0) } ?? "未知" }
+        func number(_ input: Double?) -> String {
+            guard let input, input.isFinite else { return "未知" }
+            return String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), input)
+        }
+        return "电池存在=\(hasBattery) 电量=\(value(chargePercent))% "
+            + "Voltage=\(value(voltageMillivolts))mV Amperage=\(value(amperageMilliamps))mA InstantAmperage=\(value(instantAmperageMilliamps))mA "
+            + "电池功率(V×I)=\(number(batteryWatts))W（正充入/负放出；优先Amperage，缺失才使用InstantAmperage） "
+            + "实测PSTR=\(number(measuredSystemWatts))W 实测PDTR=\(number(adapterWatts))W 适配器额定=\(number(adapterMaxWatts))W "
+            + "原始容量=\(value(rawCurrentCapacity))/\(value(rawMaxCapacity)) "
+            + "显示温度=\(number(temperature))°C 来源=\(usesVirtualTemperature ? "VirtualTemperature" : "Temperature") 原始温度=\(number(rawTemperature))°C "
+            + "健康=\(number(healthPercent))% 循环=\(value(cycleCount)) 剩余时间=\(number(timeRemainingSeconds))s"
+    }
 
     var isEmpty: Bool {
         systemWatts == nil && adapterWatts == nil && adapterMaxWatts == nil
@@ -92,6 +113,11 @@ final class PowerSampler {
                 isCharging: reading.isCharging)
 
             let voltageMv = (props["Voltage"] as? Int) ?? 0
+            reading.voltageMillivolts = props["Voltage"] as? Int
+            reading.amperageMilliamps = props["Amperage"] as? Int
+            reading.instantAmperageMilliamps = props["InstantAmperage"] as? Int
+            reading.rawCurrentCapacity = props["AppleRawCurrentCapacity"] as? Int
+            reading.rawMaxCapacity = props["AppleRawMaxCapacity"] as? Int
             let amperageMa = (props["Amperage"] as? Int) ?? (props["InstantAmperage"] as? Int)
             if voltageMv > 0, let amperageMa {
                 // Power = V x I, signed by the amperage (negative while discharging).
@@ -129,6 +155,7 @@ final class PowerSampler {
             }
         }
 
+        reading.measuredSystemWatts = reading.systemWatts
         reading.systemWatts = MetricFormat.systemPowerWatts(
             measured: reading.systemWatts,
             batteryWatts: reading.batteryWatts,

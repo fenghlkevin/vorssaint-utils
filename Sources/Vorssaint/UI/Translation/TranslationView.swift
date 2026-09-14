@@ -13,7 +13,9 @@ final class TranslationWindowController: NSObject, NSWindowDelegate {
     func show() {
         if panel == nil {
             let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 880, height: 550),
-                                styleMask: [.titled, .closable, .resizable, .utilityWindow], backing: .buffered, defer: false)
+                                styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+            panel.titleVisibility = .hidden
+            panel.titlebarAppearsTransparent = true
             panel.title = TranslationStrings.current[.title]
             panel.isReleasedWhenClosed = false
             panel.level = .floating
@@ -112,69 +114,92 @@ struct TranslationView: View {
     @ObservedObject private var model = TranslationService.shared
     @ObservedObject private var l10n = L10n.shared
     @FocusState private var editing: Bool
+    @State private var detectedLanguage: String?
+    @State private var detectedText = ""
     private var strings: TranslationStrings { .current }
     private var limit: Int { 20000 }
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 12) {
             HStack(spacing: 12) {
+                Spacer().frame(width: 64)
                 Image(systemName: "character.bubble.fill")
-                    .font(.system(size: 25)).foregroundStyle(Color.accentColor)
-                    .frame(width: 46, height: 46)
-                    .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(strings[.title]).font(.title2.weight(.semibold))
-                    Text(strings[.caption]).font(.caption).foregroundStyle(.secondary)
-                }
+                    .font(.system(size: 18)).foregroundStyle(Color.accentColor)
+                Text(strings[.title]).font(.headline)
                 Spacer(minLength: 16)
                 TranslationProviderPicker(title: strings.settingsLabels.service, selection: $model.provider)
                     .labelsHidden().frame(maxWidth: 240).help(strings.settingsLabels.service + " · ⇧ ↑ / ⇧ ↓")
+                Button {
+                    TranslationWindowController.shared.hide()
+                    (NSApp.delegate as? AppDelegate)?.openSettingsWindow()
+                } label: { Image(systemName: "gearshape").font(.system(size: 16)) }
+                    .buttonStyle(.plain).help(l10n.language.rawValue.hasPrefix("zh") ? "设置" : "Settings")
             }
-            HStack(alignment: .top, spacing: 14) {
+            Divider()
+            HStack(spacing: 16) {
+                HStack(spacing: 8) {
+                    TranslationLanguagePicker(title: strings[.source], selection: $model.source, automatic: true)
+                        .labelsHidden().fixedSize()
+                    if model.source == "auto", detectedText == model.text, let detectedLanguage {
+                        Label(Locale(identifier: l10n.language.rawValue)
+                            .localizedString(forIdentifier: detectedLanguage) ?? detectedLanguage,
+                              systemImage: "checkmark")
+                            .font(.caption).foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }.frame(maxWidth: .infinity)
+                Button {
+                    let from = model.source == "auto" ? (detectedText == model.text ? detectedLanguage : nil) : model.source
+                    guard let from else { return }
+                    let oldTarget = model.target
+                    model.target = from
+                    model.source = oldTarget
+                } label: { Image(systemName: "arrow.left.arrow.right") }
+                    .buttonStyle(TranslationCompactButtonStyle())
+                    .disabled(model.source == "auto" && (detectedText != model.text || detectedLanguage == nil))
+                    .help(l10n.language.rawValue.hasPrefix("zh") ? "互换语言" : "Swap languages")
+                TranslationLanguagePicker(title: strings[.target], selection: $model.target, automatic: false)
+                    .labelsHidden().frame(maxWidth: .infinity, alignment: .leading)
+            }.controlSize(.large)
+            HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
-                        TranslationLanguagePicker(title: strings[.source], selection: $model.source, automatic: true)
-                            .labelsHidden()
+                        Text(l10n.language.rawValue.hasPrefix("zh") ? "原文" : "Original").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button { model.paste(); editing = true } label: {
                             Label(strings[.paste], systemImage: "doc.on.clipboard")
-                        }.buttonStyle(.borderless)
+                        }.labelStyle(.iconOnly).buttonStyle(.borderless).help(strings[.paste])
                         Button { model.captureText() } label: {
                             Image(systemName: "viewfinder").accessibilityLabel(strings[.capture])
                         }.buttonStyle(.borderless).help(strings[.capture])
                     }.padding(14)
-                    Divider()
                     TextEditor(text: $model.text)
                         .font(.system(size: 16)).scrollContentBackground(.hidden)
-                        .padding(12).focused($editing).accessibilityLabel(strings[.source])
-                    HStack {
-                        Text("\(model.text.count) / \(limit)")
-                            .foregroundStyle(model.text.count > limit ? Color.red : Color.secondary)
-                        Spacer()
-                        Text("⇧ ↩ · ⌘ ↩").foregroundStyle(.tertiary)
-                    }.font(.caption.monospacedDigit()).padding(14)
+                        .padding(.horizontal, 12).padding(.bottom, 14)
+                        .focused($editing).accessibilityLabel(strings[.source])
                 }
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.primary.opacity(0.08)))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
-                        TranslationLanguagePicker(title: strings[.target], selection: $model.target, automatic: false)
-                            .labelsHidden()
+                        Text(l10n.language.rawValue.hasPrefix("zh") ? "译文" : "Translation").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(model.result, forType: .string)
                         } label: {
                             Label(l10n.s.menuCopy, systemImage: "doc.on.doc")
-                        }.buttonStyle(.borderless).disabled(model.result.isEmpty)
+                        }.labelStyle(.iconOnly).buttonStyle(.borderless).help(l10n.s.menuCopy).disabled(model.result.isEmpty)
                     }.padding(14)
-                    Divider()
                     if model.result.isEmpty && model.error.isEmpty {
                         VStack(spacing: 12) {
                             if model.busy { ProgressView().controlSize(.large) }
                             else {
-                                Image(systemName: "character.bubble").font(.system(size: 36, weight: .light))
-                                Text(strings[.target]).font(.callout)
+                                Text(l10n.language.rawValue.hasPrefix("zh") ? "译文将在这里显示" : "Translation appears here").font(.callout)
                             }
                         }.foregroundStyle(.tertiary).frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
@@ -185,8 +210,9 @@ struct TranslationView: View {
                         }.frame(maxHeight: .infinity)
                     }
                 }
-                .background(Color.accentColor.opacity(0.035), in: RoundedRectangle(cornerRadius: 16))
-                .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.accentColor.opacity(0.12)))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.accentColor.opacity(0.025), in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
             }.frame(maxHeight: .infinity)
             if !model.error.isEmpty {
                 Label(model.error, systemImage: "exclamationmark.circle")
@@ -195,13 +221,17 @@ struct TranslationView: View {
                     .padding(12).background(Color.red.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
             }
             HStack {
-                Image(systemName: model.provider == "system" ? "lock.shield" : "network")
-                    .foregroundStyle(.secondary)
-                Text(model.providerDisplayName)
+                Circle().fill(!model.error.isEmpty ? Color.orange : model.result.isEmpty ? Color.secondary : Color.green)
+                    .frame(width: 6, height: 6)
+                Text(model.busy ? strings.progress(model.stage) : model.result.isEmpty
+                     ? (l10n.language.rawValue.hasPrefix("zh") ? "等待翻译" : "Ready")
+                     : (l10n.language.rawValue.hasPrefix("zh") ? "翻译完成" : "Completed"))
                     .font(.caption).foregroundStyle(.secondary)
-                if model.busy { Text(strings.progress(model.stage)).font(.caption).foregroundStyle(.secondary) }
-                else if let elapsed = model.elapsed { Text(String(format: "%.1fs", elapsed)).font(.caption.monospacedDigit()).foregroundStyle(.tertiary) }
+                if !model.busy, let elapsed = model.elapsed { Text(String(format: "%.1fs", elapsed)).font(.caption.monospacedDigit()).foregroundStyle(.tertiary) }
                 Image(systemName: "info.circle").foregroundStyle(.secondary).help(model.provider == "codex" ? strings.codexNotice : model.isAIProvider ? strings.aiNotice : strings.localNotice)
+                Text("·  \(model.text.count) / \(limit)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(model.text.count > limit ? Color.red : Color.secondary)
                 Spacer()
                 if model.busy {
                     Button(l10n.s.mediaCancel) { model.cancel() }.controlSize(.large)
@@ -210,7 +240,7 @@ struct TranslationView: View {
                         Label(strings[.translate] + "  ⇧ ↩", systemImage: "arrow.right").padding(.horizontal, 12)
                     }
                     .keyboardShortcut(.return, modifiers: .shift)
-                    .buttonStyle(.borderedProminent).controlSize(.large)
+                    .buttonStyle(TranslationCompactButtonStyle(primary: true))
                     .disabled(model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.text.count > limit)
                 }
             }
@@ -218,9 +248,22 @@ struct TranslationView: View {
                 SystemTranslationTask(request: request).id(request.id).frame(width: 0, height: 0)
             }
         }
-        .padding(22)
+        .padding(16)
+        .ignoresSafeArea(.container, edges: .top)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { editing = true }
+        .task(id: model.text) {
+            let input = model.text
+            detectedLanguage = nil
+            guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  input.count <= limit else { return }
+            do { try await Task.sleep(for: .milliseconds(250)) }
+            catch { return }
+            guard !Task.isCancelled else { return }
+            detectedLanguage = TranslationLanguageDetection.systemSource(
+                text: input, requested: "auto", supported: TranslationService.languages)
+            detectedText = input
+        }
         .onExitCommand { model.cancel(); TranslationWindowController.shared.hide() }
     }
 }
@@ -237,6 +280,10 @@ private struct TranslationProviderPicker: View {
             }
             Text("Codex · CLI").tag("codex")
         }
+        .pickerStyle(.menu).buttonStyle(.plain)
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.12)))
     }
 }
 
@@ -252,6 +299,25 @@ private struct TranslationLanguagePicker: View {
                 Text(Locale(identifier: l10n.language.rawValue).localizedString(forIdentifier: code) ?? code).tag(code)
             }
         }
+        .pickerStyle(.menu).buttonStyle(.plain)
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.12)))
+    }
+}
+
+private struct TranslationCompactButtonStyle: ButtonStyle {
+    var primary = false
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .medium))
+            .padding(.horizontal, primary ? 16 : 10).padding(.vertical, 9)
+            .foregroundStyle(primary ? Color.white : Color.primary)
+            .background(primary ? Color.accentColor : Color(nsColor: .textBackgroundColor),
+                        in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(primary ? 0 : 0.12)))
+            .opacity(enabled ? (configuration.isPressed ? 0.75 : 1) : 0.4)
     }
 }
 
@@ -259,7 +325,7 @@ private struct TranslationLanguagePicker: View {
 private struct SystemTranslationTask: View {
     let request: TranslationService.SystemRequest
     var body: some View {
-        Color.clear.translationTask(source: request.source == "auto" ? nil : Locale.Language(identifier: request.source),
+        Color.clear.translationTask(source: request.source.map(Locale.Language.init(identifier:)),
                                     target: Locale.Language(identifier: request.target)) { session in
             do {
                 let response = try await session.translate(request.text)

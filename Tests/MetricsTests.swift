@@ -11942,11 +11942,20 @@ struct MetricsTests {
             inputMemoryDefaults.removePersistentDomain(forName: inputMemorySuite)
         }
 
-        expect(AppFeature.allCases.count == 59, "feature catalog has 59 features")
+        expect(AppFeature.allCases.count == 61, "feature catalog has 61 features")
+        expect(Defaults.registeredDefaults[DefaultsKey.panelShowNetworkInfo] as? Bool == true,
+               "network information is a visible menu panel tab by default")
+        expect(AppFeature.networkInfo.group == .tools
+                && AppFeature.networkInfo.energyProfile == .idle
+                && AppFeature.networkInfo.permissions.isEmpty,
+               "network information is an independent on-demand tool, not a monitoring metric")
+        expect(FeatureVisibilitySupport.features(for: .networkInfo) == [.networkInfo]
+                && !FeatureVisibilitySupport.features(for: .monitor).contains(.networkInfo),
+               "network information settings are independent from monitoring")
         expect(Set(AppFeature.allCases.map(\.rawValue)).count == AppFeature.allCases.count,
                "feature ids are unique")
         expect(AppFeature.allCases.map(\.rawValue) == [
-            "switcher", "dockPreview", "dockClick", "windowMaximizer", "windowLayout", "autoQuit",
+            "dynamicIsland", "switcher", "dockPreview", "dockClick", "windowMaximizer", "windowLayout", "autoQuit",
             "scrollInverter", "focusFollowsMouse", "smoothScroll", "mouseNavigation", "mouseButtonShortcuts", "middleClick",
             "keyboardDebounce", "textSnippets", "superKey", "inputSourceAutomation",
             "clipboardHistory", "pastePlain", "finderCutPaste", "finderRename", "shelf", "urlCleaner",
@@ -11955,7 +11964,7 @@ struct MetricsTests {
             "keepAwake", "brightness", "extraBrightness", "bluetoothSleep", "awayLock", "batteryManagement",
             "quickLauncher", "quickToggles", "colorPicker", "screenOCR", "cleaningMode", "mediaTools",
             "cleaner", "uninstaller", "homebrew", "appUpdates", "screenshot", "cameraPreview",
-            "radialMenu", "scratchpad", "commandBar", "screenRecorder", "killProcess", "translation",
+            "radialMenu", "scratchpad", "commandBar", "screenRecorder", "killProcess", "translation", "networkInfo",
             "menuBarIcons",
             "monitorCPU", "monitorGPU", "monitorMemory", "monitorNetwork", "monitorDisk", "monitorPower",
             "fanControl",
@@ -18184,7 +18193,7 @@ struct MetricsTests {
         expect(CommandBarSource.allCases.map(\.rawValue) == [
             "actions", "apps", "menus", "windows", "quitApps", "settingsPages", "macSettings",
             "snippets", "clipboard", "emoji", "folders", "answers", "calculator",
-            "selection", "links", "files", "killProcess",
+            "selection", "links", "files", "killProcess", "networkInfo",
         ], "source ids are stable (they persist inside the disabled list)")
         expect(CommandBarSource.allCases.allSatisfy { !$0.isAlwaysOn },
                "all sources can be switched off")

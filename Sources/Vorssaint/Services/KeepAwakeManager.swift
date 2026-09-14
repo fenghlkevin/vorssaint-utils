@@ -42,6 +42,16 @@ final class KeepAwakeManager: ObservableObject {
     private var lockObservers: [NSObjectProtocol] = []
     private var automaticDisplayIDs = Set<CGDirectDisplayID>()
     private var previousDisplayContext: String?
+    private var lastDiagnosticPolicy: String?
+
+    private func diagnostic(_ message: String) {
+        let context = "锁定=\(sessionLocked)，电池供电=\(onBattery)，外屏=\(externalConnected)，模式=\(effectiveMode.rawValue)，合盖生效=\(clamshellActive)，合盖写入中=\(clamshellWriteInFlight)"
+        // Defer to avoid singleton initialization re-entry and keep all timeline
+        // writes on the main queue. Capture state at the action, not at delivery.
+        DispatchQueue.main.async {
+            AwayLockService.shared.recordPowerDiagnostic("\(message)；\(context)")
+        }
+    }
 
 
     var onSessionEnded: ((EndReason) -> Void)?
@@ -77,6 +87,7 @@ final class KeepAwakeManager: ObservableObject {
         sessionLocked = (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool ?? false
         lifecycleObservers.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self else { return }
+            self.diagnostic("收到系统唤醒通知；将在 1 秒后重评电源策略")
             self.policySuspended = false
             self.sleepInProgress = false
             self.sleepRequestID = UUID()
@@ -85,14 +96,22 @@ final class KeepAwakeManager: ObservableObject {
             self.scheduleAutomationEvaluation(after: 1)
         })
         lifecycleObservers.append(workspace.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.diagnostic("收到系统即将睡眠通知")
             self?.sleepObserved = true
         })
+        for (name, message) in [(NSWorkspace.screensDidWakeNotification, "显示器唤醒通知"),
+                                (NSWorkspace.screensDidSleepNotification, "显示器休眠通知")] {
+            lifecycleObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.diagnostic("收到\(message)（不代表由本软件触发）")
+            })
+        }
         displayObserver = BrightnessService.shared.$displays
             .debounce(for: .milliseconds(250), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in self?.evaluateAutomation() }
         for (name, locked) in [("com.apple.screenIsLocked", true), ("com.apple.screenIsUnlocked", false)] {
             lockObservers.append(DistributedNotificationCenter.default().addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
                 self?.sessionLocked = locked
+                self?.diagnostic(locked ? "收到系统锁定通知，立即重评策略" : "收到系统解锁通知，立即重评策略（无法识别是否 Apple Watch 解锁）")
                 self?.evaluateAutomation()
             })
         }
@@ -307,6 +326,11 @@ final class KeepAwakeManager: ObservableObject {
         let decision = PowerDisplayDecision.resolve(profile: profile, external: external,
             locked: sessionLocked, temporary: temporaryMode, lowBattery: low,
             suspended: policySuspended || manualPause || !AppFeature.keepAwake.isAvailable)
+        let policy = "电池=\(onBattery)，外屏=\(external)，锁定=\(sessionLocked)，基础=\(profile.idle.rawValue)，外屏策略=\(profile.external?.rawValue ?? "继承")，锁屏策略=\(profile.locked?.rawValue ?? "继承")，临时=\(temporaryMode?.rawValue ?? "无")，低电量=\(low)，暂停=\(policySuspended || manualPause)，功能启用=\(AppFeature.keepAwake.isAvailable)，目标=\(decision.mode.rawValue)，目标合盖=\(decision.closedLid)"
+        if lastDiagnosticPolicy != policy {
+            lastDiagnosticPolicy = policy
+            diagnostic("策略输入或结果变化：\(policy)")
+        }
         wantsClosedLid = decision.closedLid
         if effectiveMode != decision.mode { effectiveMode = decision.mode }
         let needed = decision.mode != .system || (decision.closedLid && passwordlessClamshell)
@@ -532,6 +556,7 @@ final class KeepAwakeManager: ObservableObject {
                                                  IOPMAssertionLevel(kIOPMAssertionLevelOn),
                                                  "Vorssaint: keep the Mac awake" as CFString,
                                                  &id)
+            diagnostic("创建系统防休眠请求：IOKit=\(ok)，ID=\(id)")
             if ok == kIOReturnSuccess {
                 systemAssertion = id
                 hasSystemAssertion = true
@@ -541,7 +566,8 @@ final class KeepAwakeManager: ObservableObject {
         }
         let allowDisplaySleep = effectiveMode != .bright
         if allowDisplaySleep, hasDisplayAssertion {
-            IOPMAssertionRelease(displayAssertion)
+            let result = IOPMAssertionRelease(displayAssertion)
+            diagnostic("释放显示器常亮请求：ID=\(displayAssertion)，IOKit=\(result)")
             hasDisplayAssertion = false
         } else if !allowDisplaySleep, !hasDisplayAssertion {
             var id = IOPMAssertionID(0)
@@ -549,6 +575,7 @@ final class KeepAwakeManager: ObservableObject {
                                                  IOPMAssertionLevel(kIOPMAssertionLevelOn),
                                                  "Vorssaint: keep the display on" as CFString,
                                                  &id)
+            diagnostic("创建显示器常亮请求：IOKit=\(ok)，ID=\(id)（不代表屏幕已稳定）")
             if ok == kIOReturnSuccess {
                 displayAssertion = id
                 hasDisplayAssertion = true
@@ -560,11 +587,13 @@ final class KeepAwakeManager: ObservableObject {
 
     private func releaseAssertions() {
         if hasSystemAssertion {
-            IOPMAssertionRelease(systemAssertion)
+            let result = IOPMAssertionRelease(systemAssertion)
+            diagnostic("释放系统防休眠请求：ID=\(systemAssertion)，IOKit=\(result)")
             hasSystemAssertion = false
         }
         if hasDisplayAssertion {
-            IOPMAssertionRelease(displayAssertion)
+            let result = IOPMAssertionRelease(displayAssertion)
+            diagnostic("释放显示器常亮请求：ID=\(displayAssertion)，IOKit=\(result)")
             hasDisplayAssertion = false
         }
     }
@@ -624,12 +653,14 @@ final class KeepAwakeManager: ObservableObject {
 
     private func enableClamshell() {
         guard wantsClosedLid, !clamshellActive, !clamshellWriteInFlight else { return }
+        diagnostic("准备启用合盖运行：pmset disablesleep 1")
         clamshellWriteInFlight = true
         // Persist before dispatch so a crash during the privileged write is recoverable.
         UserDefaults.standard.set(true, forKey: DefaultsKey.sleepDisabledFlag)
         Sudoers.pmsetDisableSleep(true) { ok in
             DispatchQueue.main.async {
                 self.clamshellWriteInFlight = false
+                self.diagnostic("启用合盖运行返回：成功=\(ok)")
                 guard ok else {
                     // The rule was reported as working but the real call failed.
                     // Never fall back to a password prompt here: prompting per
@@ -656,8 +687,11 @@ final class KeepAwakeManager: ObservableObject {
 
     private func disableClamshell(synchronous: Bool) {
         if synchronous {
+            diagnostic("同步恢复系统睡眠：pmset disablesleep 0")
             // The serialized Sudoers queue drains any outstanding enable first.
-            if Sudoers.pmsetDisableSleep(false) {
+            let ok = Sudoers.pmsetDisableSleep(false)
+            diagnostic("同步恢复系统睡眠返回：成功=\(ok)")
+            if ok {
                 clamshellActive = false
                 UserDefaults.standard.set(false, forKey: DefaultsKey.sleepDisabledFlag)
             }
@@ -665,6 +699,7 @@ final class KeepAwakeManager: ObservableObject {
             return
         }
         guard !clamshellWriteInFlight else { return }
+        diagnostic("准备恢复系统睡眠：pmset disablesleep 0")
         clamshellWriteInFlight = true
         let finish: (Bool) -> Void = { [synchronous] usedPasswordless in
             // Quitting is the one moment where asking for a password is not
@@ -677,6 +712,7 @@ final class KeepAwakeManager: ObservableObject {
                                           prompt: L10n.shared.s.adminPromptClamshellOff))
             DispatchQueue.main.async {
                 self.clamshellWriteInFlight = false
+                self.diagnostic("恢复系统睡眠返回：成功=\(ok)，免密=\(usedPasswordless)")
                 if ok {
                     self.clamshellActive = false
                     if !usedPasswordless {

@@ -9,6 +9,23 @@ final class BatteryManagementService: ObservableObject {
     @Published private(set) var diagnosticEvents: [String] = UserDefaults.standard.stringArray(forKey: "battery.diagnosticEvents") ?? []
     private let diagnosticSession = UUID().uuidString
     private var diagnosticSequence = 0
+    private var telemetryEvents = UserDefaults.standard.stringArray(forKey: "battery.telemetryEvents.v1") ?? []
+    private var telemetryTracker = BatteryTelemetryTracker()
+    @Published private(set) var latestPowerObservation: String?
+    private var lastConfigurationLog: String?
+    private var allDiagnosticEvents: [String] { (diagnosticEvents + telemetryEvents).sorted(by: >) }
+
+    func recordPowerObservation(_ reading: PowerReading, at date: Date) {
+        let change = telemetryTracker.observe(at: date, percent: reading.chargePercent,
+            external: reading.externalConnected, charging: reading.isCharging, watts: reading.batteryWatts)
+        let responseAge = lastBackendResponse.map { String(Int(max(0, date.timeIntervalSince($0)))) } ?? "未知"
+        let entry = "\(date.ISO8601Format()) [电池采样/\(diagnosticSession)] \(change)；\(reading.batteryDiagnosticValues)；应用模式=\(mode.rawValue) 有效上限=\(effectiveLimit)% 后台就绪=\(backendReady) 后台响应距今=\(responseAge)s；\(lastError ?? "无连接错误")"
+        telemetryEvents.insert(entry, at: 0)
+        latestPowerObservation = entry
+        telemetryEvents = Array(telemetryEvents.prefix(3000))
+        UserDefaults.standard.set(telemetryEvents, forKey: "battery.telemetryEvents.v1")
+        Self.connectionLog.info("\(entry, privacy: .public)")
+    }
     private func record(_ message: String) {
         diagnosticSequence += 1
         let entry = "\(Date().ISO8601Format()) [\(diagnosticSession)/\(diagnosticSequence)] \(message)"
@@ -19,11 +36,16 @@ final class BatteryManagementService: ObservableObject {
     }
     func copyDiagnosticEvents() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(diagnosticEvents.joined(separator: "\n"), forType: .string)
+        NSPasteboard.general.setString(allDiagnosticEvents.joined(separator: "\n"), forType: .string)
     }
     func clearDiagnosticEvents() {
         diagnosticEvents = []
         UserDefaults.standard.removeObject(forKey: "battery.diagnosticEvents")
+        telemetryEvents = []
+        latestPowerObservation = nil
+        telemetryTracker = BatteryTelemetryTracker()
+        lastConfigurationLog = nil
+        UserDefaults.standard.removeObject(forKey: "battery.telemetryEvents.v1")
     }
     static let shared = BatteryManagementService()
     enum Mode: String { case automatic, limited, forceCharge, inhibiting, discharging, unavailable }
@@ -110,11 +132,14 @@ final class BatteryManagementService: ObservableObject {
         错误：\(lastError ?? "无")
         警告：\(warning ?? "无")
         系统启动：\(launchDiagnosis)
+        电池动态：\(telemetryEvents.count)条，最近3000次采样；约每30秒及打开菜单时采样，休眠/退出期间不采样。连接事件独立保留1000条。
+        功率口径：PSTR/PDTR为独立传感器读数，不保证同步或相等；电池功率由电压×电流计算，菜单电脑功率可能为推算。零电流不证明采样间隔内未放电。
+        最近电池采样：\(telemetryEvents.first ?? "尚无采样")
 
         """
     }
     func makeDiagnosticSnapshot() -> BatteryDiagnosticSnapshot {
-        BatteryDiagnosticSnapshot(generatedAt: Date(), summary: diagnosticSummary, events: diagnosticEvents)
+        BatteryDiagnosticSnapshot(generatedAt: Date(), summary: diagnosticSummary, events: allDiagnosticEvents)
     }
     var diagnosticReport: String { makeDiagnosticSnapshot().report }
     func copyDiagnosticReport() {
@@ -312,7 +337,15 @@ final class BatteryManagementService: ObservableObject {
                 self.refresh()
             }.store(in: &observers)
         NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
-            .receive(on: RunLoop.main).sink { [weak self] _ in self?.refresh() }.store(in: &observers)
+            .receive(on: RunLoop.main).sink { [weak self] _ in
+                self?.record("系统唤醒；休眠期间无连续采样，重新确认后台与电池状态")
+                BatteryPanelModel.shared.sample()
+                self?.refresh()
+            }.store(in: &observers)
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)
+            .receive(on: RunLoop.main).sink { [weak self] _ in
+                self?.record("系统即将睡眠；此事件不代表后台已执行睡眠充电策略")
+            }.store(in: &observers)
         NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
             .receive(on: RunLoop.main).sink { [weak self] _ in self?.refresh() }.store(in: &observers)
         refresh()
@@ -536,14 +569,22 @@ final class BatteryManagementService: ObservableObject {
     }
 
     private func perform(_ command: BatteryCommand) {
-        guard !working else { return }
-        guard Self.daemon.status == .enabled else { lastError = "请先授权独立电池后台"; return }
+        record("用户充电指令=\(command.rawValue)；请求不代表硬件已执行，需查看后续后台响应")
+        guard !working else { record("指令\(command.rawValue)未发送：已有后台请求执行中"); return }
+        guard Self.daemon.status == .enabled else {
+            lastError = "请先授权独立电池后台"
+            record("指令\(command.rawValue)未发送：后台未授权/启用")
+            return
+        }
         suspendedAfterFailure = false
         performingUserAction = true
         let configuration = currentConfiguration()
         send({ proxy, reply in proxy.update((try? JSONEncoder().encode(configuration)) ?? Data(), withReply: reply) }) { [weak self] success in
             guard let self else { return }
-            guard success else { self.performingUserAction = false; return }
+            guard success else {
+                self.record("指令\(command.rawValue)未发送：前置策略同步失败")
+                self.performingUserAction = false; return
+            }
             self.send({ proxy, reply in proxy.command(command.rawValue, withReply: reply) }) { [weak self] _ in
                 self?.performingUserAction = false
             }
@@ -633,6 +674,15 @@ final class BatteryManagementService: ObservableObject {
         if c.enabled, let rule = automation.matchingRule() { c.limit = rule.limit; activeRule = rule.name }
         else { activeRule = nil }
         effectiveLimit = c.limit
+        // Compare canonical JSON so dictionary key order cannot flood the log.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        if let data = try? encoder.encode(c), let canonical = String(data: data, encoding: .utf8) {
+            if lastConfigurationLog != canonical {
+                lastConfigurationLog = canonical
+                record("有效充电策略（准备同步，非执行确认）=\(canonical)；自动化规则命中=\(activeRule != nil)")
+            }
+        }
         return c
     }
 
@@ -716,7 +766,7 @@ final class BatteryManagementService: ObservableObject {
                     return
                 }
                 self.backendReady = result.supported
-                self.record("后台状态 command=\(result.command.rawValue) active=\(result.active) error=\(result.error ?? "无") warning=\(result.warning ?? "无")")
+                self.record("后台状态 request=\(id) command=\(result.command.rawValue) override=\(result.override.rawValue) active=\(result.active) overheated=\(result.overheated) backend=\(result.backendName ?? "未知") error=\(result.error ?? "无") warning=\(result.warning ?? "无")；后台响应不等于电池电流实测")
                 self.backendName = result.backendName
                 self.dischargeSupported = result.dischargeSupported == true
                 self.needsTakeover = result.needsTakeover == true

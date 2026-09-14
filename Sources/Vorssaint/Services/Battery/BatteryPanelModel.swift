@@ -64,14 +64,16 @@ final class BatteryPanelModel: ObservableObject {
         if includeApps { appsLoading = true }
         queue.async {
             let reading = self.sampler.sample()
+            let sampledAt = Date()
             let apps = includeApps ? ProcessUsageService.shared.topEnergy(limit: 3) : nil
             DispatchQueue.main.async {
                 if self.reading != reading { self.reading = reading }
                 if self.temperature != reading.temperature { self.temperature = reading.temperature }
-                self.observedAt = Date()
+                self.observedAt = sampledAt
                 if let apps { self.apps = apps }
                 self.appsLoading = false
                 self.sampling = false
+                BatteryManagementService.shared.recordPowerObservation(reading, at: self.observedAt)
                 self.record(reading, at: self.observedAt)
                 self.notifyIfNeeded()
             }

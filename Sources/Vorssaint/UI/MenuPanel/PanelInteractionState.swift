@@ -16,7 +16,8 @@ final class PanelInteractionState {
     /// modal state orphaned and make the next panel unresponsive.
     var isPresentingPopoverModal = false
 
-    /// The one answer every AppKit dismissal path uses. Service state lives
+    /// Protects automatic AppKit dismissal; explicit outside clicks only honor
+    /// the modal presentation guard. Service state lives
     /// here so the generic popover host does not know about individual tools,
     /// and operations stay protected even after the user switches panel tabs.
     var preventsPopoverDismissal: Bool {

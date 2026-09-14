@@ -226,6 +226,10 @@ enum SettingsDirectory {
                                       keywords: ["force quit", "process", "cpu", "memory", "kill"]),
             ]),
             (categories.utilities, [
+                SettingsDirectoryItem(page: .networkInfo,
+                                      title: NetworkInfoStrings(language: language).title,
+                                      icon: "globe",
+                                      keywords: ["IP", "ASN", "ISP", "网络信息", "出口", "归属地", "运营商", "network"]),
                 SettingsDirectoryItem(page: .translation,
                                       title: TranslationStrings(language: language)[.title],
                                       icon: "character.bubble",

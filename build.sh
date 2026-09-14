@@ -307,6 +307,7 @@ discard_test_preferences() {
 if (( TEST )); then
     echo "▸ Building & running unit tests against $(basename "$SDK")…"
     bash Tools/test-battery-control.sh
+    bash Tools/test-network-info.sh
     rm -rf build
     mkdir -p build
     # The full app build below remains optimized and is the optimizer gate.

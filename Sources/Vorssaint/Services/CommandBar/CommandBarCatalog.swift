@@ -177,6 +177,15 @@ enum CommandBarCatalog {
         entries.append(contentsOf: settingsEntries(s, language: language, bar: bar))
         entries.append(contentsOf: snippetEntries(bar))
         entries.append(contentsOf: developerEntries())
+        if AppFeature.networkInfo.isAvailable {
+            let networkText = NetworkInfoStrings(language: language)
+            entries.append(CommandBarEntry(id: "networkinfo.open", title: networkText.title,
+                subtitle: "IPv4 · ISP · ASN",
+                keywords: "network information public external exit ip isp asn 国内 国际 出口 公网 IP 网络信息 归属地 运营商 網絡資訊 所在地",
+                icon: .symbol("globe")) { _ in
+                    afterBeat { Task { @MainActor in (NSApp.delegate as? AppDelegate)?.showNetworkInfoPanel() } }
+                })
+        }
         entries.append(contentsOf: linkEntries(
             CommandBarLinks.decode(UserDefaults.standard.data(forKey: DefaultsKey.commandBarLinks)),
             bar: bar))

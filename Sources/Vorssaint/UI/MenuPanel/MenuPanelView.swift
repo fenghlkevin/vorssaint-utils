@@ -67,6 +67,7 @@ struct MenuPanelView: View {
     @ObservedObject private var panelFocus = MenuPanelFocus.shared
     @ObservedObject private var features = FeatureRuntime.shared
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(DefaultsKey.panelShowNetworkInfo) private var showNetworkInfo = true
     @AppStorage(DefaultsKey.monitorShowMixer) private var showMixer = true
     @AppStorage(DefaultsKey.monitorShowSystem) private var showSystem = true
     @AppStorage(DefaultsKey.monitorShowNetwork) private var showNetwork = true
@@ -282,6 +283,7 @@ struct MenuPanelView: View {
         case .keepAwake: return 400
         case .awayLock: return 280
         case .brightness: return 140
+        case .networkInfo: return 460
         case .mixer: return 250
         case .system: return 460
         case .network: return 190
@@ -315,6 +317,7 @@ struct MenuPanelView: View {
         case .keepAwake: KeepAwakeCard(collapsible: collapsible)
         case .awayLock: if showAwayLock { AwayLockPanelCard(collapsible: collapsible) }
         case .brightness: if showBrightness { BrightnessSection(collapsible: collapsible) }
+        case .networkInfo: if showNetworkInfo { NetworkInfoView(service: .shared) }
         case .mixer: if showMixer { MixerSection(collapsible: collapsible) }
         case .system: if showSystem { SystemSection(collapsible: collapsible) }
         case .network: if showNetwork { NetworkSection(collapsible: collapsible) }
@@ -338,6 +341,7 @@ struct MenuPanelView: View {
         // it is switched on in Settings, not from an empty panel screen.
         case .brightness: return showBrightness && brightnessEnabled
             && !(showKeepAwake && AppFeature.keepAwake.isAvailable)
+        case .networkInfo: return showNetworkInfo
         case .mixer: return showMixer
         case .system: return showSystem
         case .network: return showNetwork

@@ -543,6 +543,10 @@ final class AwayLockService: NSObject, ObservableObject {
         guard monitoringWasActive || bool(DefaultsKey.awayLockEnabled) else { return }
         log("系统事件：\(message)；\(diagnosticContext)（系统通知不能证明由本功能触发）")
     }
+    /// Shared timeline for correlating energy actions with proximity lock/wake.
+    func recordPowerDiagnostic(_ message: String) {
+        log("电源诊断：\(message)")
+    }
     private func log(_ message: String) {
         diagnosticSequence += 1
         events.insert(AwayLockEvent("[\(diagnosticSession)/\(diagnosticSequence)] \(message)"), at: 0)
