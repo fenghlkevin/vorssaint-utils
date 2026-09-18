@@ -73,10 +73,14 @@ BATTERY_HELPER_ID="$APP_BUNDLE_ID.battery-control"
 TARGET="arm64-apple-macosx14.0"
 ENTITLEMENTS="Resources/Vorssaint.entitlements"
 LEGACY_IDENTITY="Vorssaint Utils Signing"
-# Local development normally uses the stable self-signed identity, but an
-# existing Apple Development grant can be preserved by explicitly selecting
-# that certificate for both the staged and installed bundle.
-DEV_SIGNING_IDENTITY="${VORSSAINT_DEV_SIGNING_IDENTITY:-$LEGACY_IDENTITY}"
+# Never fall back to a non-team identity: macOS 27 menu-bar visibility and
+# authenticated helper connections require a consistent Apple signature.
+DEV_SIGNING_IDENTITY=""
+if (( DEV )); then
+    installed_authority="$(/usr/bin/codesign -dvv "/Applications/$APP_NAME.app" 2>&1 | sed -n 's/^Authority=//p' | head -1 || true)"
+    DEV_SIGNING_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | python3 Tools/select-development-identity.py "$installed_authority")"
+    export VORSSAINT_DEV_SIGNING_IDENTITY="$DEV_SIGNING_IDENTITY"
+fi
 
 developer_id_identity() {
     security find-identity -v -p codesigning 2>/dev/null \
@@ -85,18 +89,40 @@ developer_id_identity() {
         | sed -E 's/.*"(.*)".*/\1/' || true
 }
 
-fixed_dev_identity_available() {
-    security find-identity -v -p codesigning 2>/dev/null \
-        | grep -Fq "\"$DEV_SIGNING_IDENTITY\""
+# Check both the outer bundle and every bundled executable before replacing
+# the installed app. Matching Team IDs alone are insufficient for leaf-pinned XPC.
+verify_development_bundle() {
+    (( DEV )) || return 0
+    local bundle="$1" target details team expected_team="" scratch fingerprint
+    local -a targets
+    targets=("$bundle" "$bundle/Contents/Library/LaunchServices/$FAN_HELPER_ID"
+        "$bundle/Contents/Library/LaunchServices/$BATTERY_HELPER_ID"
+        "$bundle/Contents/Library/LaunchServices/$APP_BUNDLE_ID.proxy-tun"
+        "$bundle/Contents/Helpers/VorssaintProxyGuardian"
+        "$bundle/Contents/Resources/ProxyCore/mihomo-darwin-arm64")
+    for target in "${targets[@]}"; do
+        /usr/bin/codesign --verify --strict -R '=anchor apple generic' "$target" || return 1
+        details="$(/usr/bin/codesign -dv "$target" 2>&1)"
+        team="$(print -r -- "$details" | sed -n 's/^TeamIdentifier=//p')"
+        if [[ -z "$team" || "$team" == "not set" || ( -n "$expected_team" && "$team" != "$expected_team" ) ]]; then
+            echo "✗ Missing or inconsistent Apple Team ID: $target" >&2
+            return 1
+        fi
+        expected_team="$team"
+        scratch="$(mktemp -d)"
+        if ! /usr/bin/codesign -d --extract-certificates="$scratch/cert" "$target" 2>/dev/null; then
+            echo "✗ Cannot extract signing certificate: $target" >&2
+            rm -rf "$scratch"; return 1
+        fi
+        fingerprint="$(shasum -a 1 "$scratch/cert0" | awk '{print toupper($1)}')"
+        rm -rf "$scratch"
+        if [[ "$fingerprint" != "$DEV_SIGNING_IDENTITY" ]]; then
+            echo "✗ Signing certificate differs from selected development identity: $target" >&2
+            return 1
+        fi
+    done
+    echo "✓ Apple signature and bundled helper identities verified (Team $expected_team)"
 }
-
-# A locked/unavailable keychain is not permission to create a new identity.
-# Certificate continuity is required by the privileged helper's peer checks.
-if (( DEV )) && ! fixed_dev_identity_available; then
-    echo "✗ Developer builds require the selected '$DEV_SIGNING_IDENTITY' identity." >&2
-    echo "  Unlock the existing signing keychain. First-time setup is explicit: Tools/setup-signing.sh" >&2
-    exit 1
-fi
 
 codesign_with_timestamp_retry() {
     local attempt
@@ -141,7 +167,7 @@ finalize_installed_bundle_after_child() {
     local helper="$bundle/Contents/Library/LaunchServices/$FAN_HELPER_ID"
     local devid
     if (( DEV )); then
-        [[ "$DEV_SIGNING_IDENTITY" == "$LEGACY_IDENTITY" ]] && devid="" || devid="$DEV_SIGNING_IDENTITY"
+        devid="$DEV_SIGNING_IDENTITY"
     else
         devid="$(developer_id_identity)"
     fi
@@ -164,6 +190,7 @@ finalize_installed_bundle_after_child() {
     fi
     [[ -f "$helper" ]] && /usr/bin/codesign --verify --strict "$helper"
     /usr/bin/codesign --verify --deep --strict "$bundle"
+    verify_development_bundle "$bundle"
     echo "✓ Signature ready: $bundle"
 }
 
@@ -219,6 +246,7 @@ install_existing_bundle() {
         return 1
     fi
 
+    verify_development_bundle "$source"
     echo "▸ Installing existing bundle (build skipped)…"
     stop_process "$EXECUTABLE"
     for legacy in "Vorss:Vorss" "Vorssaint Utils:VorssaintUtils"; do
@@ -251,7 +279,7 @@ if (( INSTALL_EXISTING )); then
 fi
 
 if (( INSTALL && ! TEST )) && [[ "${VORSSAINT_INSTALL_CHILD:-0}" != "1" ]]; then
-    VORSSAINT_INSTALL_CHILD=1 "$0" "$@"
+    VORSSAINT_INSTALL_CHILD=1 /bin/zsh "$PWD/build.sh" "$@"
     child_status=$?
     if (( child_status != 0 )); then
         exit "$child_status"
@@ -521,28 +549,51 @@ if (( TEST )); then
         ./build/translation-tests || test_status=1
     fi
     bash Tools/test-command-bar.sh || test_status=1
+    bash Tools/test-proxy.sh || test_status=1
     exit $test_status
 fi
 
 echo "▸ Compiling ($BUILD_CONFIGURATION) against $(basename "$SDK")…"
+NATIVE_BRIDGE_FLAGS=(-I Sources/MenuBarNativeBridge/include -framework Security)
+compile_menu_bar_bridge() {
+    clang -fobjc-arc -target "$TARGET" -isysroot "$SDK" \
+        -I Sources/MenuBarNativeBridge/include \
+        -c Sources/MenuBarNativeBridge/MenuBarClientCoreBridge.m \
+        -o build/MenuBarClientCoreBridge.o
+}
+bash Tools/prepare-proxy-core.sh
 APP_SOURCES=(Sources/Vorssaint/**/*.swift)
 if (( DEV )); then
     APP_OBJECT_DIR="build/objects/$EXECUTABLE"
     mkdir -p build "$APP_OBJECT_DIR"
+    compile_menu_bar_bridge
+    bash Tools/build-proxy-yaml.sh build/proxy-yaml
+    clang -c Sources/ProxyTunnelBridge/ProxyTunnelBridge.c -I Sources/ProxyTunnelBridge/include -target "$TARGET" -isysroot "$SDK" -o build/ProxyTunnelBridge.o
     APP_OUTPUT_FILE_MAP="$APP_OBJECT_DIR/output-file-map.json"
     write_swift_output_file_map "$APP_OUTPUT_FILE_MAP" "$APP_OBJECT_DIR" "${APP_SOURCES[@]}"
     swiftc "${APP_OPTIMIZATION_FLAGS[@]}" -incremental -j "$(sysctl -n hw.logicalcpu)" \
-        -output-file-map "$APP_OUTPUT_FILE_MAP" \
+        -output-file-map "$APP_OUTPUT_FILE_MAP" -emit-executable -emit-module-path "$APP_OBJECT_DIR/$EXECUTABLE.swiftmodule" \
         -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${VM_STATISTICS_COMPAT_FLAGS[@]}" \
         "${BUILD_VARIANT_FLAGS[@]}" \
+        "${NATIVE_BRIDGE_FLAGS[@]}" build/MenuBarClientCoreBridge.o -I Sources/ProxyYAML/include build/proxy-yaml/libProxyYAML.a -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o \
         "${APP_SOURCES[@]}" -o "build/$EXECUTABLE"
 else
     rm -rf build
     mkdir -p build
+    compile_menu_bar_bridge
+    bash Tools/build-proxy-yaml.sh build/proxy-yaml
+    clang -c Sources/ProxyTunnelBridge/ProxyTunnelBridge.c -I Sources/ProxyTunnelBridge/include -target "$TARGET" -isysroot "$SDK" -o build/ProxyTunnelBridge.o
     swiftc "${APP_OPTIMIZATION_FLAGS[@]}" -target "$TARGET" -sdk "$SDK" \
         "${SDK_COMPAT_FLAGS[@]}" "${VM_STATISTICS_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" \
+        "${NATIVE_BRIDGE_FLAGS[@]}" build/MenuBarClientCoreBridge.o -I Sources/ProxyYAML/include build/proxy-yaml/libProxyYAML.a -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o \
         "${APP_SOURCES[@]}" -o "build/$EXECUTABLE"
 fi
+
+swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" Sources/Vorssaint/Services/Proxy/ProxyWire.swift Sources/Vorssaint/Services/Proxy/ProxySystemProxy.swift Sources/ProxyGuardian/main.swift -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o -o build/VorssaintProxyGuardian
+
+echo "▸ Compiling protected TUN helper…"
+swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o Sources/Vorssaint/Services/Proxy/ProxyTunnelPolicy.swift Sources/Vorssaint/Services/Proxy/ProxyTunnelLease.swift Sources/Vorssaint/Services/Proxy/ProxyTunnelXPC.swift Sources/Vorssaint/Services/Proxy/ProxySystemProxy.swift Sources/ProxyTunnelHelper/main.swift -o build/VorssaintProxyTunnelHelper
+build/VorssaintProxyTunnelHelper --selftest
 
 echo "▸ Compiling protected fan helper…"
 swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" \
@@ -566,6 +617,8 @@ swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIAN
     Sources/Vorssaint/Services/Battery/BatteryControlPolicy.swift \
     Sources/Vorssaint/Services/Battery/BatteryControlXPC.swift \
     Sources/Vorssaint/Services/Battery/BatteryControlHardware.swift \
+    Sources/Vorssaint/Services/Battery/BatteryPowerUI.swift \
+    Sources/Vorssaint/Services/Battery/BatterySystemLimitSession.swift \
     Sources/BatteryControlHelper/main.swift \
     -o "build/$BATTERY_HELPER_ID"
 "build/$BATTERY_HELPER_ID" --selftest
@@ -608,6 +661,20 @@ STAGE="$STAGE_TMP/$APP_NAME.app"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources" \
     "$STAGE/Contents/Library/LaunchDaemons" "$STAGE/Contents/Library/LaunchServices"
 cp "build/$EXECUTABLE" "$STAGE/Contents/MacOS/$EXECUTABLE"
+mkdir -p "$STAGE/Contents/Helpers"
+cp build/VorssaintProxyGuardian "$STAGE/Contents/Helpers/"
+PROXY_TUN_ID="com.vorssaint.utils.proxy-tun"
+(( DEV )) && PROXY_TUN_ID="com.vorssaint.utils.dev.proxy-tun"
+cp build/VorssaintProxyTunnelHelper "$STAGE/Contents/Library/LaunchServices/$PROXY_TUN_ID"
+cp Resources/com.vorssaint.utils.proxy-tun.plist "$STAGE/Contents/Library/LaunchDaemons/$PROXY_TUN_ID.plist"
+/usr/libexec/PlistBuddy -c "Set :Label $PROXY_TUN_ID" "$STAGE/Contents/Library/LaunchDaemons/$PROXY_TUN_ID.plist"
+/usr/libexec/PlistBuddy -c "Set :BundleProgram Contents/Library/LaunchServices/$PROXY_TUN_ID" "$STAGE/Contents/Library/LaunchDaemons/$PROXY_TUN_ID.plist"
+if (( DEV )); then
+    /usr/libexec/PlistBuddy -c "Delete :MachServices:com.vorssaint.utils.proxy-tun" "$STAGE/Contents/Library/LaunchDaemons/$PROXY_TUN_ID.plist"
+    /usr/libexec/PlistBuddy -c "Add :MachServices:$PROXY_TUN_ID bool true" "$STAGE/Contents/Library/LaunchDaemons/$PROXY_TUN_ID.plist"
+fi
+cp -R Resources/ProxyCore "$STAGE/Contents/Resources/"
+cp Resources/libyaml-LICENSE.txt "$STAGE/Contents/Resources/"
 cp "build/$FAN_HELPER_ID" "$STAGE/Contents/Library/LaunchServices/$FAN_HELPER_ID"
 cp "build/$BATTERY_HELPER_ID" "$STAGE/Contents/Library/LaunchServices/$BATTERY_HELPER_ID"
 cp Resources/com.vorssaint.utils.battery-control.plist \
@@ -616,6 +683,7 @@ cp Resources/com.vorssaint.utils.fan-control.plist \
     "$STAGE/Contents/Library/LaunchDaemons/$FAN_HELPER_ID.plist"
 cp Resources/Info.plist "$STAGE/Contents/Info.plist"
 cp CHANGELOG.md "$STAGE/Contents/Resources/CHANGELOG.md"
+cp Resources/OnlySwitch-LICENSE.txt "$STAGE/Contents/Resources/OnlySwitch-LICENSE.txt"
 # Departure Mono is explicitly supplied by the local developer for the Codex
 # island. Bundle it when present so the installed app does not depend on Vibe
 # Island remaining installed at runtime.
@@ -682,7 +750,8 @@ if [[ -d Resources/Images ]]; then
 fi
 xattr -c -r "$STAGE" 2>/dev/null || true
 
-# Signing, in order of preference:
+# Development builds require the selected Apple Development identity above.
+# Release signing, in order of preference:
 #   1. Developer ID Application — the real, Apple-issued identity used for
 #      notarized releases. Signed with the hardened runtime (required for
 #      notarization), the app's entitlements and a secure timestamp. Gives a
@@ -693,7 +762,7 @@ xattr -c -r "$STAGE" 2>/dev/null || true
 #      designated requirement across their local builds.
 #   3. Ad-hoc — fresh clone with no identity at all.
 if (( DEV )); then
-    [[ "$DEV_SIGNING_IDENTITY" == "$LEGACY_IDENTITY" ]] && DEVID="" || DEVID="$DEV_SIGNING_IDENTITY"
+    DEVID="$DEV_SIGNING_IDENTITY"
 else
     DEVID="$(developer_id_identity)"
 fi
@@ -723,13 +792,26 @@ codesign_fan_helper() {
     fi
 }
 
+sign_proxy_components() {
+    local bundle="$1"
+    codesign_fan_helper "$bundle/Contents/Library/LaunchServices/$PROXY_TUN_ID" "$PROXY_TUN_ID"
+    codesign_app "$bundle/Contents/Helpers/VorssaintProxyGuardian"
+    codesign_app "$bundle/Contents/Resources/ProxyCore/mihomo-darwin-arm64"
+    python3 - "$bundle/Contents/Resources/ProxyCore" <<'PROXY_MANIFEST'
+import hashlib,json,pathlib,sys
+p=pathlib.Path(sys.argv[1]); m=json.loads((p/'manifest.json').read_text())
+m['arm64']['binarySHA256']=hashlib.sha256((p/'mihomo-darwin-arm64').read_bytes()).hexdigest()
+(p/'manifest.json').write_text(json.dumps(m,indent=2)+'\n')
+PROXY_MANIFEST
+}
+
 sign_bundle() {
     local bundle="$1"
     local executable="$bundle/Contents/MacOS/$EXECUTABLE"
     local helper="$bundle/Contents/Library/LaunchServices/$FAN_HELPER_ID"
 
     if [[ -n "$DEVID" ]]; then
-        echo "  signing with Developer ID (hardened runtime): $DEVID"
+        echo "  signing with Apple identity (hardened runtime): $DEVID"
     elif security find-identity -p codesigning 2>/dev/null | grep -q "$LEGACY_IDENTITY"; then
         echo "  signing with legacy self-signed identity: $LEGACY_IDENTITY"
     else
@@ -737,6 +819,7 @@ sign_bundle() {
     fi
     [[ -f "$helper" ]] && codesign_fan_helper "$helper"
     codesign_fan_helper "$bundle/Contents/Library/LaunchServices/$BATTERY_HELPER_ID" "$BATTERY_HELPER_ID"
+    sign_proxy_components "$bundle"
     codesign_app "$bundle"
 
     # If local filesystem metadata invalidates the first signature, sign once
@@ -746,11 +829,13 @@ sign_bundle() {
         xattr -c -r "$bundle" 2>/dev/null || true
         [[ -f "$helper" ]] && codesign_fan_helper "$helper"
         codesign_fan_helper "$bundle/Contents/Library/LaunchServices/$BATTERY_HELPER_ID" "$BATTERY_HELPER_ID"
+        sign_proxy_components "$bundle"
         codesign_app "$bundle"
     fi
     [[ -f "$executable" ]] && codesign --verify --strict "$executable"
     [[ -f "$helper" ]] && codesign --verify --strict "$helper"
     codesign --verify --deep --strict "$bundle"
+    verify_development_bundle "$bundle"
 }
 
 sign_installed_bundle() {

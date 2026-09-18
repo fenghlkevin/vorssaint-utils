@@ -16,7 +16,10 @@ enum BatteryRegistrationRepair {
         if prepare && service.status == .notRegistered {
             print("BATTERY_REINSTALL=0"); exit(0)
         }
-        if !prepare && service.status == .notRegistered {
+        // After a safe bootout, macOS 27 may retain a .notFound registration.
+        // Register the current embedded helper directly, as the interactive
+        // authorize path does; unregistering that absent job returns EPERM.
+        if !prepare && (service.status == .notRegistered || service.status == .notFound) {
             do { try service.register() }
             catch { fail("register: \(error). App retained; retry after checking Login Items & Extensions.") }
         }
@@ -50,7 +53,7 @@ enum BatteryRegistrationRepair {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
         connection.invalidate()
-        guard completed, let response, response.error == nil else {
+        guard completed, let response, !prepare || response.error == nil else {
             fail(failure ?? response?.error ?? "no valid acknowledgement within 10 seconds")
         }
         if prepare {
@@ -73,6 +76,7 @@ enum BatteryRegistrationRepair {
                   response.version == BatteryControlResponse().version,
                   response.codeHash == expected else { fail("helper protocol/code hash does not match installed bundle") }
             print("Battery handshake verified: codeHash=\(expected), command=\(response.command), active=\(response.active)")
+            if let error = response.error { print("Charging control unavailable (connection verified): \(error)") }
         }
         exit(0)
     }
@@ -84,9 +88,28 @@ enum BatteryRegistrationRepair {
         guard others.isEmpty else {
             print("Close Vorssaint instances before resetting battery registration."); exit(1)
         }
+        var safelyRetired = false
+        if CommandLine.arguments.contains("--retire-and-repair-battery-registration") {
+            _ = NSApplication.shared
+            guard BatteryControlIdentifiers.embeddedHelperMatchesSigner() else {
+                print("Embedded helper signature does not match this App."); exit(1)
+            }
+            let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Library/LaunchServices/\(BatteryControlIdentifiers.helperID)").path
+            let quoted = "'" + helper.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            var finished = false
+            AdminShell.runWithResult(quoted + " --retire-for-registration-repair",
+                prompt: "安全迁移 Vorssaint 电池后台；验证控制锁与恢复记录后替换旧服务。") { status, output in
+                print(output)
+                safelyRetired = status == 0 && output.contains("BATTERY_MAINTENANCE_RETIRED=1")
+                finished = true
+            }
+            let deadline = Date().addingTimeInterval(660)
+            while !finished && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.1)) }
+            guard finished, safelyRetired else { print("Safe retirement not confirmed; registration unchanged."); exit(1) }
+        }
         var info = stat()
         let noRecoveryStorage = lstat("/Library/Application Support/VorssaintBatteryControl", &info) != 0 && errno == ENOENT
-        if !noRecoveryStorage {
+        if !noRecoveryStorage && !safelyRetired {
             // This narrowly-scoped migration is safe only after a fresh,
             // read-only hardware check proves charging and AC are automatic.
             guard CommandLine.arguments.contains("--recover-automatic-registration"),
@@ -111,7 +134,7 @@ enum BatteryRegistrationRepair {
             } catch { print("Battery registration failed: \(error)") }
             completed = true
         }
-        if service.status == .notRegistered { register() }
+        if service.status == .notRegistered || service.status == .notFound { register() }
         else {
             service.unregister { error in
                 DispatchQueue.main.async {

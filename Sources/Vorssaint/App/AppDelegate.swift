@@ -62,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // timer or shortcut. The onboarding can replace this set after the
         // person chooses what they actually want.
         FeaturePreset.prepareFirstRunAvailability()
+        Task { @MainActor in ProxyService.recoverAtLaunchIfDisabled() }
 
         // Redo a launch at login registration the system lost. The stored
         // choice is the last thing the user expressed in the app; startup
@@ -89,7 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
         statusController.onRightClick = { [weak self] in
             if MenuBarIconCollapser.shared.isCollapsed {
-                MenuBarIconCollapser.shared.setCollapsed(false)
+                MenuBarIconCollapser.shared.reveal()
             } else if AppFeature.keepAwake.isAvailable
                 && UserDefaults.standard.bool(forKey: DefaultsKey.keepAwakeRightClickToggle) {
                 KeepAwakeManager.shared.toggle()
@@ -224,8 +225,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         UserDefaults.standard.removeObject(forKey: DefaultsKey.startupDidNotFinish)
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let proxy = ProxyService.loaded else { return .terminateNow }
+        Task { @MainActor in
+            let restored = await proxy.stopAndWait()
+            if !restored {
+                let alert = NSAlert(); alert.messageText = "系统代理尚未恢复"
+                alert.informativeText = proxy.error ?? "请在代理工作台中重试停止。"
+                alert.runModal()
+            }
+            sender.reply(toApplicationShouldTerminate: restored)
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        MenuBarIconCollapser.shared.shutdown()
         // Quitting properly means the start worked, whenever it happened.
         endStartupWatch()
         if AppFeature.brightness.isAvailable {

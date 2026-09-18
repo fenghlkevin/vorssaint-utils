@@ -1,0 +1,20 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+proxy_tests="$(mktemp -d /private/tmp/vorssaint-proxy-tests.XXXXXX)"
+trap 'rm -rf "$proxy_tests"' EXIT
+bash Tools/build-proxy-yaml.sh "$proxy_tests/yaml"
+swiftc -I Sources/ProxyYAML/include "$proxy_tests/yaml/libProxyYAML.a" Sources/Vorssaint/Services/Proxy/ProxyTunnelPolicy.swift Sources/Vorssaint/Services/Proxy/ProxySupport.swift Sources/Vorssaint/Services/Proxy/ProxySystemProxy.swift Tests/ProxyTests.swift -o "$proxy_tests/tests"
+"$proxy_tests/tests" "$@"
+swiftc -I Sources/ProxyYAML/include "$proxy_tests/yaml/libProxyYAML.a" Sources/Vorssaint/Services/Proxy/ProxyTunnelPolicy.swift Sources/Vorssaint/Services/Proxy/ProxySupport.swift Sources/Vorssaint/Services/Proxy/ProxyCore.swift Tests/ProxyAPITests.swift -o "$proxy_tests/api-tests"
+"$proxy_tests/api-tests"
+swiftc -I Sources/ProxyYAML/include "$proxy_tests/yaml/libProxyYAML.a" Sources/Vorssaint/Services/Proxy/ProxyTunnelPolicy.swift Sources/Vorssaint/Services/Proxy/ProxySupport.swift Sources/Vorssaint/Services/Proxy/ProxyStorage.swift Sources/Vorssaint/Services/Proxy/ProxyProfiles.swift Tests/ProxyProfileTests.swift -o "$proxy_tests/profile-tests"
+"$proxy_tests/profile-tests"
+swiftc Sources/Vorssaint/Services/Proxy/ProxyTunnelPolicy.swift Sources/Vorssaint/Services/Proxy/ProxyTunnelLease.swift Sources/Vorssaint/Services/Proxy/ProxyCompanyDiagnostics.swift Tests/ProxyTunnelTests.swift -o "$proxy_tests/tun-tests"
+"$proxy_tests/tun-tests"
+clang -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk -mmacosx-version-min=14.0 Tests/ProxyDescriptorChild.c -o "$proxy_tests/fd-child"
+clang -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX26.sdk -mmacosx-version-min=14.0 -I Sources/ProxyTunnelBridge/include Sources/ProxyTunnelBridge/ProxyTunnelBridge.c Tests/ProxyDescriptorTests.c -o "$proxy_tests/fd-test"
+"$proxy_tests/fd-test" "$proxy_tests/fd-child" "$proxy_tests" "$proxy_tests/fd-result"
+clang -mmacosx-version-min=14.0 -c Sources/ProxyTunnelBridge/ProxyTunnelBridge.c -I Sources/ProxyTunnelBridge/include -o "$proxy_tests/tun.o"
+swiftc -I Sources/ProxyTunnelBridge/include "$proxy_tests/tun.o" -I Sources/ProxyYAML/include "$proxy_tests/yaml/libProxyYAML.a" Sources/Vorssaint/Services/Proxy/ProxyTunnelPolicy.swift Sources/Vorssaint/Services/Proxy/ProxySupport.swift Sources/Vorssaint/Services/Proxy/ProxyStorage.swift Sources/Vorssaint/Services/Proxy/ProxyCore.swift Sources/Vorssaint/Services/Proxy/ProxyTelemetry.swift Tests/ProxyActivityTests.swift -o "$proxy_tests/activity-tests"
+"$proxy_tests/activity-tests"

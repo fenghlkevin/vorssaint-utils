@@ -31,6 +31,7 @@ struct BatteryAdvancedSettings: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
+        if !service.systemChargeLimitBackend {
         Section("充放电与睡眠") {
             Toggle("超过充电上限时主动放电至上限", isOn: $discharge)
                 .disabled(service.backendReady && !service.dischargeSupported)
@@ -48,9 +49,12 @@ struct BatteryAdvancedSettings: View {
                 : "当前机型未检测到兼容 LED 控制接口。") : "授权电池后台后检测支持状态。")
                 .font(.caption).foregroundStyle(.secondary)
         }.disabled(service.backendReady && !service.ledSupported)
+        }
         Section("充电自动化") {
             Toggle("启用时间 / 地点规则", isOn: $automation.enabled)
-            Text("按从上到下的顺序匹配第一条规则；无匹配时使用基础上限。每 30 秒及唤醒时检查；睡眠中暂停充电，不执行时间/地点切换。")
+            Text(service.systemChargeLimitBackend
+                 ? "每 30 秒及唤醒时匹配首条规则；仅支持系统报告的上限档位，不支持的值会报错，不会自动提高目标。睡眠中沿用系统策略，不切换规则。"
+                 : "按从上到下的顺序匹配第一条规则；无匹配时使用基础上限。每 30 秒及唤醒时检查；睡眠中暂停充电，不执行时间/地点切换。")
                 .font(.caption).foregroundStyle(.secondary)
             if let rule = service.activeRule { Label("当前规则：\(rule) · \(service.effectiveLimit)%", systemImage: "checkmark.circle") }
             if automation.rules.isEmpty { Text("暂无规则，可以按星期、时段和地点设置上限。").foregroundStyle(.secondary) }

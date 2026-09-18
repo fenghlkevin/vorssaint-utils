@@ -67,7 +67,9 @@ struct MenuPanelView: View {
     @ObservedObject private var panelFocus = MenuPanelFocus.shared
     @ObservedObject private var features = FeatureRuntime.shared
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(DefaultsKey.panelShowNetworkProxy) private var showNetworkProxy = true
     @AppStorage(DefaultsKey.panelShowNetworkInfo) private var showNetworkInfo = true
+    @AppStorage("panelShowLiveSubtitles") private var showLiveSubtitles = true
     @AppStorage(DefaultsKey.monitorShowMixer) private var showMixer = true
     @AppStorage(DefaultsKey.monitorShowSystem) private var showSystem = true
     @AppStorage(DefaultsKey.monitorShowNetwork) private var showNetwork = true
@@ -280,9 +282,11 @@ struct MenuPanelView: View {
 
     private var estimatedNavigableContentHeight: CGFloat {
         switch activeSection {
+        case .liveSubtitles: return 240
         case .keepAwake: return 400
         case .awayLock: return 280
         case .brightness: return 140
+        case .networkProxy: return 680
         case .networkInfo: return 460
         case .mixer: return 250
         case .system: return 460
@@ -314,9 +318,24 @@ struct MenuPanelView: View {
     @ViewBuilder
     private func section(for id: PanelSectionID, collapsible: Bool = true) -> some View {
         switch id {
+        case .liveSubtitles:
+            if #available(macOS 26.0, *) {
+                VStack(alignment: .leading, spacing: 14) {
+                    Label("实时字幕", systemImage: "captions.bubble").font(.headline)
+                    Text("识别系统声音并翻译成中文字幕").foregroundStyle(.secondary)
+                    Text("英语 · 日语 · 葡萄牙语\nApple · AI API · Codex CLI")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("打开字幕窗口") { LiveSubtitleWindowController.shared.show() }
+                        .buttonStyle(.borderedProminent)
+                    Button("停止并关闭字幕") { LiveSubtitleWindowController.shared.close() }
+                    Text("打开窗口不会自动采集声音；在字幕窗口中选择语言与服务后开始。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            }
         case .keepAwake: KeepAwakeCard(collapsible: collapsible)
         case .awayLock: if showAwayLock { AwayLockPanelCard(collapsible: collapsible) }
         case .brightness: if showBrightness { BrightnessSection(collapsible: collapsible) }
+        case .networkProxy: if showNetworkProxy { PanelProxyView() }
         case .networkInfo: if showNetworkInfo { NetworkInfoView(service: .shared) }
         case .mixer: if showMixer { MixerSection(collapsible: collapsible) }
         case .system: if showSystem { SystemSection(collapsible: collapsible) }
@@ -335,12 +354,16 @@ struct MenuPanelView: View {
     private func isSectionVisible(_ id: PanelSectionID) -> Bool {
         guard id.isAvailable else { return false }
         switch id {
+        case .liveSubtitles:
+            if #available(macOS 26.0, *) { return showLiveSubtitles }
+            return false
         case .keepAwake: return showKeepAwake
         case .awayLock: return showAwayLock
         // The section only earns its navigation tab while the feature is on;
         // it is switched on in Settings, not from an empty panel screen.
         case .brightness: return showBrightness && brightnessEnabled
             && !(showKeepAwake && AppFeature.keepAwake.isAvailable)
+        case .networkProxy: return showNetworkProxy
         case .networkInfo: return showNetworkInfo
         case .mixer: return showMixer
         case .system: return showSystem
@@ -363,7 +386,10 @@ struct MenuPanelView: View {
                     selectedSection = id
                     focusedSection = id
                 } label: {
-                    Image(systemName: id.symbolName)
+                    Group {
+                        if id == .networkProxy { ProxyNavigationIcon() }
+                        else { Image(systemName: id.symbolName) }
+                    }
                         .font(.system(size: 13.5, weight: .semibold))
                         .frame(maxWidth: .infinity)
                         .frame(height: 30)
@@ -446,6 +472,16 @@ struct MenuPanelView: View {
             }
 
             Menu {
+                if #available(macOS 26.0, *) {
+                    Toggle("启用实时字幕", isOn: Binding(
+                        get: { features.isAvailable(.liveSubtitles) },
+                        set: { features.setAvailable(.liveSubtitles, $0) }))
+                    if features.isAvailable(.liveSubtitles) {
+                        Button("打开实时字幕") { LiveSubtitleWindowController.shared.show() }
+                        Button("停止并关闭字幕") { LiveSubtitleWindowController.shared.close() }
+                    }
+                    Divider()
+                }
                 Button(l10n.s.panelQuit) { NSApp.terminate(nil) }
             } label: {
                 Label("更多", systemImage: "ellipsis")

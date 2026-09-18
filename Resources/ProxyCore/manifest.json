@@ -1,0 +1,8 @@
+{
+  "version": "v1.19.31",
+  "source": "https://github.com/MetaCubeX/mihomo/tree/v1.19.31",
+  "arm64": {
+    "archiveSHA256": "d131f44b3deb2a8356f7ac75048ad67a10d53243323951c4f3cda7b672922963",
+    "binarySHA256": "fae1f37e28ee53fcf5be7a8bb121099db1fe442e44205734ed49c62579364090"
+  }
+}

@@ -55,6 +55,7 @@ final class TranslationWindowController: NSObject, NSWindowDelegate {
 }
 
 struct TranslationSettings: View {
+    @ObservedObject private var features = FeatureRuntime.shared
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var model = TranslationService.shared
     @ObservedObject private var permissions = Permissions.shared
@@ -74,6 +75,19 @@ struct TranslationSettings: View {
           .settingsSectionAnchor(.translation)
           AITranslationSettings()
           CodexTranslationSettings()
+          Section {
+            if #available(macOS 26.0, *) {
+                Toggle("启用实时字幕", isOn: Binding(
+                    get: { features.isAvailable(.liveSubtitles) },
+                    set: { features.setAvailable(.liveSubtitles, $0) }))
+                Button("打开实时字幕") { LiveSubtitleWindowController.shared.show() }
+                    .disabled(!AppFeature.liveSubtitles.isAvailable)
+                Text("系统声音 → 本地英语／日语／葡萄牙语识别 → 简体中文字幕。支持 Apple、已配置 AI API 和 Codex CLI；不采集麦克风。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("实时字幕需要 macOS 26 或更高版本。").foregroundStyle(.secondary)
+            }
+          } header: { Text("实时字幕") }
           Section {
             Toggle(TranslationStrings.current.settingsLabels.open, isOn: $openEnabled)
             ShortcutPreferenceRow(role: .translationOpen, isEnabled: openEnabled) { model.syncWithPreferences() }
@@ -268,7 +282,7 @@ struct TranslationView: View {
     }
 }
 
-private struct TranslationProviderPicker: View {
+struct TranslationProviderPicker: View {
     let title: String
     @Binding var selection: String
     @ObservedObject private var service = TranslationService.shared

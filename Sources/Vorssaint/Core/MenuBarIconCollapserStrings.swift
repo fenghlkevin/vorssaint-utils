@@ -31,6 +31,35 @@ struct MenuBarIconCollapserStrings {
         strings(for: L10n.shared.language)
     }
 
+    static var nativeNotice: String {
+        switch L10n.shared.language {
+        case .zhHans: return "macOS 27 使用原生隐藏接口，需要辅助功能权限和有效的 Apple 团队签名。同一程序的多个图标会一起控制；Vorssaint 自身图标保留。"
+        case .zhTW, .zhHK: return "macOS 27 使用原生隱藏介面，需要輔助使用權限與有效的 Apple 團隊簽章。同一程式的多個圖示會一起控制；Vorssaint 自身圖示保留。"
+        default: return "macOS 27 uses native visibility, requiring Accessibility permission and a valid Apple team signature. Icons belonging to one app are controlled together; Vorssaint's own icons stay visible."
+        }
+    }
+
+    static func nativeError(_ error: Error) -> String {
+        let chinese: Bool
+        switch L10n.shared.language {
+        case .zhHans, .zhTW, .zhHK: chinese = true
+        default: chinese = false
+        }
+        switch error as? MenuBarIconHidingError {
+        case .accessibilityDenied:
+            return chinese ? "请在系统设置 → 隐私与安全性 → 辅助功能中允许 Vorssaint，然后再次点击折叠。" : "Allow Vorssaint in System Settings → Privacy & Security → Accessibility, then retry."
+        case .signatureIneligible:
+            return chinese ? "当前应用签名不符合菜单栏隐藏要求。请使用带 Team ID 的 Apple Development 或 Developer ID 证书重新打包；自签名和临时签名不支持此功能。" : "This build needs an Apple Development or Developer ID team signature. Rebuild with that identity; self-signed and ad-hoc builds are unsupported."
+        case .menuBarReadFailed:
+            return chinese ? "无法读取当前屏幕的菜单栏图标。请确认辅助功能授权，展开原菜单栏后重试。" : "Could not read menu bar items on this display. Check Accessibility access, reveal the original menu bar, and retry."
+        case .nativeAPIUnavailable:
+            return chinese ? "当前 macOS 的原生菜单栏隐藏接口不可用，已保持展开。" : "Native menu bar visibility is unavailable on this macOS version. Icons remain expanded."
+        case .invalidMarkerPosition: return current.placementError
+        default:
+            return chinese ? "系统拒绝了图标隐藏请求。已保持展开，请稍后重试。" : "The system rejected the menu bar visibility request. Icons remain expanded; please retry."
+        }
+    }
+
     static func strings(for language: AppLanguage) -> MenuBarIconCollapserStrings {
         switch language {
         case .zhHans:

@@ -4,6 +4,9 @@
 import Foundation
 
 enum AwayLockSupport {
+    static func canWakeDisplays(onlineCount: Int, asleepCount: Int) -> Bool {
+        onlineCount > 0 && asleepCount == onlineCount
+    }
     /// Reserve a complete scan window after a pause before silence can expire.
     static func canPauseScan(readings: [(near: Bool, lastSeen: Date?)], now: Date,
                              pauseSeconds: TimeInterval, scanSeconds: TimeInterval,

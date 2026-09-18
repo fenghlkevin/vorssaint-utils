@@ -54,6 +54,9 @@ enum DefaultsKey {
     static let menuBarIconCollapserEnabled = "menuBarIconCollapserEnabled"
     static let menuBarIconsCollapsed = "menuBarIconsCollapsed"
     static let menuBarIconCollapserDelay = "menuBarIconCollapserDelaySeconds"
+    static let menuBarRevealMode = "menuBarRevealMode"
+    static let menuBarShelfHover = "menuBarShelfHover"
+    static let menuBarShelfShowNames = "menuBarShelfShowNames"
     static let awayLockEnabled = "awayLockEnabled"
     static let awayLockPeripheralID = "awayLockPeripheralID"
     static let awayLockPeripheralName = "awayLockPeripheralName"
@@ -74,7 +77,6 @@ enum DefaultsKey {
     static let awayLockOnlySelectedDevices = "awayLockOnlySelectedDevices"
     static let awayLockPreventPresentation = "awayLockPreventPresentation"
     static let awayLockProtectedApps = "awayLockProtectedApps"
-    static let awayLockAutomaticLearning = "awayLockAutomaticLearning"
     static let awayLockAutomaticLock = "awayLockAutomaticLock"
     static let awayLockWakeOnReturn = "awayLockWakeOnReturn"
     static let awayLockShowCountdown = "awayLockShowCountdown"
@@ -82,13 +84,7 @@ enum DefaultsKey {
     static let awayLockNotificationSound = "awayLockNotificationSound"
     static let awayLockEnergyMode = "awayLockEnergyMode"
     static let awayLockPauseUntil = "awayLockPauseUntil"
-    static let awayLockProfiles = "awayLockProfiles"
-    static let awayLockActiveProfileID = "awayLockActiveProfileID"
-    static let awayLockAutomaticScenes = "awayLockAutomaticScenes"
-    static let awayLockWiFiRules = "awayLockWiFiRules"
-    static let awayLockPowerRules = "awayLockPowerRules"
     static let awayLockEvents = "awayLockEvents"
-    static let awayLockLearnedThresholds = "awayLockLearnedThresholds"
     static let panelShowAwayLock = "panelShowAwayLock"
     static let panelShowInputSourceAutomation = "panelShowInputSourceAutomation"
     static let panelOpeningSection = "panelOpeningSection"
@@ -525,6 +521,7 @@ enum DefaultsKey {
     // the bar looks for no files at all, which is the setting out of the box.
     static let commandBarFileScopes = "commandBarFileScopes"
     static let commandBarFileIgnores = "commandBarFileIgnores" // names a file search never shows
+    static let panelShowNetworkProxy = "panelShowNetworkProxy"
     static let panelShowNetworkInfo = "panelShowNetworkInfo"
     static let panelUtilityCommandBar = "panelUtilityCommandBar"
     static let scratchpadRetention = "scratchpadRetention"   // never | day | week | month
@@ -881,7 +878,6 @@ enum Defaults {
         DefaultsKey.awayLockOnlySelectedDevices: false,
         DefaultsKey.awayLockPreventPresentation: true,
         DefaultsKey.awayLockProtectedApps: [String](),
-        DefaultsKey.awayLockAutomaticLearning: true,
         DefaultsKey.awayLockAutomaticLock: true,
         DefaultsKey.awayLockWakeOnReturn: true,
         DefaultsKey.awayLockShowCountdown: true,
@@ -889,10 +885,6 @@ enum Defaults {
         DefaultsKey.awayLockNotificationSound: true,
         DefaultsKey.awayLockEnergyMode: "balanced",
         DefaultsKey.awayLockPauseUntil: 0.0,
-        DefaultsKey.awayLockAutomaticScenes: false,
-        DefaultsKey.awayLockWiFiRules: [String: String](),
-        DefaultsKey.awayLockPowerRules: [String: String](),
-        DefaultsKey.awayLockLearnedThresholds: [String: Double](),
         DefaultsKey.panelShowAwayLock: true,
         DefaultsKey.panelShowInputSourceAutomation: true,
         DefaultsKey.panelOpeningSection: "lastUsed",
@@ -1279,6 +1271,7 @@ enum Defaults {
         DefaultsKey.commandBarShortcut: GlobalShortcut.commandBarDefault.storageValue,
         DefaultsKey.commandBarPositionOffset: "",
         DefaultsKey.panelShowNetworkInfo: true,
+            DefaultsKey.panelShowNetworkProxy: true,
         DefaultsKey.panelUtilityCommandBar: true,
         DefaultsKey.scratchpadRetention: ScratchpadRetention.never.rawValue,
         DefaultsKey.scratchpadCloseOnClickOutside: true,

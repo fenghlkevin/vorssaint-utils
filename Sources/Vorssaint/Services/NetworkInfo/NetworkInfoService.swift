@@ -10,8 +10,13 @@ final class NetworkInfoService: ObservableObject {
     static let shared = NetworkInfoService()
     @Published private(set) var states: [NetworkInfoRoute: NetworkInfoState] = [:]
     @Published private(set) var history: [NetworkInfoHistoryRecord]
+    @Published private(set) var localAddresses: [NetworkInfoLocalAddress] = []
+    @Published private(set) var restoredAt: Date?
+    @Published private(set) var localAddressFailed = false
+    private let readLocalAddresses: () throws -> [NetworkInfoLocalAddress]
     private let historyDefaults: UserDefaults?
     private struct PendingHistory {
+        let localAddresses: [NetworkInfoLocalAddress]?
         let queriedAt: Date
         var remaining: Set<NetworkInfoRoute>
         var entries: [NetworkInfoHistoryEntry] = []
@@ -26,23 +31,36 @@ final class NetworkInfoService: ObservableObject {
     private var monitorID = UUID()
 
     init(client: NetworkInfoClient = NetworkInfoClient(), monitorsPathChanges: Bool = true,
-         historyDefaults: UserDefaults? = .standard) {
+         historyDefaults: UserDefaults? = .standard,
+         readLocalAddresses: @escaping () throws -> [NetworkInfoLocalAddress] = NetworkInfoLocalAddresses.read) {
+        self.readLocalAddresses = readLocalAddresses
         self.historyDefaults = historyDefaults
         history = NetworkInfoHistory.decode(historyDefaults?.data(forKey: NetworkInfoHistory.storageKey))
         self.client = client
         self.monitorsPathChanges = monitorsPathChanges
+        // Restore a single coherent snapshot, without querying interfaces or the network.
+        if let latest = history.first {
+            restoredAt = latest.queriedAt
+            localAddresses = latest.localAddresses ?? []
+            for entry in latest.entries {
+                states[entry.route] = NetworkInfoState(result: entry.result, failure: entry.failure,
+                                                      isStale: entry.result != nil, attemptedAt: latest.queriedAt)
+            }
+        }
     }
 
     func state(_ route: NetworkInfoRoute) -> NetworkInfoState { states[route] ?? NetworkInfoState() }
 
     func refresh(force: Bool = false) {
+        restoredAt = nil
+        refreshLocalAddresses()
         startMonitoring()
         let routes = NetworkInfoRoute.allCases.filter {
             tasks[$0] == nil && (force || state($0).needsRefresh(now: Date()))
         }
         guard !routes.isEmpty else { return }
         let batchID = UUID()
-        pendingHistory[batchID] = PendingHistory(queriedAt: Date(), remaining: Set(routes))
+        pendingHistory[batchID] = PendingHistory(localAddresses: localAddressFailed ? nil : localAddresses, queriedAt: Date(), remaining: Set(routes))
         for route in routes {
             let serial = generation
             states[route, default: NetworkInfoState()].isLoading = true
@@ -101,7 +119,7 @@ final class NetworkInfoService: ObservableObject {
         pendingHistory.removeValue(forKey: batchID)
         let entries = NetworkInfoRoute.allCases.compactMap { route in batch.entries.first { $0.route == route } }
         history = NetworkInfoHistory.normalized(history + [NetworkInfoHistoryRecord(
-            id: batchID, queriedAt: batch.queriedAt, entries: entries)])
+            id: batchID, queriedAt: batch.queriedAt, entries: entries, localAddresses: batch.localAddresses)])
         persistHistory()
     }
 
@@ -114,7 +132,20 @@ final class NetworkInfoService: ObservableObject {
         }
     }
 
+    func refreshLocalAddresses() {
+        do {
+            localAddresses = try readLocalAddresses()
+            localAddressFailed = false
+        } catch {
+            localAddresses = []
+            localAddressFailed = true
+        }
+    }
+
     func stop() {
+        restoredAt = nil
+        localAddresses = []
+        localAddressFailed = false
         pendingHistory.removeAll()
         generation += 1
         tasks.values.forEach { $0.cancel() }
@@ -149,6 +180,7 @@ final class NetworkInfoService: ObservableObject {
         tasks.removeAll()
         for route in NetworkInfoRoute.allCases {
             states[route, default: NetworkInfoState()].isStale = true
+            states[route]?.networkChanged = true
             states[route]?.isLoading = false
             states[route]?.attemptedAt = nil
         }

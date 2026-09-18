@@ -24,6 +24,14 @@ struct NetworkInfoView: View {
                 }
                 .disabled(NetworkInfoRoute.allCases.allSatisfy { service.state($0).isLoading })
             }
+            if let date = service.restoredAt {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(text.restoredResult, systemImage: "clock.arrow.circlepath")
+                    Text(date, format: .dateTime.year().month().day().hour().minute())
+                }.font(.caption).foregroundStyle(.secondary)
+            }
+            NetworkInfoLocalCard(addresses: service.localAddresses.filter { !$0.isTunnel }, failed: service.localAddressFailed, text: text)
+            NetworkInfoLocalCard(addresses: service.localAddresses.filter { $0.isTunnel }, failed: service.localAddressFailed, text: text, tunnel: true)
             ForEach(NetworkInfoRoute.allCases) { route in
                 NetworkInfoRouteCard(route: route, state: service.state(route), text: text)
             }
@@ -47,11 +55,10 @@ struct NetworkInfoView: View {
             }
             .font(.caption)
         }
-        .onAppear { service.refresh() }
     }
 }
 
-private struct NetworkInfoRouteCard: View {
+struct NetworkInfoRouteCard: View {
     let route: NetworkInfoRoute
     let state: NetworkInfoState
     let text: NetworkInfoStrings
@@ -60,6 +67,8 @@ private struct NetworkInfoRouteCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
+                Image(systemName: "globe").font(.title3)
+                    .foregroundStyle(route == .domestic ? .green : .orange)
                 Text(route == .domestic ? text.domestic : text.international)
                     .font(.headline)
                 Spacer()
@@ -92,7 +101,7 @@ private struct NetworkInfoRouteCard: View {
                 }
                 .font(.system(size: 11))
                 HStack(spacing: 5) {
-                    Text(text.updated)
+                    Text(text.lastResult)
                     Text(result.checkedAt, style: .date)
                     Text(result.checkedAt, style: .time)
                 }
@@ -104,8 +113,8 @@ private struct NetworkInfoRouteCard: View {
             } else if !state.isLoading && state.failure == nil {
                 Text(text.notChecked).font(.callout).foregroundStyle(.secondary)
             }
-            if state.isStale {
-                Text(text.stale).font(.caption).foregroundStyle(.orange)
+            if state.networkChanged {
+                Text(text.networkChanged).font(.caption).foregroundStyle(.orange)
             }
             if let failure = state.failure {
                 Text(text.failure(failure)).font(.caption).foregroundStyle(.orange)
@@ -122,5 +131,47 @@ private struct NetworkInfoRouteCard: View {
             Text(value ?? text.unknown).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+struct NetworkInfoLocalCard: View {
+    let addresses: [NetworkInfoLocalAddress]
+    let failed: Bool
+    let text: NetworkInfoStrings
+    var tunnel = false
+    @State private var copiedID: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(tunnel ? text.vpnTitle : text.localTitle, systemImage: tunnel ? "lock.shield" : "network")
+                .font(.headline).foregroundStyle(tunnel ? .purple : .blue)
+            Text(tunnel ? text.vpnNote : text.localNote).font(.caption).foregroundStyle(.secondary)
+            if addresses.isEmpty {
+                Text(failed ? text.localFailed : (tunnel ? text.vpnEmpty : text.localEmpty))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            ForEach(addresses) { address in
+                HStack {
+                    Text(address.ip)
+                        .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                        .textSelection(.enabled)
+                    Text(address.interface).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(address.ip, forType: .string)
+                        copiedID = address.id
+                    } label: {
+                        Image(systemName: copiedID == address.id ? "checkmark" : "doc.on.doc")
+                    }
+                    .controlSize(.small)
+                    .help(text.copy)
+                    .accessibilityLabel(text.copy + " " + address.interface)
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
     }
 }

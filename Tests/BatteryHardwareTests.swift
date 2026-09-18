@@ -21,6 +21,11 @@ private final class FakeBatterySMC: BatterySMCTransport {
 
 @main struct BatteryHardwareTests {
     static func main() throws {
+        let unknown = FakeBatterySMC()
+        unknown.values = ["bfF0": 0, "bfD0": 85, "bfE0": 75]
+        precondition(BatteryControlHardware(smc: unknown) == nil,
+                     "New firmware keys must not implicitly enable unverified writes")
+        precondition(unknown.writes.isEmpty)
         let transport = FakeBatterySMC()
         let hardware = BatteryControlHardware(smc: transport)!
         try hardware.validateUncontrolled()

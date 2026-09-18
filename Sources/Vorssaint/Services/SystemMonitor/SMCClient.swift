@@ -128,6 +128,23 @@ final class SMCClient {
 
     // MARK: - Plumbing
 
+    /// Fixed read-only allowlist. Discovery never grants permission to write a key.
+    func batteryInterfaceDiagnostics() -> String {
+        ["CHTE", "CH0B", "CH0C", "CHIE", "CH0I", "bfF0", "bfD0", "bfE0"].map { name in
+            var input = SMCParamStruct()
+            input.key = Self.fourCC(name)
+            input.data8 = Self.cmdKeyInfo
+            let (kr, output) = invoke(&input)
+            let status = "\(name): kern=\(kr) smcResult=\(output.result) status=\(output.status)"
+            guard kr == kIOReturnSuccess, output.result == 0 else {
+                return status + "（查询失败；不能仅据此认定键不存在）"
+            }
+            let key = Key(code: input.key, name: name, dataSize: output.keyInfo.dataSize,
+                          dataType: Self.fourCCString(output.keyInfo.dataType))
+            return status + " type=\(key.dataType) size=\(key.dataSize) readable=\(readBytes(key) != nil)"
+        }.joined(separator: "\n")
+    }
+
     private func keyCount() -> Int {
         var input = SMCParamStruct()
         input.key = Self.fourCC("#KEY")

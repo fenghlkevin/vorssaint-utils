@@ -1,0 +1,4 @@
+module MenuBarNativeBridge {
+    header "MenuBarClientCoreBridge.h"
+    export *
+}

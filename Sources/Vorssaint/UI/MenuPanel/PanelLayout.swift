@@ -11,16 +11,18 @@ protocol PanelOrderItem: RawRepresentable, CaseIterable, Hashable where RawValue
 /// renaming a case would orphan a user's stored layout — keep them stable.
 enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
     case keepAwake, awayLock, brightness, mixer, system, network, disk, power, fanControl, utilities, controls,
-         inputSourceAutomation, toggles, networkInfo
+         inputSourceAutomation, toggles, networkInfo, networkProxy, liveSubtitles
 
     var id: String { rawValue }
 
     /// Localized display name, reused from the existing section titles.
     func title(_ s: Strings) -> String {
         switch self {
+        case .liveSubtitles: return "实时字幕"
         case .keepAwake: return "电源与显示器"
         case .awayLock: return AwayLockStrings.current.title
         case .brightness: return FeatureStrings.brightness(L10n.shared.language).pageTitle
+        case .networkProxy: return "网络代理"
         case .networkInfo: return NetworkInfoStrings(language: L10n.shared.language).title
         case .mixer: return s.mixerSection
         case .system: return s.systemSection
@@ -38,9 +40,11 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
 
     var symbolName: String {
         switch self {
+        case .liveSubtitles: return "captions.bubble"
         case .keepAwake: return "display.2"
         case .awayLock: return "lock.laptopcomputer"
         case .brightness: return "display.2"
+        case .networkProxy: return "arrow.triangle.branch"
         case .networkInfo: return "globe"
         case .mixer: return "slider.horizontal.3"
         case .system: return "cpu"
@@ -60,9 +64,11 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
     /// get a dedicated `panelShow*` key so every section is hideable.
     var visibilityKey: String {
         switch self {
+        case .liveSubtitles: return "panelShowLiveSubtitles"
         case .keepAwake: return DefaultsKey.panelShowKeepAwake
         case .awayLock: return DefaultsKey.panelShowAwayLock
         case .brightness: return DefaultsKey.panelShowBrightness
+        case .networkProxy: return DefaultsKey.panelShowNetworkProxy
         case .networkInfo: return DefaultsKey.panelShowNetworkInfo
         case .mixer: return DefaultsKey.monitorShowMixer
         case .system: return DefaultsKey.monitorShowSystem
@@ -86,9 +92,11 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
     /// feature's return).
     var featureGate: [AppFeature] {
         switch self {
+        case .liveSubtitles: return [.liveSubtitles]
         case .keepAwake: return [.keepAwake]
         case .awayLock: return [.awayLock]
         case .brightness: return [.brightness]
+        case .networkProxy: return [.networkProxy]
         case .networkInfo: return [.networkInfo]
         case .mixer: return [.mixer]
         case .system: return [.monitorCPU, .monitorGPU, .monitorMemory]

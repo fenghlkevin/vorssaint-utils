@@ -90,6 +90,12 @@ enum BatteryControlIdentifiers {
 }
 
 struct BatteryControlResponse: Codable {
+    var systemChargeLimitBackend: Bool?
+    var systemChargeLimits: [Int]?
+    var systemLimitReadback: Int?
+    var systemPolicyLimit: Int?
+    var interfaceDiagnostics: String?
+    var interfaceUnavailable: Bool?
     var version = 2
     var codeHash: String?
     var backendName: String?

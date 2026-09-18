@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Vorssaint
 
 import Foundation
+import Darwin
 
 private final class NetworkInfoMockProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -33,6 +34,48 @@ private final class NetworkInfoMockProtocol: URLProtocol {
 struct NetworkInfoTests {
     @MainActor
     static func main() async throws {
+        let active = UInt32(IFF_UP | IFF_RUNNING)
+        precondition(NetworkInfoLocalAddresses.includes(interface: "en0", flags: active))
+        precondition(NetworkInfoLocalAddresses.includes(interface: "bridge0", flags: active))
+        precondition(!NetworkInfoLocalAddresses.includes(interface: "en0", flags: 0))
+        precondition(!NetworkInfoLocalAddresses.includes(interface: "lo0", flags: active | UInt32(IFF_LOOPBACK)))
+        precondition(NetworkInfoLocalAddresses.includes(interface: "ppp0", flags: active | UInt32(IFF_POINTOPOINT)))
+        precondition(NetworkInfoLocalAddresses.isTunnel(interface: "tun0", flags: active))
+        precondition(NetworkInfoLocalAddresses.isTunnel(interface: "tap0", flags: active))
+        precondition(!NetworkInfoLocalAddresses.isTunnel(interface: "en0", flags: active))
+        for name in ["awdl0", "llw0"] {
+            precondition(!NetworkInfoLocalAddresses.includes(interface: name, flags: active))
+        }
+        for name in ["utun3", "ipsec0"] {
+            precondition(NetworkInfoLocalAddresses.includes(interface: name, flags: active))
+            precondition(NetworkInfoLocalAddresses.isTunnel(interface: name, flags: active))
+        }
+        let legacyRecord = NetworkInfoHistoryRecord(id: UUID(), queriedAt: Date(), entries: [NetworkInfoHistoryEntry(route: .domestic, result: nil, failure: .timedOut)])
+        let legacyData = try JSONEncoder().encode([legacyRecord])
+        precondition(NetworkInfoHistory.decode(legacyData).first?.localAddresses == nil)
+        var snapshot = legacyRecord
+        snapshot.localAddresses = [NetworkInfoLocalAddress(interface: "utun4", ip: "10.8.0.6", isTunnel: true)]
+        let snapshotData = try JSONEncoder().encode([snapshot])
+        precondition(NetworkInfoHistory.decode(snapshotData).first == snapshot)
+        var local = [NetworkInfoLocalAddress(interface: "en0", ip: "192.168.1.20")]
+        var localFails = false
+        let localService = NetworkInfoService(monitorsPathChanges: false, historyDefaults: nil, readLocalAddresses: {
+            if localFails { throw POSIXError(.EIO) }
+            return local
+        })
+        localService.refreshLocalAddresses()
+        precondition(localService.localAddresses == local)
+        localService.networkDidChange()
+        precondition(localService.state(.domestic).networkChanged)
+        precondition(localService.localAddresses == local)
+        local = []
+        localService.refreshLocalAddresses()
+        precondition(localService.localAddresses.isEmpty && !localService.localAddressFailed)
+        localFails = true
+        localService.refreshLocalAddresses()
+        precondition(localService.localAddressFailed)
+        localService.stop()
+        precondition(!localService.localAddressFailed)
         precondition(tryValue("8.8.4.4\n") == "8.8.4.4")
         for bad in ["", "<html>8.8.4.4</html>", "::1", "1.2.3", "256.1.1.1", "01.2.3.4", "127.0.0.1", "192.168.1.1", "100.64.0.1", "224.0.0.1", "1.2.3.4/24"] {
             precondition(tryValue(bad) == nil, "Unexpected valid IP: \(bad)")
@@ -126,6 +169,15 @@ struct NetworkInfoTests {
         }
         let restored = NetworkInfoService(client: client, monitorsPathChanges: false, historyDefaults: defaults)
         precondition(restored.history == saved.history && restored.history.count == 1)
+        precondition(restored.restoredAt == saved.history.first?.queriedAt)
+        precondition(restored.localAddresses == saved.history.first?.localAddresses ?? [])
+        for entry in saved.history[0].entries {
+            precondition(restored.state(entry.route).result == entry.result)
+            precondition(restored.state(entry.route).failure == entry.failure)
+            precondition(!restored.state(entry.route).isLoading)
+            precondition(!restored.state(entry.route).networkChanged)
+            precondition(restored.state(entry.route).isStale == (entry.result != nil))
+        }
         restored.deleteHistory(restored.history[0].id)
         precondition(defaults.data(forKey: NetworkInfoHistory.storageKey) == nil)
         precondition(NetworkInfoService(client: client, monitorsPathChanges: false, historyDefaults: defaults).history.isEmpty)

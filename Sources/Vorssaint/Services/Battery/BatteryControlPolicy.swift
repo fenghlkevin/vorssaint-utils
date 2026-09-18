@@ -4,6 +4,7 @@ import Foundation
 enum BatteryCommand: String, Codable { case automatic, pause, discharge, full }
 
 struct BatteryControlConfiguration: Codable, Equatable {
+    var allowSystemChargeLimit: Bool?
     var enabled = false
     var limit = 80
     var resumeMargin = 5

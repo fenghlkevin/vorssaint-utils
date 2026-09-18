@@ -46,11 +46,16 @@ struct BatteryManagementPanel: View {
                 if shows(.apps) { Divider(); energyApps }
                 Divider()
                 VStack(spacing: 2) {
+                    if service.systemChargeLimitBackend {
+                        Text(service.statusText).font(.caption).foregroundStyle(.secondary)
+                        action("打开系统电池设置…", icon: "gearshape") { service.openSystemBatterySettings() }
+                    } else {
                     action("充电至 100%", icon: "bolt.fill") { service.forceCharge() }
                     action("停止充电", icon: "pause.fill") { service.inhibitCharging() }
                     action("恢复自动充电", icon: "arrow.clockwise") { service.restoreAutomatic() }
                     action("使用电池运行至 \(service.effectiveLimit)%", icon: "battery.50percent") { service.forceDischarge() }
                         .disabled(!service.dischargeSupported)
+                    }
                 }
                 .disabled(!service.backendReady || service.performingUserAction)
                 BatteryTakeoverButton()
@@ -59,7 +64,7 @@ struct BatteryManagementPanel: View {
                     Text(service.accessText).font(.caption).foregroundStyle(.secondary)
                 }
                 if let rule = service.activeRule { row("自动化规则", rule) }
-                if let warning = service.warning { Text(warning).font(.caption).foregroundStyle(.orange) }
+                if let warning = service.actionableWarning { Text(warning).font(.caption).foregroundStyle(.orange) }
                 if let error = service.lastError {
                     Label(error, systemImage: "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)

@@ -75,6 +75,7 @@ struct NetworkInfoState: Equatable, Sendable {
     var failure: NetworkInfoFailure?
     var isStale = false
     var attemptedAt: Date?
+    var networkChanged = false
 
     func needsRefresh(now: Date) -> Bool {
         guard !isLoading else { return false }

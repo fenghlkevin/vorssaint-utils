@@ -7,6 +7,8 @@ swiftc Sources/Vorssaint/Services/Battery/BatteryTelemetryTracker.swift Tests/Ba
 "$test_dir/telemetry"
 swiftc Sources/Vorssaint/Services/Battery/BatteryDiagnosticSnapshot.swift Tests/BatteryDiagnosticSnapshotTests.swift -o "$test_dir/snapshot"
 "$test_dir/snapshot"
+swiftc Sources/Vorssaint/Services/Battery/BatteryPowerUI.swift Sources/Vorssaint/Services/Battery/BatterySystemLimitSession.swift Tests/BatterySystemLimitTests.swift -o "$test_dir/system-limit"
+"$test_dir/system-limit"
 shared=(
     Sources/Vorssaint/Services/Metrics/TemperatureSensorSelector.swift
     Sources/Vorssaint/Services/FanControl/FanControlSupport.swift
@@ -14,6 +16,8 @@ shared=(
     Sources/Vorssaint/Services/Battery/BatteryControlPolicy.swift
     Sources/Vorssaint/Services/Battery/BatteryMaintenanceSafety.swift
     Sources/Vorssaint/Services/Battery/BatteryControlHardware.swift
+    Sources/Vorssaint/Services/Battery/BatteryPowerUI.swift
+    Sources/Vorssaint/Services/Battery/BatterySystemLimitSession.swift
 )
 swiftc Sources/Vorssaint/Services/Battery/BatteryControlPolicy.swift Sources/Vorssaint/Services/Battery/BatteryMaintenanceSafety.swift Tests/BatteryMaintenanceSafetyTests.swift -o "$test_dir/maintenance"
 "$test_dir/maintenance"

@@ -707,8 +707,10 @@ extension AppFeature {
         case .cameraPreview: return FeatureStrings.cameraPreview(L10n.shared.language).pageTitle
         case .radialMenu: return FeatureStrings.radialMenu(L10n.shared.language).pageTitle
         case .scratchpad: return FeatureStrings.scratchpad(L10n.shared.language).pageTitle
+        case .networkProxy: return "网络代理"
         case .networkInfo: return NetworkInfoStrings(language: L10n.shared.language).title
         case .translation: return TranslationStrings.current[.title]
+        case .liveSubtitles: return "实时字幕"
         case .commandBar: return FeatureStrings.commandBar(L10n.shared.language).pageTitle
         case .cleaningMode: return s.cleaningMenuItem
         case .mediaTools: return s.mediaName
@@ -775,8 +777,10 @@ extension AppFeature {
         case .cameraPreview: return FeatureStrings.cameraPreview(L10n.shared.language).hubDescription
         case .radialMenu: return FeatureStrings.radialMenu(L10n.shared.language).hubDescription
         case .scratchpad: return FeatureStrings.scratchpad(L10n.shared.language).hubDescription
+        case .networkProxy: return "本地配置、Mihomo 策略组与系统代理"
         case .networkInfo: return NetworkInfoStrings(language: L10n.shared.language).summary
         case .translation: return TranslationStrings.current[.caption]
+        case .liveSubtitles: return "系统声音实时识别与翻译字幕（macOS 26+）"
         case .commandBar: return FeatureStrings.commandBar(L10n.shared.language).hubDescription
         case .cleaningMode: return hub.descCleaningMode
         case .mediaTools: return hub.descMediaTools

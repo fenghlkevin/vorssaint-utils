@@ -53,8 +53,39 @@ final class BatteryManagementService: ObservableObject {
     @Published private(set) var mode: Mode = .automatic
     @Published private(set) var lastError: String?
     @Published private(set) var warning: String?
+    /// Older/current helpers also send informational state in `warning`.
+    /// Hide only these known notices; real warnings remain visible and logged.
+    var actionableWarning: String? {
+        guard let warning else { return nil }
+        if systemChargeLimitBackend && ["系统限充需要确认：", "系统上限已回读 ", "上限请求已发送，等待系统回读；"]
+            .contains(where: { warning.hasPrefix($0) }) { return nil }
+        return warning
+    }
     @Published private(set) var accessText = "后台未授权"
     @Published private(set) var backendReady = false
+    @Published private(set) var systemChargeLimitBackend = false
+    @Published private(set) var systemChargeLimits: [Int] = []
+    @Published private(set) var systemLimitReadback: Int?
+    @Published private(set) var systemPolicyLimit: Int?
+    var systemLimitConsent: Bool { UserDefaults.standard.bool(forKey: "batteryManagement.allowSystemChargeLimit") }
+    func setSystemLimitConsent(_ allowed: Bool) {
+        UserDefaults.standard.set(allowed, forKey: "batteryManagement.allowSystemChargeLimit")
+        record(allowed ? "用户确认系统限充：仅管理上限，不接管开关、主动放电或自定义温控" : "用户关闭系统限充：请求恢复之前的上限")
+        suspendedAfterFailure = false
+        refresh()
+    }
+    @Published private(set) var interfaceUnavailable = false
+    private var interfaceDiagnostics = "尚未收到接口诊断"
+    var needsSystemChargeManagement: Bool {
+        isEnabled && verifiedConnection && connection != nil && interfaceUnavailable
+            && !versionMismatch && !signingMismatch && !recoveryBlocked
+    }
+    func openSystemBatterySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Battery-Settings.extension") else { return }
+        if !NSWorkspace.shared.open(url) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/System Settings.app"))
+        }
+    }
     @Published private(set) var ledSupported = false
     @Published private(set) var dischargeSupported = false
     @Published private(set) var needsTakeover = false
@@ -101,6 +132,7 @@ final class BatteryManagementService: ObservableObject {
         if recoveryBlocked { return "暂时无法安全更新后台" }
         if versionMismatch { return "电池后台需要更新" }
         if daemonStatus == .notRegistered { return "电池后台尚未注册" }
+        if needsSystemChargeManagement { return "当前固件接口尚未适配，App充电上限未生效" }
         if lastError != nil { return verifiedConnection && connection != nil ? "充电控制需要检查" : "电池后台连接异常" }
         return backendReady ? "电池后台已连接" : "正在确认后台状态"
     }
@@ -108,7 +140,11 @@ final class BatteryManagementService: ObservableObject {
         if signingMismatch { return "后台仍在运行，但不接受当前 App 的签名。优先使用原证书重新签名安装；需要迁移签名时，可在管理员授权后强制修复注册。" }
         if recoveryBlocked { return "旧后台没有确认恢复系统充电。已停止更新，保留后台与恢复记录。" }
         if !isEnabled { return "不自动接管充电；关闭不代表已确认硬件恢复，请查看诊断记录。" }
+        if systemChargeLimitBackend && lastError == nil { return "电池后台正常，已识别系统限充接口。请在下方选择百分比并启用充电上限。" }
         if daemonStatus == .requiresApproval { return "请在系统设置中允许 Vorssaint 后台运行；返回后自动检查。" }
+        if needsSystemChargeManagement {
+            return "后台连接正常，但未识别到可安全控制的充电接口。重新授权不能解决接口兼容问题。请在系统电池设置中配置充电上限；本App继续监测，不代表已接管或确认系统限充。温度等缺失数据保持未知。"
+        }
         if let lastError { return lastError }
         return backendReady ? statusText : "电池信息可独立读取；注册成功不代表充电控制已经生效。"
     }
@@ -117,6 +153,7 @@ final class BatteryManagementService: ObservableObject {
         if !isEnabled { return "启用电池管理" }
         if daemonStatus == .requiresApproval { return "前往系统设置" }
         if versionMismatch && !recoveryBlocked { return "安全更新后台" }
+        if needsSystemChargeManagement { return "重新检查接口" }
         return backendReady && lastError == nil ? "检查状态" : "检查并修复"
     }
     private var diagnosticSummary: String {
@@ -130,8 +167,11 @@ final class BatteryManagementService: ObservableObject {
         最近响应时间：\(lastBackendResponse?.ISO8601Format() ?? "尚无响应")
         最近手动检查发起时间：\(lastManualCheck?.ISO8601Format() ?? "本次启动尚未手动检查")
         错误：\(lastError ?? "无")
+        系统限充：\(systemChargeLimitBackend)；设置回读：\(systemLimitReadback.map(String.init) ?? "未知")；策略观测：\(systemPolicyLimit.map(String.init) ?? "未知")；支持档位：\(systemChargeLimits)
         警告：\(warning ?? "无")
         系统启动：\(launchDiagnosis)
+        只读接口诊断（发现键不代表已支持控制）：
+        \(interfaceDiagnostics)
         电池动态：\(telemetryEvents.count)条，最近3000次采样；约每30秒及打开菜单时采样，休眠/退出期间不采样。连接事件独立保留1000条。
         功率口径：PSTR/PDTR为独立传感器读数，不保证同步或相等；电池功率由电压×电流计算，菜单电脑功率可能为推算。零电流不证明采样间隔内未放电。
         最近电池采样：\(telemetryEvents.first ?? "尚无采样")
@@ -166,8 +206,12 @@ final class BatteryManagementService: ObservableObject {
     }
 
     /// Only called after the UI's explicit destructive-action confirmation.
-    func repairWithAdministratorApproval() {
-        guard offersPrivilegedRepair, isEnabled, !working, repairPhase == nil else { return }
+    func repairWithAdministratorApproval(confirmed: Bool = false) {
+        guard confirmed else {
+            BatteryHelperSetupWindow.show(action: .repair)
+            return
+        }
+        guard offersPrivilegedRepair, !working, !performingUserAction, repairPhase == nil else { return }
         guard BatteryControlIdentifiers.embeddedHelperMatchesSigner() else {
             lastError = "安装包内后台与 App 的签名不一致或签名无效，请重新签名安装。"
             record(lastError!); return
@@ -178,7 +222,7 @@ final class BatteryManagementService: ObservableObject {
         connection?.invalidate(); connection = nil; verifiedConnection = false; backendReady = false
         suspendedAfterFailure = true; working = true; performingUserAction = true
         repairPhase = "等待管理员授权与安全检查"
-        record("用户确认管理员修复；只允许持锁且硬件 automatic 时停止本应用电池服务")
+        record("用户确认管理员修复；需持独占锁，并确认硬件automatic，或接口未适配且安全恢复记录不存在，才停止本应用电池服务")
         AdminShell.runWithResult(quotedHelper + " --retire-for-registration-repair",
                                 prompt: "修复 Vorssaint 电池后台。将检查充电安全状态，停止旧服务并重新注册。") { [weak self] status, output in
             guard let self, self.requestID == repairID else { return }
@@ -189,6 +233,11 @@ final class BatteryManagementService: ObservableObject {
                 return
             }
             self.repairPhase = "正在更新后台注册"
+            if Self.daemon.status == .notRegistered || Self.daemon.status == .notFound {
+                self.record("管理员维护已确认安全退出，旧注册不存在；直接注册当前内嵌助手")
+                self.registerReplacement(repairID, attempt: 0)
+                return
+            }
             Self.daemon.unregister { error in
                 DispatchQueue.main.async {
                     guard self.requestID == repairID else { return }
@@ -353,6 +402,14 @@ final class BatteryManagementService: ObservableObject {
     }
 
     var statusText: String {
+        if systemChargeLimitBackend {
+            if let lastError { return lastError }
+            if !isEnabled || !systemLimitConsent { return "系统限充尚未接管" }
+            let setting = systemLimitReadback.map { "\($0)%" } ?? "待确认"
+            let observed = systemPolicyLimit.map { "\($0)%" } ?? "未知"
+            return "系统上限回读：\(setting) · 策略观测：\(observed)"
+        }
+        if needsSystemChargeManagement { return "App充电上限未生效，请使用系统电池设置" }
         if let lastError { return lastError }
         if !backendReady { return accessText }
         if thermalPause { return "温度保护暂停中（降温 3°C 后恢复）" }
@@ -366,7 +423,11 @@ final class BatteryManagementService: ObservableObject {
         }
     }
 
-    func authorize() {
+    func authorize(confirmed: Bool = false) {
+        guard confirmed else {
+            BatteryHelperSetupWindow.show(action: .install)
+            return
+        }
         record("请求注册/授权电池后台")
         suspendedAfterFailure = false
         consecutiveTransportFailures = 0
@@ -390,7 +451,7 @@ final class BatteryManagementService: ObservableObject {
                     DefaultsKey.batteryManagementTemperatureProtection, DefaultsKey.batteryManagementTemperatureLimit,
                     "batteryManagement.dischargeAboveLimit", "batteryManagement.preventSleepDischarging",
                     "batteryManagement.preventSleepCharging", "batteryManagement.greenLED", "batteryManagement.blinkLED",
-                    "batteryManagement.automationEnabled", "batteryManagement.rules.v1"]
+                    "batteryManagement.automationEnabled", "batteryManagement.rules.v1", "batteryManagement.allowSystemChargeLimit"]
         var values = keys.reduce(into: [String: Any]()) { $0[$1] = defaults.object(forKey: $1) }
         values["featureAvailable"] = AppFeature.batteryManagement.isAvailable
         return values as NSDictionary
@@ -461,10 +522,35 @@ final class BatteryManagementService: ObservableObject {
         }
     }
 
+    /// Explicit reinstall is available even when versions already match.
+    /// It preserves preferences and uses the same safe retirement handshake.
+    func reinstallBackend(confirmed: Bool = false) {
+        guard confirmed else {
+            BatteryHelperSetupWindow.show(action: .reinstall)
+            return
+        }
+        guard !working, !performingUserAction, repairPhase == nil else { return }
+        guard helperIsEmbedded, BatteryControlIdentifiers.embeddedHelperMatchesSigner() else {
+            lastError = "无法重新安装：当前 App 内的充电控制助手缺失或签名不一致。请先重新安装完整 App。"
+            record(lastError!); return
+        }
+        record("用户确认重新安装充电控制助手；保留电池配置与日志，同版本也重新注册；不删除恢复记录")
+        if Self.daemon.status == .enabled {
+            replaceBackend(confirmed: true)
+        } else {
+            record("后台未运行或等待批准，转入当前内嵌助手注册/授权")
+            authorize(confirmed: true)
+        }
+    }
+
     /// Retire the authenticated old daemon only after its recovery completes.
     /// SMAppService retains the user's approval when possible, otherwise the
     /// normal system approval UI remains necessary.
-    func replaceBackend() {
+    func replaceBackend(confirmed: Bool = false) {
+        guard confirmed else {
+            BatteryHelperSetupWindow.show(action: .update)
+            return
+        }
         record("请求安全更新后台；等待旧后台确认恢复")
         guard !working else { record("安全更新未开始：已有请求正在执行"); return }
         guard Self.daemon.status == .enabled else { record("安全更新未开始：后台未启用"); return }
@@ -504,6 +590,7 @@ final class BatteryManagementService: ObservableObject {
                 self.record("安全更新 \(upgradeID)：恢复确认成功，开始注销")
                 self.repairPhase = "正在更新电池后台"
                 self.connection?.invalidate(); self.connection = nil
+                self.verifiedConnection = false; self.backendReady = false
                 self.working = true
                 // The synchronous unregister returns before launchd reaps the
                 // old job. Re-register only after the completion callback.
@@ -516,12 +603,22 @@ final class BatteryManagementService: ObservableObject {
                             self.repairPhase = nil
                             self.record("安全更新注销失败：\((error as NSError).domain)/\((error as NSError).code) \(error.localizedDescription)")
                             self.lastError = "电池后台更新失败，请重新授权：\(error.localizedDescription)"
+                            self.offersPrivilegedRepair = true
                             self.updateAccess()
                         } else {
                             self.record("安全更新注销完成，等待重新注册")
                             self.registerReplacement(upgradeID, attempt: 0)
                         }
                     }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+                    guard let self, self.requestID == upgradeID,
+                          self.repairPhase == "正在更新电池后台" else { return }
+                    self.requestID = UUID()
+                    self.working = false; self.performingUserAction = false; self.repairPhase = nil
+                    self.lastError = "助手注销未在期限内确认；未强制重新注册，请检查状态后重试。"
+                    self.offersPrivilegedRepair = true
+                    self.record(self.lastError!)
                 }
             }
         }
@@ -539,6 +636,7 @@ final class BatteryManagementService: ObservableObject {
 
     private func registerReplacement(_ upgradeID: UUID, attempt: Int) {
         record("更新注册 attempt=\(attempt + 1)")
+        repairPhase = "正在注册充电控制助手"
         working = true
         performingUserAction = true
         DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 2 : 5)) { [weak self] in
@@ -555,7 +653,7 @@ final class BatteryManagementService: ObservableObject {
                 self.refresh()
             } catch {
                 self.record("安全更新注册失败：\((error as NSError).domain)/\((error as NSError).code) \(error.localizedDescription)")
-                if attempt < 2, Self.daemon.status == .notRegistered {
+                if attempt < 2, (Self.daemon.status == .notRegistered || Self.daemon.status == .notFound) {
                     self.registerReplacement(upgradeID, attempt: attempt + 1)
                 } else {
                     self.working = false
@@ -659,6 +757,7 @@ final class BatteryManagementService: ObservableObject {
         let d = UserDefaults.standard
         var c = BatteryControlConfiguration()
         c.enabled = isEnabled && AppFeature.batteryManagement.isAvailable
+        c.allowSystemChargeLimit = systemLimitConsent
         c.limit = min(100, max(50, chargeLimit))
         c.resumeMargin = min(10, max(3, d.object(forKey: DefaultsKey.batteryManagementResumeMargin) as? Int ?? 5))
         c.sleepPolicy = d.string(forKey: DefaultsKey.batteryManagementSleepPolicy) == "automatic" ? "automatic" : "limit"
@@ -744,7 +843,7 @@ final class BatteryManagementService: ObservableObject {
                     }
                     guard result.version == 2, result.codeHash == expected else {
                         self.versionMismatch = true
-                        self.lastError = "电池后台版本与安装包不一致，正在安全更新…"
+                        self.lastError = "电池后台版本与安装包不一致，请在更新窗口确认后继续"
                         self.backendReady = false
                         self.suspendedAfterFailure = true
                         completion?(false)
@@ -766,6 +865,18 @@ final class BatteryManagementService: ObservableObject {
                     return
                 }
                 self.backendReady = result.supported
+                self.systemChargeLimitBackend = result.systemChargeLimitBackend == true
+                self.systemChargeLimits = result.systemChargeLimits ?? []
+                self.systemLimitReadback = result.systemLimitReadback
+                self.systemPolicyLimit = result.systemPolicyLimit
+                if self.systemChargeLimitBackend {
+                    self.record("系统限充响应：setting=\(result.systemLimitReadback.map(String.init) ?? "未知") policy=\(result.systemPolicyLimit.map(String.init) ?? "未知") active=\(result.active)；回读不代表物理停充")
+                }
+                self.interfaceUnavailable = result.interfaceUnavailable == true
+                if let diagnostics = result.interfaceDiagnostics, diagnostics != self.interfaceDiagnostics {
+                    self.interfaceDiagnostics = diagnostics
+                    self.record("只读接口探测：\(diagnostics)")
+                }
                 self.record("后台状态 request=\(id) command=\(result.command.rawValue) override=\(result.override.rawValue) active=\(result.active) overheated=\(result.overheated) backend=\(result.backendName ?? "未知") error=\(result.error ?? "无") warning=\(result.warning ?? "无")；后台响应不等于电池电流实测")
                 self.backendName = result.backendName
                 self.dischargeSupported = result.dischargeSupported == true

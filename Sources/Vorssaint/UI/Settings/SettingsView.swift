@@ -148,7 +148,12 @@ struct SettingsView: View {
                 if !items.isEmpty {
                     Section(section.title) {
                         ForEach(items) { item in
-                            Label(item.title, systemImage: item.icon).tag(item.page)
+                            Label {
+                                Text(item.title)
+                            } icon: {
+                                settingsSidebarIcon(for: item)
+                            }
+                            .tag(item.page)
                         }
                     }
                 }
@@ -194,13 +199,35 @@ struct SettingsView: View {
         return Button {
             requestSearchItem(suggestion)
         } label: {
-            Label(group.pageItem.title, systemImage: group.pageItem.icon)
+            Label {
+                Text(group.pageItem.title)
+            } icon: {
+                settingsSidebarIcon(for: group.pageItem)
+            }
                 .fontWeight(.semibold)
                 .searchResultRowStyle(isSelected: isSelected)
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .id(suggestion.id)
+    }
+
+    @ViewBuilder
+    private func settingsSidebarIcon(for item: SettingsDirectoryItem) -> some View {
+        if item.page == .networkProxy {
+            ProxyBrandIcon(size: 18)
+        } else {
+            Image(systemName: item.icon)
+        }
+    }
+
+    @ViewBuilder
+    private func settingsSidebarIcon(for item: SettingsSearchItem) -> some View {
+        if item.destination.page == .networkProxy {
+            ProxyBrandIcon(size: 18)
+        } else {
+            Image(systemName: item.icon)
+        }
     }
 
     private func searchSuggestionRow(_ suggestion: SettingsSearchSuggestion,
@@ -374,6 +401,7 @@ struct SettingsView: View {
         case .clipboard: ClipboardSettings()
         case .quickTools: QuickToolsSettings()
         case .networkInfo: NetworkInfoSettings()
+        case .networkProxy: ProxySettings()
         case .translation: TranslationSettings()
         case .screenshot: ScreenCaptureSettings()
         case .windowLayout: WindowLayoutSettings()
@@ -668,6 +696,9 @@ struct BatteryManagementSettings: View {
                 Toggle("启用独立电池管理", isOn: $batteryManagement.isEnabled)
                     .disabled(batteryManagement.repairPhase != nil)
                 BatteryBackendDiagnosisView()
+                if batteryManagement.systemChargeLimitBackend {
+                    BatterySystemLimitSettings()
+                }
                 BatteryTakeoverButton()
                 Toggle("在菜单栏显示电池图标", isOn: $batteryMenuBarIcon)
                 Button("打开电池信息面板") {
@@ -679,6 +710,7 @@ struct BatteryManagementSettings: View {
                     Text("当前设备未检测到内置电池。")
                         .foregroundStyle(.secondary)
                 } else {
+                    if !batteryManagement.systemChargeLimitBackend {
                     HStack {
                         Text("充电上限")
                         Slider(value: Binding(get: { Double(batteryManagement.chargeLimit) },
@@ -711,12 +743,13 @@ struct BatteryManagementSettings: View {
                             .foregroundStyle(.secondary)
                     }
                     HStack {
-                        Button("充到 100%") { batteryManagement.forceCharge() }
-                        Button("停止充电") { batteryManagement.inhibitCharging() }
-                        Button("恢复自动充电") { batteryManagement.restoreAutomatic() }
+                            Button("充到 100%") { batteryManagement.forceCharge() }
+                            Button("停止充电") { batteryManagement.inhibitCharging() }
+                            Button("恢复自动充电") { batteryManagement.restoreAutomatic() }
                     }
                     .disabled(!batteryManagement.backendReady || batteryManagement.performingUserAction)
-                    if let warning = batteryManagement.warning {
+                    }
+                    if let warning = batteryManagement.actionableWarning {
                         Text(warning).font(.caption).foregroundStyle(.orange)
                     }
                 }
@@ -754,12 +787,19 @@ private struct BatteryBackendDiagnosisView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(service.working || service.repairPhase != nil)
                 Button("查看诊断报告") { report = service.makeDiagnosticSnapshot() }
+                Button("重新安装充电控制助手…") { service.reinstallBackend() }
+                    .disabled(service.working || service.performingUserAction || service.repairPhase != nil)
                 if service.offersPrivilegedRepair && service.isEnabled {
                     Button("强制修复…", role: .destructive) { confirmPrivilegedRepair = true }
                         .disabled(service.working || service.repairPhase != nil)
                 }
             }
-            Text("启动时自动检查；只有确认恢复系统充电后才更新后台，不强制删除恢复记录。")
+            if !service.systemChargeLimitBackend {
+                Button("打开系统电池设置…") { service.openSystemBatterySettings() }
+                Text("此按钮仅打开系统设置，不会修改充电上限。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Text("启动时自动检查；迁移前验证控制安全。接口未适配时须确认无控制权占用、无待恢复记录，不强制删除记录。")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(.vertical, 8)

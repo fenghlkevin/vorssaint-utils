@@ -4,6 +4,9 @@ import Foundation
 struct BatteryLaunchDiagnosis {
     let output: String
     let readable: Bool
+    var serviceMissing: Bool {
+        !readable && output.contains("Could not find service \"\(BatteryControlIdentifiers.helperID)\" in domain for system")
+    }
     private func field(_ name: String) -> String? {
         output.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
             .first { $0.hasPrefix(name + " = ") }.map { String($0.dropFirst(name.count + 3)) }

@@ -17,17 +17,15 @@ struct AwayLockSettings: View {
     @AppStorage(DefaultsKey.awayLockGraceSeconds) private var graceSeconds = 5
     @AppStorage(DefaultsKey.awayLockProtectRecentInput) private var protectInput = true
     @AppStorage(DefaultsKey.awayLockPreventPresentation) private var preventPresentation = true
-    @AppStorage(DefaultsKey.awayLockAutomaticLearning) private var automaticLearning = true
     @AppStorage(DefaultsKey.awayLockAutomaticLock) private var automaticLock = true
     @AppStorage(DefaultsKey.awayLockWakeOnReturn) private var wakeOnReturn = true
     @AppStorage(DefaultsKey.awayLockShowCountdown) private var showCountdown = true
     @AppStorage(DefaultsKey.awayLockNotifications) private var notifications = true
     @AppStorage(DefaultsKey.awayLockNotificationSound) private var notificationSound = true
     @AppStorage(DefaultsKey.awayLockEnergyMode) private var energyMode = AwayLockEnergyMode.balanced.rawValue
-    @AppStorage(DefaultsKey.awayLockAutomaticScenes) private var automaticScenes = false
     @AppStorage(DefaultsKey.awayLockShowUnnamedDevices) private var showUnnamedDevices = false
     @AppStorage(DefaultsKey.awayLockOnlySelectedDevices) private var onlySelectedDevices = false
-    @State private var profileName = ""
+    @State private var confirmSimulatedLock = false
     @State private var manualDeviceUUID = ""
     @State private var manualDeviceName = ""
     @State private var manualDeviceError: String?
@@ -141,30 +139,6 @@ struct AwayLockSettings: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(6)
                 }
-                GroupBox("校准与自动学习") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(service.calibrationMessage).foregroundStyle(.secondary)
-                        HStack { Button("采集座位信号") { service.startNearCalibration() }
-                            Button("采集离席信号") { service.startFarCalibration() } }
-                        Toggle("逐设备自动学习阈值", isOn: $automaticLearning)
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
-                }
-                GroupBox("场景配置") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            TextField("新场景名称", text: $profileName)
-                            Button("保存当前配置") { if !profileName.isEmpty { service.addProfile(named: profileName); profileName = "" } }
-                        }
-                        ForEach(service.profiles) { profile in
-                            HStack { Text(profile.name); Spacer(); Button("应用") { service.applyProfile(profile.id) }
-                                if service.activeProfileID == profile.id { Button("更新") { service.updateActiveProfile() }; Button("删除") { service.deleteActiveProfile() } }
-                            }.font(.caption)
-                        }
-                        Toggle("根据 Wi‑Fi 与电源自动切换", isOn: $automaticScenes)
-                        Text("当前：\(service.currentWiFiName) · \(service.currentPowerName)").font(.caption).foregroundStyle(.secondary)
-                        Button("把当前环境绑定到当前场景") { service.bindCurrentEnvironment() }.disabled(service.activeProfileID == nil)
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
-                }
                 GroupBox("系统与提醒") {
                     VStack(alignment: .leading, spacing: 10) {
                         Toggle("自动锁屏", isOn: $automaticLock)
@@ -173,6 +147,19 @@ struct AwayLockSettings: View {
                         Text("关闭后仍会按离开规则自动锁屏，但不会弹出倒计时窗口。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        Button("完整模拟离开…") { confirmSimulatedLock = true }
+                            .disabled(!automaticLock || service.isSimulatingDeparture)
+                            .alert("完整模拟离开？", isPresented: $confirmSimulatedLock) {
+                                Button("取消", role: .cancel) { }
+                                Button("开始模拟") { service.simulateDeparture() }
+                            } message: {
+                                Text("这不是预览：将所有目标设备临时视为离开，按当前设置经过弱信号持续时间、通知和倒计时后真正锁屏。输入及全屏保护仍生效，开始后请停止操作。手机留在旁边不会取消模拟；锁屏后请手动唤醒或解锁，恢复真实检测。不模拟蓝牙硬件失联，不修改设置。")
+                            }
+                        if service.isSimulatingDeparture {
+                            Button("取消完整模拟离开") { service.cancelSimulatedDeparture() }
+                        }
+                        Text("复用正式离开处理流程；通知与弹窗遵循当前开关。无需带手机离开，锁屏后手动唤醒或解锁结束模拟。")
+                            .font(.caption).foregroundStyle(.secondary)
                         Button("预览倒计时弹窗") {
                             AwayLockCountdownOverlay.shared.preview(seconds: graceSeconds)
                         }

@@ -235,6 +235,20 @@ final class FeatureRuntime: ObservableObject {
         .radialMenu: { RadialMenuService.shared.syncWithPreferences() },
         .scratchpad: { ScratchpadService.shared.syncWithPreferences() },
         .translation: { TranslationService.shared.syncWithPreferences() },
+        .liveSubtitles: {
+            if #available(macOS 26.0, *) {
+                Task { @MainActor in
+                    if !AppFeature.liveSubtitles.isAvailable { LiveSubtitleWindowController.shared.close() }
+                }
+            }
+        },
+        .networkProxy: {
+            Task { @MainActor in
+                ProxyShortcutController.shared.sync()
+                if AppFeature.networkProxy.isAvailable { ProxyService.shared.sync(enabled: true) }
+                else { ProxyService.loaded?.sync(enabled: false) }
+            }
+        },
         .networkInfo: {
             Task { @MainActor in
                 if !AppFeature.networkInfo.isAvailable { NetworkInfoService.shared.stop() }

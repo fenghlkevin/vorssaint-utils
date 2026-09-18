@@ -15,6 +15,13 @@ private final class BatteryOwnership {
     private let marker = "/Library/Application Support/VorssaintBatteryControl/active"
     private var descriptor: Int32 = -1
     var held: Bool { descriptor >= 0 }
+    /// Unlike `marked`, this fails closed on invalid metadata or access errors.
+    var recoveryRecordAbsent: Bool {
+        guard held, secureJournalDirectory(create: false) else { return false }
+        guard !BatterySystemLimitFileJournal().mayExist else { return false }
+        var s = stat()
+        return lstat(marker, &s) != 0 && errno == ENOENT
+    }
     var marked: Bool {
         guard secureJournalDirectory(create: false) else { return false }
         var s = stat()
@@ -60,6 +67,9 @@ private final class BatteryOwnership {
 private final class BatteryController {
     private let ownership = BatteryOwnership()
     private var hardware: BatteryControlHardware?
+    private var systemClient: BatteryPowerUI?
+    private var systemSession: BatterySystemLimitSession?
+    private let systemJournal = BatterySystemLimitFileJournal()
     private var configuration = BatteryControlConfiguration()
     private var policy = BatteryControlPolicy()
     private var owner: UUID?
@@ -81,7 +91,7 @@ private final class BatteryController {
     init() {
         response.codeHash = BatteryControlIdentifiers.runningCodeHash
         probeHardware()
-        if ownership.marked, ownership.acquire() { recovering = true; _ = restore() }
+        if ownership.marked || systemJournal.mayExist, ownership.acquire() { recovering = true; _ = restore() }
         powerConnection = IORegisterForSystemPower(Unmanaged.passUnretained(self).toOpaque(), &port, { context, _, type, argument in
             guard let context else { return }
             let controller = Unmanaged<BatteryController>.fromOpaque(context).takeUnretainedValue()
@@ -93,17 +103,56 @@ private final class BatteryController {
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.tick() }
     }
 
-    func status() -> Data { response.encoded }
+    func status() -> Data {
+        // A manual recheck must refresh failed discovery, not return a cached
+        // startup failure. Never interfere with an owned/recovering controller.
+        if hardware == nil && !ownership.held && !recovering {
+            probeHardware()
+            if systemSession != nil { latchedFailure = nil }
+        }
+        return response.encoded
+    }
 
     private func probeHardware() {
+        let smc = SMCClient()
+        response.interfaceDiagnostics = ProcessInfo.processInfo.operatingSystemVersionString + "\n"
+            + (smc?.batteryInterfaceDiagnostics() ?? "AppleSMC连接失败，未执行键查询")
+            + "\n" + BatteryPowerUI.interfaceDiagnostics()
+        response.interfaceUnavailable = false
         do {
-            hardware = try BatteryControlHardware(validating: SMCClient())
+            hardware = try BatteryControlHardware(validating: smc)
             response.error = nil
-        } catch { hardware = nil; response.error = error.localizedDescription }
+        } catch {
+            hardware = nil; response.error = error.localizedDescription
+            if let failure = error as? BatteryControlHardware.ProbeFailure {
+                switch failure {
+                case .missing, .layout: response.interfaceUnavailable = true
+                default: break
+                }
+            }
+        }
         response.supported = hardware != nil
         response.backendName = hardware?.backendName
         response.dischargeSupported = hardware?.dischargeSupported == true
         response.ledSupported = hardware?.ledSupported == true
+        systemClient = nil; systemSession = nil
+        response.systemChargeLimitBackend = false
+        response.systemChargeLimits = nil
+        if hardware == nil && response.interfaceUnavailable == true {
+            do {
+                let client = try BatteryPowerUI()
+                systemClient = client
+                systemSession = BatterySystemLimitSession(client: client, journal: systemJournal)
+                response.systemChargeLimits = try client.availableLimits()
+                response.systemLimitReadback = try client.read().limit
+                response.systemPolicyLimit = BatteryPowerUI.policyLimit()
+                response.systemChargeLimitBackend = true
+                response.backendName = "PowerUI · 系统充电上限"
+                response.supported = true; response.interfaceUnavailable = false; response.error = nil
+            } catch {
+                response.interfaceDiagnostics = (response.interfaceDiagnostics ?? "") + "\nPowerUI probe: " + error.localizedDescription
+            }
+        }
     }
 
     func update(_ data: Data, session: UUID) -> Data {
@@ -118,6 +167,11 @@ private final class BatteryController {
         if let latchedFailure { return failure(latchedFailure) }
         configuration = config
         heartbeat = ProcessInfo.processInfo.systemUptime
+        if systemClient != nil && config.allowSystemChargeLimit != true {
+            if owner != nil { _ = restore() }
+            response.warning = "系统限充需要确认：将修改系统充电上限；暂停充电、主动放电和自定义温控不适用于此接口"
+            return response.encoded
+        }
         if config.enabled || policy.override != .automatic {
             guard begin(session) else { return response.encoded }
             evaluate()
@@ -129,6 +183,9 @@ private final class BatteryController {
         guard !retiring else { return failure("电池后台正在安全卸载") }
         let takingOver = name == "takeover"
         guard let command = takingOver ? .automatic : BatteryCommand(rawValue: name), owner == nil || owner == session else { return failure("命令无效或已有其他控制者") }
+        if systemClient != nil && (command != .automatic || configuration.allowSystemChargeLimit != true || takingOver) {
+            return failure("系统限充模式不提供暂停/强制充满/主动放电；请在设置中确认并调整系统上限")
+        }
         if command == .discharge, hardware?.dischargeSupported != true {
             return failure("充电上限接口可用，但未识别安全的主动放电接口")
         }
@@ -143,9 +200,16 @@ private final class BatteryController {
     private func begin(_ session: UUID, takingOver: Bool = false) -> Bool {
         if owner == session { return true }
         guard powerConnection != 0 else { _ = failure("无法注册睡眠保护，未接管充电"); return false }
+        if systemSession != nil {
+            guard configuration.allowSystemChargeLimit == true else { return false }
+            guard ownership.acquire() else { _ = failure("另一个 Vorssaint 版本正在控制电池"); return false }
+            if ownership.marked || systemJournal.mayExist { recovering = true; _ = restore(); return false }
+            owner = session; response.active = false; response.needsTakeover = false
+            return true
+        }
         guard let hardware else { return false }
         guard ownership.acquire() else { _ = failure("另一个 Vorssaint 版本正在控制电池"); return false }
-        if ownership.marked { recovering = true; _ = restore(); return false }
+        if ownership.marked || systemJournal.mayExist { recovering = true; _ = restore(); return false }
         do {
             // Explicit takeover accepts only a recognized state, never an
             // unknown payload or a failed read. Journal still precedes writes.
@@ -179,6 +243,21 @@ private final class BatteryController {
         releaseAssertion()
         guard ownership.held else { return true }
         do {
+            if systemJournal.mayExist || (systemSession != nil && owner != nil) {
+                if systemSession == nil {
+                    let client = try BatteryPowerUI()
+                    systemSession = BatterySystemLimitSession(client: client, journal: systemJournal)
+                }
+                guard let systemSession, try systemSession.restore() else { throw BatteryPowerUIError.unconfirmed }
+                // A legacy SMC recovery marker must never be removed by PowerUI.
+                guard !ownership.marked else { throw BatteryPowerUIError.journal }
+                ownership.release(); owner = nil; recovering = false
+                policy = BatteryControlPolicy(); response.active = false
+                response.command = .automatic; response.override = .automatic
+                response.overheated = false; response.error = nil; response.warning = nil
+                response.systemLimitReadback = systemSession.confirmedLimit
+                return true
+            }
             if hardware == nil { probeHardware() }
             guard let hardware else { throw BatteryControlHardware.Failure.unsupported }
             let ledRestoreFailed = try hardware.restore()
@@ -198,7 +277,7 @@ private final class BatteryController {
             return true
         } catch {
             recovering = true
-            response.error = "恢复系统充电失败；后台将持续重试，请勿卸载或关闭后台"
+            response.error = "恢复系统充电失败；保留恢复记录，请勿卸载后台：\(error.localizedDescription)"
             return false
         }
     }
@@ -213,6 +292,31 @@ private final class BatteryController {
     private func evaluate() {
         diagnosticLog.info("evaluate begin")
         defer { diagnosticLog.info("evaluate end command=\(self.response.command.rawValue, privacy: .public)") }
+        if let systemSession {
+            releaseAssertion()
+            // macOS keeps enforcing the last system limit during sleep. This
+            // route does not claim the SMC sleep/thermal/discharge controls.
+            if sleeping { return }
+            do {
+                let confirmed = try systemSession.apply(configuration.limit)
+                response.systemLimitReadback = systemSession.confirmedLimit
+                response.systemPolicyLimit = BatteryPowerUI.policyLimit()
+                response.active = confirmed
+                response.command = .automatic; response.override = .automatic; response.overheated = false
+                response.error = nil
+                response.warning = confirmed
+                    ? "系统上限已回读 \(configuration.limit)%；不代表电池已停止充电。温控、睡眠和恢复阈值由 macOS 决定"
+                    : "上限请求已发送，等待系统回读；尚未确认生效"
+                diagnosticLog.notice("PowerUI target=\(self.configuration.limit) confirmed=\(confirmed) policy=\(self.response.systemPolicyLimit ?? -1)")
+            } catch {
+                let message = error.localizedDescription
+                _ = restore()
+                latchedFailure = message
+                response.error = "系统限充未完成：\(message)；请检查并重试"
+                response.active = false
+            }
+            return
+        }
         guard let hardware, var input = BatteryControlHardware.input() else {
             let restored = restore()
             latchedFailure = "电池传感器不可用，已恢复系统充电；请检查后重试"
@@ -368,10 +472,30 @@ if CommandLine.arguments.contains("--selftest") {
     print("battery-control-helper: policy and IPC loaded (no hardware writes)")
     exit(0)
 }
+if CommandLine.arguments.contains("--probe-system-limit") {
+    // Standalone read-only capability query. Never creates BatteryController,
+    // acquires ownership, restores a journal, registers a daemon or invokes setters.
+    var result = BatteryControlResponse()
+    result.interfaceDiagnostics = BatteryPowerUI.interfaceDiagnostics()
+    do {
+        let client = try BatteryPowerUI()
+        result.systemChargeLimits = try client.availableLimits()
+        result.systemLimitReadback = try client.read().limit
+        result.systemPolicyLimit = BatteryPowerUI.policyLimit()
+        result.systemChargeLimitBackend = true
+        result.backendName = "PowerUI · 系统充电上限"
+        result.supported = true
+    } catch { result.error = error.localizedDescription }
+    print(String(data: result.encoded, encoding: .utf8) ?? "{}")
+    exit(result.error == nil ? 0 : 1)
+}
 if CommandLine.arguments.contains("--probe") {
     var result = BatteryControlResponse()
+    let smc = SMCClient()
+    result.interfaceDiagnostics = ProcessInfo.processInfo.operatingSystemVersionString + "\n"
+        + (smc?.batteryInterfaceDiagnostics() ?? "AppleSMC连接失败")
     do {
-        let hardware = try BatteryControlHardware(validating: SMCClient())
+        let hardware = try BatteryControlHardware(validating: smc)
         result.supported = true
         result.backendName = hardware.backendName
         result.dischargeSupported = hardware.dischargeSupported
@@ -412,31 +536,63 @@ if maintenanceRequested {
     // Holding the same root-owned lock prevents BOTH installed variants from
     // taking control while launchd retires the old job. Never steal this lock.
     guard ownership.acquire() else { refuse("其他后台仍持有电池控制权。请先恢复自动充电；连接断开后可稍候再试。未停止任何后台。") }
-    let hardware: BatteryControlHardware
+    guard !BatterySystemLimitFileJournal().mayExist else {
+        refuse("存在系统限充恢复记录；请先由原后台确认恢复，未停止后台或删除记录。")
+    }
+    var hardware: BatteryControlHardware?
+    var interfaceUnavailable = false
     do {
-        hardware = try BatteryControlHardware(validating: SMCClient())
-        guard try hardware.state() == .automatic else { refuse("充电或电源输入尚未恢复系统自动状态，未停止后台。") }
-    } catch { refuse("无法读取硬件状态，未停止后台：\(error.localizedDescription)") }
+        let detected = try BatteryControlHardware(validating: SMCClient())
+        guard try detected.state() == .automatic else { refuse("充电或电源输入尚未恢复系统自动状态，未停止后台。") }
+        hardware = detected
+    } catch {
+        if let failure = error as? BatteryControlHardware.ProbeFailure {
+            switch failure {
+            case .missing, .layout: interfaceUnavailable = true
+            default: break
+            }
+        }
+        guard interfaceUnavailable, ownership.recoveryRecordAbsent else {
+            refuse("无法读取硬件状态且不满足无恢复记录迁移条件，未停止后台：\(error.localizedDescription)")
+        }
+        diagnosticLog.notice("接口未适配；已持独占锁且安全目录内无恢复记录，仅迁移注册，不宣称硬件恢复或限充生效")
+    }
     let diagnosis = BatteryLaunchDiagnosis.inspect()
-    guard diagnosis.readable else { refuse(diagnosis.summary) }
-    guard BatteryMaintenanceSafety.canStopService(lockHeld: ownership.held, command: try? hardware.state(),
-                                                  jobReadable: diagnosis.readable) else {
+    guard diagnosis.readable || diagnosis.serviceMissing else { refuse(diagnosis.summary) }
+    guard BatteryMaintenanceSafety.canStopService(lockHeld: ownership.held, command: try? hardware?.state(),
+        jobReadable: diagnosis.readable || diagnosis.serviceMissing, interfaceUnavailable: interfaceUnavailable,
+        recoveryRecordAbsent: ownership.recoveryRecordAbsent) else {
         refuse("停止服务前的安全复查未通过，未停止后台。")
     }
     let oldPID = diagnosis.processID
     guard oldPID != getpid() else { refuse("拒绝停止维护进程自身。") }
-    diagnosticLog.notice("管理员维护：已取得控制权锁且硬件为 automatic；停止服务 \(BatteryControlIdentifiers.helperID, privacy: .public)")
+    diagnosticLog.notice("管理员维护：已取得控制权锁且安全迁移检查通过；停止服务 \(BatteryControlIdentifiers.helperID, privacy: .public)")
     // Stop the exact launchd job, not an arbitrary caller-supplied PID. Unlike
     // killing a process, bootout prevents KeepAlive from relaunching the old job.
-    let result = BoundedProcessRunner.run("/bin/launchctl", ["bootout", "system/" + BatteryControlIdentifiers.helperID],
+    if !diagnosis.serviceMissing {
+        let result = BoundedProcessRunner.run("/bin/launchctl", ["bootout", "system/" + BatteryControlIdentifiers.helperID],
                                           timeout: 65, maxOutputBytes: 8192)
-    guard result.status == 0, !result.timedOut else {
-        refuse("系统未确认旧服务退出，结果未知；保留恢复记录。\(String(decoding: result.output, as: UTF8.self))")
+        guard result.status == 0, !result.timedOut else {
+            refuse("系统未确认旧服务退出，结果未知；保留恢复记录。\(String(decoding: result.output, as: UTF8.self))")
+        }
     }
     if let oldPID {
-        guard kill(oldPID, 0) != 0, errno == ESRCH else { refuse("旧进程退出尚未确认，暂不注册新版。") }
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        var exited = false
+        repeat {
+            if kill(oldPID, 0) != 0 {
+                exited = errno == ESRCH
+                break
+            }
+            usleep(100_000)
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        guard exited else { refuse("旧进程退出尚未确认，暂不注册新版。") }
     }
-    guard (try? hardware.state()) == .automatic else { refuse("停止后硬件状态未确认，保留恢复记录，请检查系统充电。") }
+    guard BatteryMaintenanceSafety.canStopService(lockHeld: ownership.held, command: try? hardware?.state(),
+        jobReadable: true, interfaceUnavailable: interfaceUnavailable,
+        recoveryRecordAbsent: ownership.recoveryRecordAbsent) else {
+        refuse("停止后安全复查未通过，保留恢复记录，请检查系统充电。")
+    }
     ownership.release()
     print("BATTERY_MAINTENANCE_RETIRED=1")
     exit(0)

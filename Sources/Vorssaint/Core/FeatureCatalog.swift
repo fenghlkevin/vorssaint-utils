@@ -28,7 +28,7 @@ enum AppFeature: String, CaseIterable {
     // Tools
     case quickLauncher, quickToggles, colorPicker, screenOCR, cleaningMode, mediaTools,
          cleaner, uninstaller, homebrew, appUpdates, screenshot, cameraPreview, radialMenu, scratchpad,
-         commandBar, screenRecorder, killProcess, translation, networkInfo
+         commandBar, screenRecorder, killProcess, translation, liveSubtitles, networkInfo, networkProxy
     // App management
     case menuBarIcons
     // System monitor, one entry per metric family (temperatures live with
@@ -75,7 +75,7 @@ extension AppFeature {
             return boolFor(DefaultsKey.windowLayoutShortcutsEnabled)
                 || boolFor(DefaultsKey.windowGestureEnabled)
                 || boolFor(DefaultsKey.windowEdgeSnapEnabled)
-        case .screenOCR, .cleaningMode, .screenshot, .commandBar, .screenRecorder, .translation, .networkInfo:
+        case .screenOCR, .cleaningMode, .screenshot, .commandBar, .screenRecorder, .translation, .liveSubtitles, .networkInfo, .networkProxy:
             return false
         default:
             return true
@@ -88,6 +88,7 @@ extension AppFeature {
 
     var group: FeatureGroup {
         switch self {
+        case .liveSubtitles: return .tools
         case .dynamicIsland, .switcher, .dockPreview, .dockClick, .windowMaximizer, .windowLayout, .autoQuit:
             return .windowsDock
         case .scrollInverter, .focusFollowsMouse, .smoothScroll, .mouseNavigation, .mouseButtonShortcuts, .middleClick,
@@ -102,7 +103,7 @@ extension AppFeature {
             return .energyDisplay
         case .quickLauncher, .quickToggles, .colorPicker, .screenOCR, .cleaningMode, .mediaTools,
              .cleaner, .uninstaller, .homebrew, .appUpdates, .screenshot, .cameraPreview, .radialMenu,
-             .scratchpad, .commandBar, .screenRecorder, .killProcess, .translation, .networkInfo:
+             .scratchpad, .commandBar, .screenRecorder, .killProcess, .translation, .networkInfo, .networkProxy:
             return .tools
         case .menuBarIcons, .awayLock:
             return .appManagement
@@ -114,6 +115,7 @@ extension AppFeature {
 
     var symbolName: String {
         switch self {
+        case .liveSubtitles: return "captions.bubble"
         case .dynamicIsland: return "rectangle.topthird.inset.filled"
         case .switcher: return "rectangle.on.rectangle"
         case .dockPreview: return "dock.rectangle"
@@ -167,6 +169,7 @@ extension AppFeature {
         case .radialMenu: return "circle.grid.cross"
         case .scratchpad: return "note.text"
         case .networkInfo: return "globe"
+        case .networkProxy: return "arrow.triangle.branch"
         case .translation: return "character.bubble"
         case .commandBar: return "command"
         case .killProcess: return "xmark.octagon"
@@ -197,6 +200,7 @@ extension AppFeature {
     /// the permissions portal.
     var enabledKeys: [String] {
         switch self {
+        case .liveSubtitles: return []
         case .dynamicIsland: return [DefaultsKey.dynamicIslandEnabled]
         case .switcher: return [DefaultsKey.switcherEnabled]
         case .dockPreview: return [DefaultsKey.dockPreviewEnabled]
@@ -236,7 +240,7 @@ extension AppFeature {
         case .windowLayout, .diskImageInstaller, .mixer, .micMute, .keepAwake,
              .quickLauncher, .quickToggles, .colorPicker, .screenOCR, .cleaningMode, .mediaTools,
              .cleaner, .uninstaller, .homebrew, .appUpdates, .screenshot, .cameraPreview, .scratchpad,
-             .commandBar, .screenRecorder, .killProcess, .translation, .networkInfo,
+             .commandBar, .screenRecorder, .killProcess, .translation, .networkInfo, .networkProxy,
              .monitorCPU, .monitorGPU, .monitorMemory, .monitorNetwork, .monitorDisk, .monitorPower,
              .fanControl:
             return []
@@ -249,6 +253,7 @@ extension AppFeature {
     /// monitor only notifies when an alert is on, and so on).
     var permissions: [AppPermission] {
         switch self {
+        case .liveSubtitles: return [.screenRecording]
         case .scrollInverter, .focusFollowsMouse, .smoothScroll, .mouseNavigation, .mouseButtonShortcuts, .middleClick,
              .keyboardDebounce, .textSnippets, .superKey, .dockClick, .windowMaximizer, .windowLayout,
              .autoQuit, .cleaningMode, .pastePlain, .radialMenu, .inputSourceAutomation,
@@ -283,7 +288,7 @@ extension AppFeature {
         case .dynamicIsland, .clipboardHistory, .shelf, .urlCleaner, .awayLock,
              .soundOutputSwitcher, .musicBlock,
              .extraBrightness, .bluetoothSleep, .quickLauncher, .colorPicker, .micMute, .mediaTools,
-             .scratchpad, .monitorGPU, .monitorNetwork, .fanControl, .killProcess, .menuBarIcons, .networkInfo:
+             .scratchpad, .monitorGPU, .monitorNetwork, .fanControl, .killProcess, .menuBarIcons, .networkInfo, .networkProxy:
             return []
         }
     }
@@ -295,7 +300,7 @@ extension AppFeature {
         switch self {
         case .keepAwake, .brightness, .radialMenu, .quickToggles, .cleaner,
              .uninstaller, .homebrew, .appUpdates, .mixer, .cameraPreview,
-             .micMute, .translation:
+             .micMute, .translation, .liveSubtitles:
             return []
         default:
             return permissions.filter { $0 == .accessibility || $0 == .screenRecording }
@@ -312,7 +317,7 @@ extension AppFeature {
         Dictionary(uniqueKeysWithValues: allCases.map {
              ($0.availabilityKey,
              $0 != .focusFollowsMouse && $0 != .fanControl && $0 != .diskImageInstaller
-                && $0 != .killProcess && $0 != .menuBarIcons && $0 != .awayLock && $0 != .translation)
+                && $0 != .killProcess && $0 != .menuBarIcons && $0 != .awayLock && $0 != .translation && $0 != .liveSubtitles)
         })
     }
 

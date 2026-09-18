@@ -29,7 +29,7 @@ if CommandLine.arguments.contains("--export-codex-sounds") {
     exit(0)
 }
 
-if CommandLine.arguments.contains("--reset-battery-registration") {
+if CommandLine.arguments.contains("--reset-battery-registration") || CommandLine.arguments.contains("--retire-and-repair-battery-registration") {
     BatteryRegistrationRepair.runAndExit()
 }
 

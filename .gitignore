@@ -28,3 +28,6 @@ xcuserdata/
 .cursor/
 .gemini/
 .idea/
+
+# Downloaded, checksum-pinned proxy core
+Resources/ProxyCore/mihomo-darwin-*

@@ -97,7 +97,7 @@ final class ScreenshotQuickPreviewController {
             model: model,
             createdAt: createdAt,
             dimensions: "\(capture.image.width) × \(capture.image.height)",
-            dismiss: { [weak self] in self?.close() },
+            dismiss: { [weak self] in self?.close(animated: true) },
             pin: { [weak self] in
                 guard let self else { return }
                 ScreenshotPinController.shared.pin(image: self.capture.image, scale: self.capture.scale)
@@ -224,7 +224,7 @@ final class ScreenshotQuickPreviewController {
         return context.makeImage() ?? image
     }
 
-    func close() {
+    func close(animated: Bool = false) {
         guard !closed else { return }
         closed = true
         dismissWork?.cancel()
@@ -233,9 +233,25 @@ final class ScreenshotQuickPreviewController {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
         }
-        panel?.orderOut(nil)
-        panel = nil
-        onClose()
+        collapseGeneration += 1
+        guard animated, let panel, panel.isVisible else {
+            panel?.orderOut(nil)
+            panel = nil
+            onClose()
+            return
+        }
+        // Keep the card's place in the stack until the fade finishes, then
+        // let the remaining previews move up without covering a fading card.
+        panel.ignoresMouseEvents = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0.12 : 0.25
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().alphaValue = 0
+        } completionHandler: { [self] in
+            panel.orderOut(nil)
+            self.panel = nil
+            onClose()
+        }
     }
 
     private func perform(_ requested: Action) {
@@ -401,7 +417,7 @@ final class ScreenshotQuickPreviewController {
     private func scheduleAutoDismiss() {
         guard !closed else { return }
         dismissWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.close() }
+        let work = DispatchWorkItem { [weak self] in self?.close(animated: true) }
         dismissWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + autoDismissDuration, execute: work)
     }

@@ -15,6 +15,7 @@ struct NetworkInfoHistoryRecord: Codable, Equatable, Identifiable {
     let id: UUID
     let queriedAt: Date
     let entries: [NetworkInfoHistoryEntry]
+    var localAddresses: [NetworkInfoLocalAddress]? = nil
 }
 
 enum NetworkInfoHistory {

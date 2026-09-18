@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.vorssaint.live-translation-probe</string>
+<key>CFBundleName</key><string>Live Translation Probe</string>
+<key>CFBundleExecutable</key><string>LiveTranslationProbe</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSMinimumSystemVersion</key><string>26.0</string>
+<key>NSAudioCaptureUsageDescription</key><string>验证系统播放声音的本地实时字幕；不采集麦克风，不保存音频。</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>使用本机模型生成实时字幕，不上传音频。</string>
+</dict></plist>

@@ -590,6 +590,7 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
     case cameraPreview
     case radialMenu
     case scratchpad
+    case proxyOpen, proxySystem, proxyReload
     case translationOpen, translationSelection, translationCapture
     case snippetLibrary
     case commandBar
@@ -618,6 +619,9 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
         case .cameraPreview: return DefaultsKey.cameraPreviewShortcut
         case .radialMenu: return DefaultsKey.radialMenuShortcut
         case .scratchpad: return DefaultsKey.scratchpadShortcut
+        case .proxyOpen: return "proxy.open.shortcut"
+        case .proxySystem: return "proxy.system.shortcut"
+        case .proxyReload: return "proxy.reload.shortcut"
         case .translationSelection: return "translation.selection.shortcut"
         case .translationOpen: return "translation.open.shortcut"
         case .translationCapture: return "translation.capture.shortcut"
@@ -648,6 +652,9 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
         case .cameraPreview: return .cameraPreviewDefault
         case .radialMenu: return .radialMenuDefault
         case .scratchpad: return .scratchpadDefault
+        case .proxyOpen: return GlobalShortcut(keyCode: Int64(kVK_ANSI_P), modifiers: [.control, .option, .shift])
+        case .proxySystem: return GlobalShortcut(keyCode: Int64(kVK_ANSI_G), modifiers: [.control, .option, .shift])
+        case .proxyReload: return GlobalShortcut(keyCode: Int64(kVK_ANSI_R), modifiers: [.control, .option, .shift])
         case .translationSelection: return GlobalShortcut(keyCode: Int64(kVK_ANSI_D), modifiers: [.control, .option, .shift])
         case .translationOpen: return GlobalShortcut(keyCode: Int64(kVK_ANSI_T), modifiers: [.control, .option, .shift])
         case .translationCapture: return GlobalShortcut(keyCode: Int64(kVK_ANSI_S), modifiers: [.control, .option, .shift])
@@ -686,6 +693,9 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
         case .cameraPreview: return FeatureStrings.cameraPreview(L10n.shared.language).pageTitle
         case .radialMenu: return FeatureStrings.radialMenu(L10n.shared.language).pageTitle
         case .scratchpad: return FeatureStrings.scratchpad(L10n.shared.language).pageTitle
+        case .proxyOpen: return "打开代理工作台"
+        case .proxySystem: return "切换系统代理（核心运行时）"
+        case .proxyReload: return "重新加载代理配置"
         case .translationSelection: return TranslationStrings.current[.selection]
         case .translationOpen: return TranslationStrings.current.settingsLabels.open
         case .translationCapture: return TranslationStrings.current[.capture]
@@ -733,6 +743,9 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
         case .cameraPreview: return [DefaultsKey.cameraPreviewShortcutEnabled]
         case .radialMenu: return [DefaultsKey.radialMenuEnabled]
         case .scratchpad: return [DefaultsKey.scratchpadShortcutEnabled]
+        case .proxyOpen: return ["proxy.open.enabled"]
+        case .proxySystem: return ["proxy.system.enabled"]
+        case .proxyReload: return ["proxy.reload.enabled"]
         case .translationSelection: return ["translation.selection.enabled"]
         case .translationOpen: return ["translation.open.enabled"]
         case .translationCapture: return ["translation.capture.enabled"]
@@ -763,6 +776,7 @@ enum GlobalShortcutRole: CaseIterable, Identifiable {
         case .cameraPreview: return .cameraPreview
         case .radialMenu: return .radialMenu
         case .scratchpad: return .scratchpad
+        case .proxyOpen, .proxySystem, .proxyReload: return .networkProxy
         case .translationOpen, .translationSelection, .translationCapture: return .translation
         case .snippetLibrary: return .textSnippets
         case .commandBar: return .commandBar
