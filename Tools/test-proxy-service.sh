@@ -8,7 +8,7 @@ trap cleanup EXIT
 bash Tools/prepare-proxy-core.sh
 bash Tools/build-proxy-yaml.sh "$proxy_tests/yaml"
 clang -mmacosx-version-min=14.0 -c Sources/ProxyTunnelBridge/ProxyTunnelBridge.c -I Sources/ProxyTunnelBridge/include -o "$proxy_tests/tun.o"
-swiftc -I Sources/ProxyTunnelBridge/include "$proxy_tests/tun.o" Sources/Vorssaint/Services/Proxy/ProxyWire.swift Sources/Vorssaint/Services/Proxy/ProxySystemProxy.swift Sources/ProxyGuardian/main.swift -o "$proxy_tests/guardian"
+swiftc -I Sources/ProxyTunnelBridge/include "$proxy_tests/tun.o" -I Sources/ProxyYAML/include "$proxy_tests/yaml/libProxyYAML.a" Sources/Vorssaint/Services/Proxy/{ProxyWire,ProxySystemProxy,ProxySystemClient,ProxyTunnelClient,ProxyTunnelXPC,ProxyTunnelPolicy,ProxySupport,ProxyStorage,ProxyCore}.swift Sources/ProxyGuardian/main.swift -o "$proxy_tests/guardian"
 swiftc -I Sources/ProxyYAML/include -I Sources/ProxyTunnelBridge/include "$proxy_tests/yaml/libProxyYAML.a" "$proxy_tests/tun.o" Sources/Vorssaint/Services/Proxy/*.swift Tests/ProxyServiceTestStubs.swift Tests/ProxyServiceIntegration.swift -o "$proxy_tests/test"
 python3 Tests/ProxyTrafficFixture.py > "$proxy_tests/fixture.log" 2>&1 &
 proxy_fixture_pid=$!

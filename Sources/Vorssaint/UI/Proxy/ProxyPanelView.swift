@@ -77,7 +77,7 @@ struct ProxyMenuContents: View {
                     .disabled(service.state != .stopped || service.busy)
                 Text(service.tunnelAccess).font(.caption).foregroundStyle(.secondary)
             }
-            Text("首次批准后，系统代理开关无需反复输密码。未授权时仍使用系统密码弹窗；授权不会开启 TUN。")
+            Text("系统代理和增强模式需要先授权网络助手。移除助手会关闭这两项；仅启动核心无需授权。")
                 .font(.caption).foregroundStyle(.secondary)
         }
         Toggle("设置为系统代理", isOn: Binding(get: { service.state == .running ? service.systemProxyEffective : service.preferences.systemProxy }, set: service.setSystemProxy))
@@ -91,6 +91,7 @@ struct ProxyMenuContents: View {
             }
         }.disabled(!service.preferences.allowLAN)
         Toggle("自动启动代理", isOn: Binding(get: { service.preferences.autoStart }, set: service.setAutoStart))
+        Text("退出 Vorssaint 后代理继续运行；断开连接请点击停止代理。").font(.caption).foregroundStyle(.secondary)
         Divider()
         Menu("切换配置") {
             ForEach(service.profiles) { profile in

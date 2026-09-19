@@ -4,6 +4,8 @@ import ServiceManagement
 
 @MainActor
 final class ProxyTunnelClient {
+    private let background: Bool
+    init(background: Bool = false) { self.background = background }
     private var connection: NSXPCConnection?
     private var hasSession = false
     private var pulse: Task<Void, Never>?
@@ -20,7 +22,7 @@ final class ProxyTunnelClient {
         if service.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
     }
     private func transport() throws -> NSXPCConnection {
-        guard service.status == .enabled else { throw ProxyFailure.message("请先在增强模式设置中授权网络助手，并在 macOS 登录项中批准。") }
+        guard background || service.status == .enabled else { throw ProxyFailure.message("请先在增强模式设置中授权网络助手，并在 macOS 登录项中批准。") }
         if let connection { return connection }
         guard let requirement = ProxyTunnelIdentifiers.requirement(for: ProxyTunnelIdentifiers.helperID) else { throw ProxyFailure.message("无法校验网络助手签名。") }
         let channel = NSXPCConnection(machServiceName: ProxyTunnelIdentifiers.helperID, options: .privileged)
@@ -84,7 +86,16 @@ final class ProxyTunnelClient {
         _ = try await command("stop")
         hasSession = false
     }
-    func unregister() async throws { try await stop(); connection?.invalidate(); connection = nil; try await service.unregister() }
+    func unregister() async throws {
+        try await stop()
+        connection?.invalidate(); connection = nil
+        // An already absent helper is a successful removal, not an OS error.
+        if Bundle.main.bundleIdentifier != nil,
+           service.status != .notRegistered, service.status != .notFound {
+            try await service.unregister()
+        }
+        UserDefaults.standard.removeObject(forKey: "proxyTunnelHelperRegisteredVersion")
+    }
 }
 
 /// XPC error, timeout and reply may race. Resume the continuation exactly once.

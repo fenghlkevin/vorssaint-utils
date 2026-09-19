@@ -162,7 +162,10 @@ if CommandLine.arguments.contains("--selftest") {
     print("proxy-tun-helper: policy loaded (no network changes)"); exit(0)
 }
 umask(0o077)
-guard geteuid() == 0, let requirement = ProxyTunnelIdentifiers.requirement(for: ProxyTunnelIdentifiers.appID) else { exit(1) }
+guard geteuid() == 0,
+      let appRequirement = ProxyTunnelIdentifiers.requirement(for: ProxyTunnelIdentifiers.appID),
+      let agentRequirement = ProxyTunnelIdentifiers.requirement(for: ProxyTunnelIdentifiers.appID + ".proxy-agent") else { exit(1) }
+let requirement = "(\(appRequirement)) or (\(agentRequirement))"
 let lock = open("/var/run/vorssaint-proxy-tun.lock", O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
 var info = stat()
 guard lock >= 0, fstat(lock, &info) == 0, info.st_uid == 0, info.st_nlink == 1, info.st_mode & S_IFMT == S_IFREG, info.st_mode & 0o077 == 0, flock(lock, LOCK_EX | LOCK_NB) == 0 else { exit(73) }

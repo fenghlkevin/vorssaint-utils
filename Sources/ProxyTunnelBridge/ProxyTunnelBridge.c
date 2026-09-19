@@ -40,6 +40,48 @@ static int unix_address(const char *path, struct sockaddr_un *address) {
     address->sun_family = AF_UNIX; address->sun_len = sizeof(*address);
     strlcpy(address->sun_path, path, sizeof(address->sun_path)); return 0;
 }
+static void control_options(int fd) {
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof(yes));
+    struct timeval timeout = {35, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+}
+int VPTControlListen(const char *path) {
+    struct sockaddr_un address;
+    if (unix_address(path, &address) < 0) return -1;
+    struct stat info;
+    if (lstat(path, &info) == 0) {
+        if (!S_ISSOCK(info.st_mode) || info.st_uid != getuid()) { errno = EACCES; return -1; }
+        if (unlink(path) < 0) return -1;
+    }
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    control_options(fd);
+    if (bind(fd, (struct sockaddr *)&address, sizeof(address)) < 0 || chmod(path, 0600) < 0 || listen(fd, 8) < 0) { close(fd); return -1; }
+    return fd;
+}
+int VPTControlConnect(const char *path) {
+    struct sockaddr_un address;
+    if (unix_address(path, &address) < 0) return -1;
+    struct stat info;
+    if (lstat(path, &info) < 0 || !S_ISSOCK(info.st_mode) || info.st_uid != getuid() || (info.st_mode & 077) != 0) { errno = EACCES; return -1; }
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    control_options(fd);
+    uid_t uid; gid_t gid;
+    if (connect(fd, (struct sockaddr *)&address, sizeof(address)) < 0 || getpeereid(fd, &uid, &gid) < 0 || uid != getuid()) { close(fd); return -1; }
+    return fd;
+}
+int VPTControlAccept(int listener) {
+    int fd = accept(listener, NULL, NULL);
+    if (fd < 0) return -1;
+    control_options(fd);
+    uid_t uid; gid_t gid;
+    if (getpeereid(fd, &uid, &gid) < 0 || uid != getuid()) { close(fd); errno = EACCES; return -1; }
+    return fd;
+}
 int VPTBindFDReceiver(const char *path) {
     struct sockaddr_un address;
     if (unix_address(path, &address) < 0) return -1;
@@ -86,21 +128,24 @@ int VPTReceiveFD(int fd) {
     fcntl(result, F_SETFD, FD_CLOEXEC); return result;
 }
 int VPTSpawn(const char *executable, const char *work, const char *config, int tunFD, int32_t *pid) {
-    int source = fcntl(tunFD, F_DUPFD_CLOEXEC, 10);
-    if (source < 0) return errno;
+    // Keep the core in the supervisor's process group so launchd also reaps it
+    // after a supervisor crash. Foundation.Process creates a separate group.
+    // A negative descriptor starts a regular (non-TUN) core.
+    int source = tunFD >= 0 ? fcntl(tunFD, F_DUPFD_CLOEXEC, 10) : -1;
+    if (tunFD >= 0 && source < 0) return errno;
     posix_spawn_file_actions_t actions; posix_spawnattr_t attributes;
     posix_spawn_file_actions_init(&actions); posix_spawnattr_init(&attributes);
     int result = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_CLOEXEC_DEFAULT);
     if (!result) result = posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
     if (!result) result = posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0);
     if (!result) result = posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
-    if (!result) result = posix_spawn_file_actions_adddup2(&actions, source, 3);
+    if (!result && source >= 0) result = posix_spawn_file_actions_adddup2(&actions, source, 3);
     if (!result) result = posix_spawn_file_actions_addchdir_np(&actions, work);
     char *args[] = {(char *)executable, "-d", (char *)work, "-f", (char *)config, NULL};
     char *env[] = {"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "LANG=en_US.UTF-8", NULL};
     pid_t child = 0;
     if (!result) result = posix_spawn(&child, executable, &actions, &attributes, args, env);
-    posix_spawn_file_actions_destroy(&actions); posix_spawnattr_destroy(&attributes); close(source);
+    posix_spawn_file_actions_destroy(&actions); posix_spawnattr_destroy(&attributes); if (source >= 0) close(source);
     if (!result) *pid = child; return result;
 }
 int VPTPollChild(int32_t pid) { int status = 0; pid_t result; do { result = waitpid(pid, &status, WNOHANG); } while (result < 0 && errno == EINTR); return result == 0 ? 1 : 0; }
@@ -108,6 +153,9 @@ int VPTPollChild(int32_t pid) { int status = 0; pid_t result; do { result = wait
 // Read-only lookup of this user's loopback TCP clients; no elevated privileges.
 #include <libproc.h>
 #include <netinet/in.h>
+int VPTExecutablePath(char *path, size_t capacity) {
+    return proc_pidpath(getpid(), path, (uint32_t)capacity);
+}
 int VPTLocalProcesses(uint16_t proxy_port, VPTLocalProcess *results, int capacity) {
     if (!results || capacity <= 0 || !proxy_port) return 0;
     pid_t pids[4096];

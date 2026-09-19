@@ -164,8 +164,9 @@ enum NetworkInfoSupport {
 /// No shared cookies, disk cache, credentials or custom proxy override.
 struct NetworkInfoClient {
     let session: URLSession
+    let directSession: URLSession
     init(session: URLSession? = nil) {
-        if let session { self.session = session; return }
+        if let session { self.session = session; self.directSession = session; return }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 8
         configuration.timeoutIntervalForResource = 12
@@ -173,11 +174,31 @@ struct NetworkInfoClient {
         configuration.urlCredentialStorage = nil
         configuration.urlCache = nil
         self.session = URLSession(configuration: configuration)
+
+        // Network information is a diagnostic for the machine's own network,
+        // so probes must remain usable even when the configured proxy cannot
+        // reach an IP service. Keep the proxy-enabled session above for
+        // compatibility with injected test sessions, and use this explicit
+        // direct session for the public-IP and metadata requests.
+        let directConfiguration = URLSessionConfiguration.ephemeral
+        directConfiguration.timeoutIntervalForRequest = 8
+        directConfiguration.timeoutIntervalForResource = 12
+        directConfiguration.httpCookieStorage = nil
+        directConfiguration.urlCredentialStorage = nil
+        directConfiguration.urlCache = nil
+        directConfiguration.connectionProxyDictionary = [
+            kCFNetworkProxiesHTTPEnable as String: 0,
+            kCFNetworkProxiesHTTPSEnable as String: 0,
+            kCFNetworkProxiesFTPEnable as String: 0,
+            kCFNetworkProxiesRTSPEnable as String: 0,
+            kCFNetworkProxiesSOCKSEnable as String: 0
+        ]
+        self.directSession = URLSession(configuration: directConfiguration)
     }
 
-    func read(_ url: URL) async throws -> Data {
+    func read(_ url: URL, direct: Bool = false) async throws -> Data {
         let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 8)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await (direct ? directSession : session).data(for: request)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else { throw NetworkInfoFailure.invalidResponse }
         if http.statusCode == 429 { throw NetworkInfoFailure.rateLimited }
@@ -191,7 +212,7 @@ struct NetworkInfoClient {
         for probe in route.probes {
             try Task.checkCancellation()
             do {
-                let ip = try probe.parse(try await read(probe.url))
+                let ip = try probe.parse(try await read(probe.url, direct: true))
                 return NetworkInfoResult(ip: ip, checkedAt: Date(), probeHost: probe.url.host)
             } catch {
                 // Cancellation belongs to the caller, never a reason to contact another provider.
@@ -204,6 +225,6 @@ struct NetworkInfoClient {
     }
 
     func lookup(ip: String) async throws -> NetworkIPDetails {
-        try NetworkInfoSupport.decodeDetails(try await read(NetworkInfoSupport.lookupURL(ip: ip)), expectedIP: ip)
+        try NetworkInfoSupport.decodeDetails(try await read(NetworkInfoSupport.lookupURL(ip: ip), direct: true), expectedIP: ip)
     }
 }

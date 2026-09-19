@@ -472,16 +472,6 @@ struct MenuPanelView: View {
             }
 
             Menu {
-                if #available(macOS 26.0, *) {
-                    Toggle("启用实时字幕", isOn: Binding(
-                        get: { features.isAvailable(.liveSubtitles) },
-                        set: { features.setAvailable(.liveSubtitles, $0) }))
-                    if features.isAvailable(.liveSubtitles) {
-                        Button("打开实时字幕") { LiveSubtitleWindowController.shared.show() }
-                        Button("停止并关闭字幕") { LiveSubtitleWindowController.shared.close() }
-                    }
-                    Divider()
-                }
                 Button(l10n.s.panelQuit) { NSApp.terminate(nil) }
             } label: {
                 Label("更多", systemImage: "ellipsis")

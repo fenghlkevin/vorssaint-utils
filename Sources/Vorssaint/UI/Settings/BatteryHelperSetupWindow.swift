@@ -11,7 +11,7 @@ enum BatteryHelperSetupWindow {
             case .install: return "安装电池后台"
             case .update: return "更新电池后台"
             case .repair: return "修复电池后台"
-            case .reinstall: return "重新安装充电控制助手"
+            case .reinstall: return "安装 Helper"
             }
         }
     }

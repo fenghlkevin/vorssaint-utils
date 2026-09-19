@@ -128,6 +128,7 @@ struct ProxyWorkspaceView: View {
             }
             Section("启动与终端") {
                 Toggle("Vorssaint 启动时自动启动代理", isOn: Binding(get: { service.preferences.autoStart }, set: service.setAutoStart))
+                Text("退出 Vorssaint 后代理继续运行；断开连接请点击停止代理。").font(.caption).foregroundStyle(.secondary)
                 HStack { Button("复制 Shell 代理命令") { service.copyShell() }; Button("复制取消代理命令") { service.copyUnset() } }
             }
             Section("快捷键") {

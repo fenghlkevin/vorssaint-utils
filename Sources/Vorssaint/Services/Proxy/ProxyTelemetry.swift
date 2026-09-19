@@ -148,6 +148,7 @@ actor ProxyLogArchive {
 }
 
 @MainActor final class ProxyTelemetry: ObservableObject {
+    private var loggedConnectionIDs = Set<String>()
     @Published private(set) var connections: [ProxyConnection] = []
     @Published private(set) var clients: [ProxyActiveClient] = []
     @Published private(set) var history: [ProxyTrafficPoint] = []
@@ -269,6 +270,14 @@ actor ProxyLogArchive {
     func ingest(_ root: [String: Any]) {
         let sample = sampler.sample(root)
         connections = sample.connections; clients = sample.clients; connectionCount = sample.count
+        for connection in sample.connections where !loggedConnectionIDs.contains(connection.id) {
+            loggedConnectionIDs.insert(connection.id)
+            let host = connection.host.isEmpty ? connection.destination : connection.host
+            let rule = connection.rule.isEmpty ? "未匹配规则" : connection.rule
+            let chain = connection.chains.isEmpty ? "DIRECT" : connection.chains
+            addLog(level: "info", message: "新连接：\(connection.process) → \(host)，规则：\(rule)，链路：\(chain)")
+        }
+        if loggedConnectionIDs.count > 5000 { loggedConnectionIDs.removeAll(keepingCapacity: true) }
         uploadRate = sample.up; downloadRate = sample.down; sampleDate = Date()
         uploadTotal = ProxyConnection.counter(root["uploadTotal"]); downloadTotal = ProxyConnection.counter(root["downloadTotal"])
         history.append(.init(date: Date(), upload: sample.up, download: sample.down)); if history.count > 60 { history.removeFirst(history.count - 60) }

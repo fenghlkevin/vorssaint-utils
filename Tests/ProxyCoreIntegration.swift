@@ -24,7 +24,7 @@ import Darwin
         try await ProxyCore.validate(executable: executable, work: work, config: config)
         print("Core configuration validation passed")
         let guardian = ProxyGuardianClient()
-        try guardian.launch(executable: guardianURL, root: root)
+        try await guardian.launch(executable: guardianURL, root: root)
         do {
             _ = try await guardian.send(.init(command: "recover"))
             let started = try await guardian.send(.init(command: "start", corePath: executable.path, workPath: work.path, configPath: config.path))
@@ -49,10 +49,19 @@ import Darwin
                     } catch { print("Node connectivity test: unavailable (configuration accepted)") }
                 }
             }
-            guardian.close() // Simulates UI death: EOF must stop the actual core.
+            _ = try await guardian.send(.init(command: "commit"))
+            guardian.close() // Losing the UI connection must preserve the running core.
             try await Task.sleep(nanoseconds: 3_000_000_000)
-            if let pid = started.corePID, kill(pid, 0) == 0 { fatalError("core orphaned after UI pipe closed") }
-            print("Mode, group selection, guardian EOF cleanup passed; system proxy untouched")
-        } catch { _ = try? await guardian.send(.init(command: "stop")); guardian.close(); throw error }
+            guard let pid = started.corePID, kill(pid, 0) == 0 else { fatalError("core stopped with UI") }
+            let reattached = ProxyGuardianClient()
+            try await reattached.launch(executable: guardianURL, root: root)
+            let status = try await reattached.send(.init(command: "status"))
+            precondition(status.corePID == pid && status.committed, "reattach replaced core")
+            _ = try await api.request(["version"])
+            _ = try await reattached.send(.init(command: "stop"))
+            precondition(kill(pid, 0) != 0, "explicit stop left core alive")
+            _ = try await reattached.send(.init(command: "exit"))
+            print("Mode, group selection, UI detach, same-PID reattach and explicit stop passed; system proxy untouched")
+        } catch { _ = try? await guardian.send(.init(command: "stop")); _ = try? await guardian.send(.init(command: "exit")); guardian.close(); throw error }
     }
 }

@@ -10,6 +10,10 @@ int VPTSendFD(const char *path, int descriptor);
 int VPTReceiveFD(int socket);
 int VPTSpawn(const char *executable, const char *work, const char *config, int tunFD, int32_t *pid);
 int VPTPollChild(int32_t pid);
+int VPTControlListen(const char *path);
+int VPTControlConnect(const char *path);
+int VPTControlAccept(int listener);
+int VPTExecutablePath(char *path, size_t capacity);
 typedef struct { uint16_t source_port; uint8_t ipv6; char path[1024]; } VPTLocalProcess;
 int VPTLocalProcesses(uint16_t proxy_port, VPTLocalProcess *results, int capacity);
 #endif

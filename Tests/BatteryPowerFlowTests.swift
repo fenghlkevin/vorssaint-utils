@@ -32,6 +32,12 @@ import Foundation
         precondition(BatteryTemperatureDisplay.celsius(3013) == 30.13)
         precondition(BatteryTemperatureDisplay.celsius(.nan) == nil)
         precondition(BatteryTemperatureDisplay.celsius(-1) == nil)
+        let pack = BatteryTemperatureDisplay.resolve(root: [:], packs: [["Temperature": 3329, "VirtualTemperature": 3319]])
+        precondition(pack.display == 33.19 && pack.raw == 33.29 && pack.virtual)
+        precondition(pack.source == "AppleSmartBatteryPack.BatteryData.VirtualTemperature")
+        precondition(BatteryTemperatureDisplay.resolve(root: ["Temperature": 2800], packs: [["Temperature": 3300]]).display == 28)
+        precondition(BatteryTemperatureDisplay.resolve(root: [:], packs: [["Temperature": -1]]).display == nil)
+        precondition(BatteryTemperatureDisplay.resolve(root: [:], packs: [["Temperature": 3000]]).display == 30)
         print("Battery flow: AC, charging, battery-only, hybrid, unknown, transition and temperature tests passed")
     }
 }

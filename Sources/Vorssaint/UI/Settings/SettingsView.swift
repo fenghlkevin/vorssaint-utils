@@ -787,7 +787,7 @@ private struct BatteryBackendDiagnosisView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(service.working || service.repairPhase != nil)
                 Button("查看诊断报告") { report = service.makeDiagnosticSnapshot() }
-                Button("重新安装充电控制助手…") { service.reinstallBackend() }
+                Button("安装 Helper") { service.reinstallBackend() }
                     .disabled(service.working || service.performingUserAction || service.repairPhase != nil)
                 if service.offersPrivilegedRepair && service.isEnabled {
                     Button("强制修复…", role: .destructive) { confirmPrivilegedRepair = true }

@@ -589,7 +589,7 @@ else
         "${APP_SOURCES[@]}" -o "build/$EXECUTABLE"
 fi
 
-swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" Sources/Vorssaint/Services/Proxy/ProxyWire.swift Sources/Vorssaint/Services/Proxy/ProxySystemProxy.swift Sources/ProxyGuardian/main.swift -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o -o build/VorssaintProxyGuardian
+swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" -I Sources/ProxyYAML/include build/proxy-yaml/libProxyYAML.a Sources/Vorssaint/Services/Proxy/{ProxyWire,ProxySystemProxy,ProxySystemClient,ProxyTunnelClient,ProxyTunnelXPC,ProxyTunnelPolicy,ProxySupport,ProxyStorage,ProxyCore}.swift Sources/ProxyGuardian/main.swift -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o -o build/VorssaintProxyGuardian
 
 echo "▸ Compiling protected TUN helper…"
 swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o Sources/Vorssaint/Services/Proxy/ProxyTunnelPolicy.swift Sources/Vorssaint/Services/Proxy/ProxyTunnelLease.swift Sources/Vorssaint/Services/Proxy/ProxyTunnelXPC.swift Sources/Vorssaint/Services/Proxy/ProxySystemProxy.swift Sources/ProxyTunnelHelper/main.swift -o build/VorssaintProxyTunnelHelper
@@ -663,6 +663,10 @@ mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources" \
 cp "build/$EXECUTABLE" "$STAGE/Contents/MacOS/$EXECUTABLE"
 mkdir -p "$STAGE/Contents/Helpers"
 cp build/VorssaintProxyGuardian "$STAGE/Contents/Helpers/"
+PROXY_AGENT_ID="$APP_BUNDLE_ID.proxy-agent"
+mkdir -p "$STAGE/Contents/Library/LaunchAgents"
+cp Resources/com.vorssaint.utils.proxy-agent.plist "$STAGE/Contents/Library/LaunchAgents/$PROXY_AGENT_ID.plist"
+/usr/libexec/PlistBuddy -c "Set :Label $PROXY_AGENT_ID" "$STAGE/Contents/Library/LaunchAgents/$PROXY_AGENT_ID.plist"
 PROXY_TUN_ID="com.vorssaint.utils.proxy-tun"
 (( DEV )) && PROXY_TUN_ID="com.vorssaint.utils.dev.proxy-tun"
 cp build/VorssaintProxyTunnelHelper "$STAGE/Contents/Library/LaunchServices/$PROXY_TUN_ID"
@@ -795,7 +799,7 @@ codesign_fan_helper() {
 sign_proxy_components() {
     local bundle="$1"
     codesign_fan_helper "$bundle/Contents/Library/LaunchServices/$PROXY_TUN_ID" "$PROXY_TUN_ID"
-    codesign_app "$bundle/Contents/Helpers/VorssaintProxyGuardian"
+    codesign_fan_helper "$bundle/Contents/Helpers/VorssaintProxyGuardian" "$PROXY_AGENT_ID"
     codesign_app "$bundle/Contents/Resources/ProxyCore/mihomo-darwin-arm64"
     python3 - "$bundle/Contents/Resources/ProxyCore" <<'PROXY_MANIFEST'
 import hashlib,json,pathlib,sys

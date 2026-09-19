@@ -138,8 +138,8 @@ final class BatteryPanelModel: ObservableObject {
     }
 
     var temperatureHelp: String {
-        let source = reading.usesVirtualTemperature ? "VirtualTemperature" : "Temperature（回退）"
+        let source = reading.temperatureSource ?? "暂无可用温度数据"
         let raw = reading.rawTemperature.map { String(format: "%.1f°C", $0) } ?? "—"
-        return "显示来源：AppleSmartBattery.\(source)；原始 Temperature：\(raw)。温控保护仍使用原始 Temperature；每 30 秒及打开菜单时刷新。"
+        return "显示来源：\(source)；原始 Temperature：\(raw)。此处仅显示采样值，不代表温控保护已生效；每 30 秒及打开菜单时刷新。"
     }
 }

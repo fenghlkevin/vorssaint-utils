@@ -43,10 +43,7 @@ final class ProxyService: ObservableObject {
     @Published private(set) var tunnelPreview = ""
     private let tunnelClient = ProxyTunnelClient()
     private let systemClient = ProxySystemClient()
-    private var systemHelperSession = false
-    private var preferSystemHelper = false
     private var tunnelSession = false
-    private var sleepObserver: NSObjectProtocol?
 
     @Published var editorYAML = ""
     @Published var editorOverrides = ""
@@ -93,44 +90,18 @@ final class ProxyService: ObservableObject {
             if !profiles.contains(where: { $0.id == selectedID }) { selectedID = profiles.first?.id }
             try loadInspection()
         } catch { self.error = error.localizedDescription }
-        systemClient.onStatus = { [weak self] active, message in
-            guard let self else { return }
-            self.systemProxyEffective = active
-            if !message.isEmpty { self.error = message }
-        }
-        systemClient.onFailure = { [weak self] message in
-            guard let self, self.systemHelperSession else { return }
-            self.systemProxyEffective = false; self.error = message
-            Task { _ = await self.stopAndWait(); self.error = message }
-        }
+        self.guardian.connect(root: store.root)
         tunnelAccess = tunnelClient.accessText
-        tunnelClient.onStatus = { [weak self] reply in
-            guard let self else { return }
-            self.tunnelEffective = reply.active
-            self.tunnelStatus = reply.active ? "\(reply.interface ?? "TUN") · \(reply.routeCount) 条自有路由" : (reply.message.isEmpty ? "未接管" : reply.message)
-            if !reply.message.isEmpty { self.error = reply.message }
-        }
-        tunnelClient.onFailure = { [weak self] message in
-            guard let self, self.tunnelSession else { return }
-            self.tunnelEffective = false; self.error = message
-            if self.state == .running { Task { _ = await self.stopAndWait(); self.error = message } }
-        }
-        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
-                guard let self, self.tunnelSession else { return }
-                _ = await self.stopAndWait()
-                self.tunnelStatus = "休眠前已停止增强模式；唤醒后请手动启动。"
-            }
-        }
         self.guardian.onEvent = { [weak self] event in
             guard let self else { return }
-            if !self.systemHelperSession { self.systemProxyEffective = event.systemProxy }
-            if ["fault", "network", "guardian-exit"].contains(event.identifier), self.state == .running {
-                self.error = event.message
-                if event.corePID == nil { self.state = .failed; self.monitoring?.cancel(); self.telemetry.stop(); self.telemetry.addLog(level: "error", message: event.message); self.api = nil; if self.systemHelperSession { Task { do { try await self.systemClient.stop(); self.systemHelperSession = false; self.systemProxyEffective = false } catch { self.error = error.localizedDescription } } }; if self.tunnelSession { Task { do { try await self.tunnelClient.stop(); self.tunnelEffective = false; self.tunnelSession = false } catch { self.error = error.localizedDescription } } } }
+            self.systemProxyEffective = event.systemProxy
+            if let reply = event.tunnel {
+                self.tunnelEffective = reply.active
+                self.tunnelStatus = reply.active ? "\(reply.interface ?? "TUN") · \(reply.routeCount) 条自有路由" : (reply.message.isEmpty ? "未接管" : reply.message)
             }
         }
     }
+
     private func loadInspection() throws {
         if let selectedID { inspection = try ProxyConfigCompiler.inspect(try store.committed(selectedID).effective()) }
         else { inspection = nil }
@@ -141,16 +112,75 @@ final class ProxyService: ObservableObject {
         featureEnabled = enabled
         if !enabled { Task { _ = await stopAndWait() }; return }
         guard !startupAttempted else { return }; startupAttempted = true
-        if preferences.autoStart && canStart { start() }
-        else { recoverIfNeeded() }
+        run {
+            if try await self.attachIfRunning() { return }
+            if self.preferences.autoStart { await self.startWithRecovery() }
+            else if FileManager.default.fileExists(atPath: self.store.root.appendingPathComponent("system-proxy.plist").path) {
+                try await self.guardian.launch(executable: self.guardianExecutable, root: self.store.root)
+                _ = try await self.guardian.send(.init(command: "recover"))
+            }
+        }
     }
     func recoverIfNeeded() {
-        guard !busy, FileManager.default.fileExists(atPath: store.root.appendingPathComponent("system-proxy.plist").path) else { return }
+        guard !busy else { return }
         run {
-            try self.guardian.launch(executable: self.guardianExecutable, root: self.store.root)
+            if try await self.attachIfRunning() { return }
+            guard FileManager.default.fileExists(atPath: self.store.root.appendingPathComponent("system-proxy.plist").path) else { return }
+            try await self.guardian.launch(executable: self.guardianExecutable, root: self.store.root)
             _ = try await self.guardian.send(.init(command: "recover"))
-            self.statusDetail = "已核对上次的系统代理恢复记录。"
         }
+    }
+    /// Reattach without recompiling, restoring leases, changing selections or restarting the core.
+    private func attachIfRunning() async throws -> Bool {
+        guardian.connect(root: store.root)
+        guard guardian.isRunning else { return false }
+        let event = try await guardian.send(.init(command: "status"))
+        guard event.corePID != nil else { return false }
+        guard event.committed else {
+            _ = try await guardian.send(.init(command: "stop")); return false
+        }
+        guard let path = event.configPath, let id = event.profileID,
+              profiles.contains(where: { $0.id == id }),
+              URL(fileURLWithPath: path).resolvingSymlinksInPath().path.hasPrefix(store.root.resolvingSymlinksInPath().path + "/") else {
+            throw ProxyFailure.message("后台代理正在运行，但无法读取其配置；可点击停止代理后重新启动。")
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        guard let config = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let controller = config["external-controller"] as? String, controller.hasPrefix("127.0.0.1:"),
+              let port = Int(controller.split(separator: ":").last ?? ""), let secret = config["secret"] as? String else {
+            throw ProxyFailure.message("后台代理的控制配置无效。")
+        }
+        selectedID = id; preferences = try store.loadPreferences(); try loadInspection()
+        preferences.controllerPort = port
+        preferences.mixedPort = config["mixed-port"] as? Int ?? preferences.mixedPort
+        preferences.systemProxy = event.systemProxy
+        tunnelSession = event.tunnel?.active == true
+        preferences.tunnelSettings.enabled = tunnelSession
+        let client = ProxyAPI(port: port, secret: secret)
+        let live = try await client.request(["configs"])
+        preferences.mode = live["mode"] as? String ?? preferences.mode
+        api = client; activeWork = URL(fileURLWithPath: path).deletingLastPathComponent()
+        groups = ordered(try await client.groups()); state = .running; error = nil
+        statusDetail = "已接管后台代理 · 退出 Vorssaint 后继续运行"
+        telemetry.start(api: client, source: config, proxyPort: preferences.mixedPort)
+        monitor()
+        return true
+    }
+    /// Resolve any startup/configuration transaction before deciding whether to ask.
+    func needsQuitConfirmation() async throws -> Bool {
+        await operation?.value
+        if state == .running || tunnelSession || systemProxyEffective { return true }
+        guard guardian.isRunning else { return false }
+        let status = try await guardian.send(.init(command: "status"))
+        return status.corePID != nil || status.systemProxy || status.tunnel?.active == true
+    }
+    /// Quit only the controller. Wait for an in-flight apply/start transaction to finish first.
+    func detachForQuit() async {
+        await operation?.value
+        delayTask?.cancel(); monitoring?.cancel(); monitoring = nil
+        telemetry.stop()
+        await telemetry.finishArchive()
+        guardian.close()
     }
     private func run(_ work: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }
@@ -239,10 +269,16 @@ final class ProxyService: ObservableObject {
     }
     private func startCore(workOverride: URL? = nil) async throws {
         guard let id = selectedID, let inspection else { throw ProxyFailure.message("请先导入配置。") }
+        if workOverride == nil, try await attachIfRunning() { return }
+        let startupAt = Date()
+        telemetry.addLog(level: "info", message: "开始启动核心：mixed-port=\(preferences.mixedPort)，mode=\(preferences.mode)，TUN=\(preferences.tunnelSettings.enabled)")
         state = .starting; statusDetail = "正在校验核心与配置…"
         try preferences.validate()
         try ProxyFiles.directory(store.root)
-        try guardian.launch(executable: guardianExecutable, root: store.root)
+        if (preferences.systemProxy || preferences.tunnelSettings.enabled) && !systemClient.available {
+            throw ProxyFailure.message("请先在网络 / VPN 中授权网络助手；也可以关闭系统代理和增强模式，仅启动核心。")
+        }
+        try await guardian.launch(executable: guardianExecutable, root: store.root)
         _ = try await guardian.send(.init(command: "recover"))
         try ProxyCore.verify(executable: coreExecutableURL, manifest: coreManifestURL)
         try Self.checkPorts(preferences)
@@ -263,25 +299,26 @@ final class ProxyService: ObservableObject {
         if preferences.tunnelSettings.enabled {
             statusDetail = "核对 VPN 路由并准备 TUN 网卡…"
             let plan = try await ProxyTunnelPreflight.plan(inspection: inspection, settings: preferences.tunnelSettings)
-            let (handle, reply) = try await tunnelClient.prepare(plan)
+            let prepared = try await guardian.send(.init(command: "prepare", tunnelPlan: JSONEncoder().encode(plan)))
+            guard let reply = prepared.tunnel else { throw ProxyFailure.message("后台没有返回 TUN 状态。") }
             tunnelSession = true
-            defer { try? handle.close() }
             guard let name = reply.interface, let address = reply.address4 else { throw ProxyFailure.message("助手未返回有效的 TUN 网卡。") }
             let runtime = ProxyTunnelRuntime(interface: name, address4: address, address6: reply.address6)
             try ProxyFiles.write(ProxyConfigCompiler.compile(inspection, preferences: preferences, secret: secret, tunnel: runtime), to: config)
-            try guardian.sendTunnel(handle, root: store.root)
             tunnelInterface = name
         }
         try Task.checkCancellation()
-        _ = try await guardian.send(.init(command: "start", corePath: coreExecutableURL.path, workPath: work.path, configPath: config.path, tunInterface: tunnelInterface))
+        _ = try await guardian.send(.init(command: "start", corePath: coreExecutableURL.path, workPath: work.path, configPath: config.path, tunInterface: tunnelInterface, profileID: id))
         let client = ProxyAPI(port: preferences.controllerPort, secret: secret)
         api = client
         statusDetail = "等待核心和必要规则集就绪…"
         try await client.ready(requiredProviders: inspection.requiredProviders, deadline: Date().addingTimeInterval(90))
+        telemetry.addLog(level: "info", message: "核心已就绪，启动耗时 \(Int(Date().timeIntervalSince(startupAt) * 1000)) ms；必要规则集已加载。")
         try Task.checkCancellation()
         var liveGroups = try await client.groups()
         for (name, member) in preferences.selections where liveGroups.contains(where: { $0.name == name && $0.members.contains(member) }) {
             _ = try await client.request(["proxies", name], method: "PUT", body: ["name": member])
+            telemetry.addLog(level: "info", message: "恢复策略组选择：\(name) → \(member)")
         }
         liveGroups = try await client.groups()
         if let tunnelInterface {
@@ -290,9 +327,8 @@ final class ProxyService: ObservableObject {
                   tun["device"] as? String == tunnelInterface else {
                 throw ProxyFailure.message("核心未成功启动指定 TUN 网卡，未添加接管路由。")
             }
-            try await tunnelClient.activate()
+            _ = try await guardian.send(.init(command: "activate"))
         }
-        preferSystemHelper = systemClient.available
         if preferences.systemProxy {
             statusDetail = "正在设置系统代理…"
             try await applySystemProxy(true)
@@ -305,6 +341,7 @@ final class ProxyService: ObservableObject {
         activeWork = work
         if workOverride == nil { try store.markHealthy(id) }
         telemetry.start(api: client, source: inspection.source, proxyPort: preferences.mixedPort)
+        if workOverride == nil { _ = try await guardian.send(.init(command: "commit")) }
         monitor()
     }
     private func ordered(_ live: [ProxyGroup]) -> [ProxyGroup] {
@@ -322,10 +359,10 @@ final class ProxyService: ObservableObject {
         telemetry.stop()
         state = .stopping
         do {
-            if systemHelperSession { try await systemClient.stop(); systemHelperSession = false }
-            if tunnelSession { try await tunnelClient.stop(); tunnelSession = false; tunnelEffective = false }
-            if !guardian.isRunning, FileManager.default.fileExists(atPath: store.root.appendingPathComponent("system-proxy.plist").path) { try guardian.launch(executable: guardianExecutable, root: store.root) }
+            guardian.connect(root: store.root)
+            if !guardian.isRunning, FileManager.default.fileExists(atPath: store.root.appendingPathComponent("system-proxy.plist").path) { try await guardian.launch(executable: guardianExecutable, root: store.root) }
             if guardian.isRunning { _ = try await guardian.send(.init(command: "stop")) }
+            tunnelSession = false; tunnelEffective = false
             api = nil; systemProxyEffective = false; state = .stopped; statusDetail = "系统代理已恢复。"
             groups = inspection?.groups ?? []
         } catch { state = .failed; throw error }
@@ -346,14 +383,11 @@ final class ProxyService: ObservableObject {
         return result
     }
     private func applySystemProxy(_ enabled: Bool) async throws {
-        if preferSystemHelper || systemHelperSession {
-            // Record before awaiting: a failed XPC response may follow a successful OS write.
-            systemHelperSession = true
-            if enabled { try await systemClient.enable(port: preferences.mixedPort) }
-            else { try await systemClient.stop(); systemHelperSession = false; systemProxyEffective = false }
-        } else {
-            _ = try await guardian.send(.init(command: "system", mixedPort: preferences.mixedPort, systemProxy: enabled))
+        guard !enabled || systemClient.available else {
+            throw ProxyFailure.message("请先在网络 / VPN 中授权网络助手，再开启系统代理。")
         }
+        _ = try await guardian.send(.init(command: "system", mixedPort: preferences.mixedPort,
+                                         systemProxy: enabled, useSystemHelper: systemClient.available))
     }
     func setSystemProxy(_ enabled: Bool) {
         if state != .running { var updated = preferences; updated.systemProxy = enabled; savePreferences(updated); return }
@@ -408,12 +442,14 @@ final class ProxyService: ObservableObject {
         delayTask = Task { [weak self] in
             for name in targets {
                 guard !Task.isCancelled else { return }
+                let startedAt = Date()
                 let result = try? await api.request(["proxies", name, "delay"], query: [.init(name: "timeout", value: "5000"), .init(name: "url", value: "https://www.gstatic.com/generate_204")])
                 guard let self, !Task.isCancelled, self.delayGeneration == generation, self.state == .running else { return }
                 let delay = result?["delay"] as? Int ?? -1
                 self.delays[name] = delay > 0 ? delay : -1
                 self.delayDates[name] = Date()
                 self.testingNodes.remove(name)
+                self.telemetry.addLog(level: delay > 0 ? "info" : "error", message: "节点测速 \(name)：\(delay > 0 ? "\(delay) ms" : "超时或失败")，请求耗时 \(Int(Date().timeIntervalSince(startedAt) * 1000)) ms")
             }
         }
     }
@@ -425,7 +461,11 @@ final class ProxyService: ObservableObject {
                 do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
                 guard let self, self.state == .running, let api = self.api else { return }
                 if self.busy { continue }
-                do { _ = try await api.request(["version"]); failures = 0; self.telemetry.flush() }
+                do {
+                    let status = try await self.guardian.send(.init(command: "status"))
+                    guard status.corePID != nil else { throw ProxyFailure.message(status.message.isEmpty ? "后台核心已停止。" : status.message) }
+                    _ = try await api.request(["version"]); failures = 0; self.telemetry.flush()
+                }
                 catch { failures += 1 }
                 if failures >= 3 {
                     self.run {
@@ -528,6 +568,7 @@ extension ProxyService {
             if commit { try? store.saveDraft(draft, for: id) }
             try loadEditor()
             try store.finishApply()
+            if wasRunning { _ = try await guardian.send(.init(command: "commit")) }
             committedCandidate = true
             try? store.pruneRuntime(id, keeping: work)
             if !wasRunning { groups = candidate.groups }
@@ -539,7 +580,7 @@ extension ProxyService {
             selectedID = oldID; inspection = oldInspection; preferences = oldPreferences
             if Task.isCancelled { state = .stopped; throw CancellationError() }
             if wasRunning {
-                do { try await startCore(workOverride: oldWork) }
+                do { try await startCore(workOverride: oldWork); _ = try await guardian.send(.init(command: "commit")) }
                 catch { state = .failed; throw ProxyFailure.message("应用失败，旧配置恢复也失败：\(reason)；\(error.localizedDescription)") }
             }
             throw ProxyFailure.message("候选配置未生效，已保留原配置：\(reason)")
@@ -597,8 +638,18 @@ extension ProxyService {
         catch { self.error = error.localizedDescription; tunnelAccess = tunnelClient.accessText }
     }
     func removeTunnelHelper() {
-        guard !busy, !tunnelSession, !systemHelperSession, state == .stopped else { error = "请先停止代理再移除网络助手。"; return }
-        run { try await self.tunnelClient.unregister(); self.tunnelAccess = self.tunnelClient.accessText }
+        guard !busy, !tunnelSession, !systemProxyEffective, state == .stopped else { error = "请先停止代理再移除网络助手。"; return }
+        run {
+            // Persist this before unregistering: a failed/cancelled removal must not
+            // cause the next automatic start to request administrator credentials.
+            var next = self.preferences
+            next.systemProxy = false
+            next.tunnelSettings.enabled = false
+            try self.store.save(next)
+            self.preferences = next
+            defer { self.tunnelAccess = self.tunnelClient.accessText }
+            try await self.tunnelClient.unregister()
+        }
     }
     func setTunnel(_ enabled: Bool) {
         if state != .running { var next = preferences; next.tunnelSettings.enabled = enabled; savePreferences(next); return }

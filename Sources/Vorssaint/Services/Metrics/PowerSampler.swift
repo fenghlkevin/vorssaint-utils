@@ -22,6 +22,7 @@ struct PowerReading: Equatable {
     var temperature: Double?      // VirtualTemperature, matching BatFi's display
     var rawTemperature: Double?   // Temperature; retained for diagnostics/protection
     var usesVirtualTemperature = false
+    var temperatureSource: String?
     var voltageMillivolts: Int?
     var amperageMilliamps: Int?
     var instantAmperageMilliamps: Int?
@@ -40,7 +41,7 @@ struct PowerReading: Equatable {
             + "电池功率(V×I)=\(number(batteryWatts))W（正充入/负放出；优先Amperage，缺失才使用InstantAmperage） "
             + "实测PSTR=\(number(measuredSystemWatts))W 实测PDTR=\(number(adapterWatts))W 适配器额定=\(number(adapterMaxWatts))W "
             + "原始容量=\(value(rawCurrentCapacity))/\(value(rawMaxCapacity)) "
-            + "显示温度=\(number(temperature))°C 来源=\(usesVirtualTemperature ? "VirtualTemperature" : "Temperature") 原始温度=\(number(rawTemperature))°C "
+            + "显示温度=\(number(temperature))°C 来源=\(temperatureSource ?? "未知") 原始温度=\(number(rawTemperature))°C "
             + "健康=\(number(healthPercent))% 循环=\(value(cycleCount)) 剩余时间=\(number(timeRemainingSeconds))s"
     }
 
@@ -103,10 +104,11 @@ final class PowerSampler {
             reading.hasBattery = true
             reading.externalConnected = (props["ExternalConnected"] as? Bool) ?? false
             reading.isCharging = (props["IsCharging"] as? Bool) ?? false
-            reading.rawTemperature = BatteryTemperatureDisplay.celsius((props["Temperature"] as? NSNumber)?.doubleValue)
-            let virtual = BatteryTemperatureDisplay.celsius((props["VirtualTemperature"] as? NSNumber)?.doubleValue)
-            reading.temperature = virtual ?? reading.rawTemperature
-            reading.usesVirtualTemperature = virtual != nil
+            let temperatures = BatteryTemperatureDisplay.resolve(root: props, packs: batteryPackData())
+            reading.rawTemperature = temperatures.raw
+            reading.temperature = temperatures.display
+            reading.usesVirtualTemperature = temperatures.virtual
+            reading.temperatureSource = temperatures.source
             reading.timeRemainingSeconds = BatteryTimeSupport.remainingSeconds(
                 timeToEmptyMinutes: timeToEmptyMinutes(),
                 externalConnected: reading.externalConnected,
@@ -167,6 +169,24 @@ final class PowerSampler {
     private func plausibleWatts(_ key: SMCClient.Key?) -> Double? {
         guard let key, let smc, let watts = smc.readValue(key), watts > 0, watts < 1000 else { return nil }
         return watts
+    }
+
+    /// macOS 27 exposes pack temperatures on child services, not the aggregate battery.
+    /// Read only direct pack children; cell and lifetime temperatures are not substitutes.
+    private func batteryPackData() -> [[String: Any]] {
+        let service = resolvedBatteryService()
+        guard service != 0 else { return [] }
+        var iterator: io_iterator_t = 0
+        guard IORegistryEntryGetChildIterator(service, kIOServicePlane, &iterator) == kIOReturnSuccess else { return [] }
+        defer { IOObjectRelease(iterator) }
+        var packs: [[String: Any]] = []
+        while case let child = IOIteratorNext(iterator), child != 0 {
+            defer { IOObjectRelease(child) }
+            guard IOObjectConformsTo(child, "AppleSmartBatteryPack") != 0,
+                  let data = IORegistryEntryCreateCFProperty(child, "BatteryData" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? [String: Any] else { continue }
+            packs.append(data)
+        }
+        return packs
     }
 
     private func batteryProperties() -> [String: Any]? {

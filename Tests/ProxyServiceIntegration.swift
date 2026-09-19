@@ -17,9 +17,23 @@ import Darwin
         let second = try store.importProfile(data: Data(source.utf8), name: "second")
         var prefs = ProxyPreferences(); prefs.systemProxy = false; prefs.mixedPort = 27890; prefs.controllerPort = 29090; prefs.dnsPort = 21053
         try store.save(prefs)
-        let service = ProxyService(root: root, core: core, guardian: guardian)
+        var service = ProxyService(root: root, core: core, guardian: guardian)
+        let initiallyNeedsConfirmation = try await service.needsQuitConfirmation()
+        precondition(!initiallyNeedsConfirmation, "stopped proxy must not prompt on quit")
+        service.setSystemProxy(true)
+        service.start(); try await wait(service)
+        precondition(service.state == .stopped && service.error?.contains("授权网络助手") == true,
+                     "missing helper must fail before privileged startup")
+        service.removeTunnelHelper(); try await wait(service)
+        precondition(service.error == nil && !service.preferences.systemProxy && !service.preferences.tunnelSettings.enabled,
+                     "removal must disable privileged features even when helper is absent")
+        service.removeTunnelHelper(); try await wait(service)
+        precondition(service.error == nil, "repeated removal must be idempotent")
+        print("Missing-helper startup and repeated removal passed")
         service.start(); try await wait(service)
         precondition(service.state == .running, service.error ?? "start failed")
+        let runningNeedsConfirmation = try await service.needsQuitConfirmation()
+        precondition(runningNeedsConfirmation, "running core must prompt even without system proxy")
         let telemetry = service.telemetry
         telemetry.logLevel = "info"
         telemetry.setVisible("test", true)
@@ -75,8 +89,9 @@ import Darwin
         service.rollback(original); try await wait(service)
         precondition(service.state == .running && service.inspection?.ruleCount == 1, service.error ?? "rollback failed")
         service.reloadProfile()
-        async let stoppedFirst = service.stopAndWait()
-        async let stoppedSecond = service.stopAndWait()
+        let stoppingService = service
+        async let stoppedFirst = stoppingService.stopAndWait()
+        async let stoppedSecond = stoppingService.stopAndWait()
         let stopped = await (stoppedFirst, stoppedSecond)
         precondition(stopped.0 && stopped.1 && service.state == .stopped, "concurrent stop failed")
         service.start(); try await wait(service)
@@ -95,7 +110,18 @@ import Darwin
             print("Visible telemetry soak passed: \(min(soakSeconds, 600)) seconds; core memory \(Int(telemetry.memory ?? 0)) bytes")
         }
         telemetry.setVisible("soak", false)
+        let controller = ProxyGuardianClient()
+        try await controller.launch(executable: guardian, root: root)
+        let before = try await controller.send(.init(command: "status"))
+        await service.detachForQuit()
+        service = ProxyService(root: root, core: core, guardian: guardian)
+        service.sync(enabled: true); try await wait(service)
+        precondition(service.state == .running && service.selectedID == first.id, service.error ?? "reattach failed")
+        let after = try await controller.send(.init(command: "status"))
+        precondition(before.corePID == after.corePID && after.committed, "reopening restarted core")
+        print("Service reopen recovered live profile and attached to the same core PID")
         let finalStop = await service.stopAndWait(); precondition(finalStop)
+        _ = try await controller.send(.init(command: "exit"))
         await telemetry.finishArchive()
         print("Real-core live draft validation, failure preservation, apply, profile switch, reload and historical rollback, cancellation and concurrent stop passed")
     }

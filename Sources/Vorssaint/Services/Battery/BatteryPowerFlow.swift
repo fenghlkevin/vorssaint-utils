@@ -63,6 +63,18 @@ struct BatteryPowerFlow {
 }
 
 enum BatteryTemperatureDisplay {
+    static func resolve(root: [String: Any], packs: [[String: Any]]) -> (display: Double?, raw: Double?, virtual: Bool, source: String?) {
+        let candidates = [(root, "AppleSmartBattery")] + packs.map { ($0, "AppleSmartBatteryPack.BatteryData") }
+        for (values, path) in candidates {
+            let raw = celsius((values["Temperature"] as? NSNumber)?.doubleValue)
+            let virtual = celsius((values["VirtualTemperature"] as? NSNumber)?.doubleValue)
+            if let display = virtual ?? raw {
+                return (display, raw, virtual != nil, path + (virtual != nil ? ".VirtualTemperature" : ".Temperature"))
+            }
+        }
+        return (nil, nil, false, nil)
+    }
+
     static func celsius(_ raw: Double?) -> Double? {
         guard let raw, raw.isFinite, (0...8000).contains(raw) else { return nil }
         return raw / 100

@@ -228,13 +228,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let proxy = ProxyService.loaded else { return .terminateNow }
         Task { @MainActor in
-            let restored = await proxy.stopAndWait()
-            if !restored {
-                let alert = NSAlert(); alert.messageText = "系统代理尚未恢复"
-                alert.informativeText = proxy.error ?? "请在代理工作台中重试停止。"
+            do {
+                if try await proxy.needsQuitConfirmation() {
+                    NSApp.activate(ignoringOtherApps: true)
+                    let alert = NSAlert()
+                    alert.messageText = "退出时是否一起关闭 VPN / 网络代理？"
+                    alert.informativeText = "选择保留连接，退出 Vorssaint 后代理仍在后台运行；选择一起关闭，会断开代理并恢复其接管的网络设置。"
+                    alert.addButton(withTitle: "保留连接并退出")
+                    alert.addButton(withTitle: "关闭连接并退出")
+                    alert.addButton(withTitle: "取消")
+                    let choice = alert.runModal()
+                    if choice == .alertThirdButtonReturn {
+                        sender.reply(toApplicationShouldTerminate: false)
+                        return
+                    }
+                    if choice == .alertSecondButtonReturn, !(await proxy.stopAndWait()) {
+                        throw ProxyFailure.message(proxy.error ?? "代理停止失败，尚未退出。")
+                    }
+                }
+                await proxy.detachForQuit()
+                sender.reply(toApplicationShouldTerminate: true)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "未能完成退出"
+                alert.informativeText = error.localizedDescription
+                alert.addButton(withTitle: "好")
+                NSApp.activate(ignoringOtherApps: true)
                 alert.runModal()
+                sender.reply(toApplicationShouldTerminate: false)
             }
-            sender.reply(toApplicationShouldTerminate: restored)
         }
         return .terminateLater
     }

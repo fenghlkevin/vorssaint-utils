@@ -16,7 +16,9 @@ enum NetworkInfoLocalAddresses {
     static func includes(interface: String, flags: UInt32) -> Bool {
         flags & UInt32(IFF_UP) != 0 && flags & UInt32(IFF_RUNNING) != 0
             && flags & UInt32(IFF_LOOPBACK) == 0
-            && !["awdl", "llw", "gif", "stf"].contains { interface.hasPrefix($0) }
+            // Hide virtual bridge adapters (Docker and desktop hypervisors);
+            // they are implementation details rather than useful local IPs.
+            && !["awdl", "llw", "gif", "stf", "bridge", "docker", "vmnet", "vmenet", "vboxnet"].contains { interface.hasPrefix($0) }
     }
 
     static func isTunnel(interface: String, flags: UInt32) -> Bool {

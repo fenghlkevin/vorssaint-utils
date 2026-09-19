@@ -4,6 +4,8 @@ import ServiceManagement
 
 /// Separate XPC connection and heartbeat from TUN. Authorizing the helper never creates a tunnel.
 @MainActor final class ProxySystemClient {
+    private let background: Bool
+    init(background: Bool = false) { self.background = background }
     private var connection: NSXPCConnection?
     private var pulse: Task<Void, Never>?
     var onStatus: ((Bool, String) -> Void)?
@@ -13,7 +15,7 @@ import ServiceManagement
     }
     private func transport() throws -> NSXPCConnection {
         if let connection { return connection }
-        guard available, let requirement = ProxyTunnelIdentifiers.requirement(for: ProxyTunnelIdentifiers.helperID) else {
+        guard background || available, let requirement = ProxyTunnelIdentifiers.requirement(for: ProxyTunnelIdentifiers.helperID) else {
             throw ProxyFailure.message("请先授权网络助手，并在 macOS 登录项中批准。")
         }
         let channel = NSXPCConnection(machServiceName: ProxyTunnelIdentifiers.helperID, options: .privileged)
