@@ -463,11 +463,38 @@ struct MenuPanelView: View {
         MenuPanelHeader()
     }
 
+    private var currentSettingsDestination: FeatureSettingsDestination {
+        if let selectedMetric {
+            switch selectedMetric {
+            case .battery: return AppFeature.batteryManagement.settingsDestination
+            case .fan: return AppFeature.fanControl.settingsDestination
+            case .cpu, .gpu, .memory, .network, .disk, .power:
+                return FeatureSettingsDestination(.monitor)
+            }
+        }
+        switch activeSection {
+        case .keepAwake: return AppFeature.keepAwake.settingsDestination
+        case .awayLock: return AppFeature.awayLock.settingsDestination
+        case .brightness: return AppFeature.brightness.settingsDestination
+        case .mixer: return AppFeature.mixer.settingsDestination
+        case .networkInfo: return AppFeature.networkInfo.settingsDestination
+        case .networkProxy: return AppFeature.networkProxy.settingsDestination
+        case .liveSubtitles: return AppFeature.liveSubtitles.settingsDestination
+        case .fanControl: return AppFeature.fanControl.settingsDestination
+        case .inputSourceAutomation: return AppFeature.inputSourceAutomation.settingsDestination
+        case .system, .network, .disk, .power: return FeatureSettingsDestination(.monitor)
+        case .utilities: return FeatureSettingsDestination(.quickTools)
+        case .toggles: return AppFeature.quickToggles.settingsDestination
+        case .controls: return FeatureSettingsDestination(.features)
+        }
+    }
+
     private var footer: some View {
         HStack(spacing: 8) {
             footerButton(l10n.s.panelSettings,
                          systemImage: "gearshape",
                          horizontalPadding: 7) {
+                SettingsRouter.shared.request(currentSettingsDestination)
                 appDelegate()?.openSettingsWindow()
             }
 

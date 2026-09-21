@@ -16,9 +16,10 @@ enum NetworkInfoLocalAddresses {
     static func includes(interface: String, flags: UInt32) -> Bool {
         flags & UInt32(IFF_UP) != 0 && flags & UInt32(IFF_RUNNING) != 0
             && flags & UInt32(IFF_LOOPBACK) == 0
-            // Hide virtual bridge adapters (Docker and desktop hypervisors);
-            // they are implementation details rather than useful local IPs.
-            && !["awdl", "llw", "gif", "stf", "bridge", "docker", "vmnet", "vmenet", "vboxnet"].contains { interface.hasPrefix($0) }
+            // Keep bridge interfaces visible: desktop hypervisors expose the
+            // host-side address (for example bridge100/bridge101) there, and
+            // it is useful when diagnosing the corresponding VM network.
+            && !["awdl", "llw", "gif", "stf", "docker", "vmnet", "vmenet", "vboxnet"].contains { interface.hasPrefix($0) }
     }
 
     static func isTunnel(interface: String, flags: UInt32) -> Bool {

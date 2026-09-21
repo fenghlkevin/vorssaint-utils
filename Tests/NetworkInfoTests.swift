@@ -37,6 +37,8 @@ struct NetworkInfoTests {
         let active = UInt32(IFF_UP | IFF_RUNNING)
         precondition(NetworkInfoLocalAddresses.includes(interface: "en0", flags: active))
         precondition(NetworkInfoLocalAddresses.includes(interface: "bridge0", flags: active))
+        precondition(NetworkInfoLocalAddresses.includes(interface: "bridge100", flags: active))
+        precondition(NetworkInfoLocalAddresses.includes(interface: "bridge101", flags: active))
         precondition(!NetworkInfoLocalAddresses.includes(interface: "en0", flags: 0))
         precondition(!NetworkInfoLocalAddresses.includes(interface: "lo0", flags: active | UInt32(IFF_LOOPBACK)))
         precondition(NetworkInfoLocalAddresses.includes(interface: "ppp0", flags: active | UInt32(IFF_POINTOPOINT)))

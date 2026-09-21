@@ -8,6 +8,11 @@ import Darwin
         precondition(!service.busy, "service operation timed out")
     }
     @MainActor static func main() async throws {
+        precondition(ProxyService.isTransientStartupFailure(ProxyFailure.message("没有可用的物理网络服务，系统代理未开启。")))
+        precondition(ProxyService.isTransientStartupFailure(URLError(.notConnectedToInternet)))
+        precondition(!ProxyService.isTransientStartupFailure(ProxyFailure.message("请先授权网络助手")))
+        precondition(!ProxyService.isTransientStartupFailure(ProxyFailure.message("端口 7890 已被占用")))
+        precondition(!ProxyService.isTransientStartupFailure(CancellationError()))
         let root = URL(fileURLWithPath: CommandLine.arguments[1])
         let core = URL(fileURLWithPath: CommandLine.arguments[2])
         let guardian = URL(fileURLWithPath: CommandLine.arguments[3])
@@ -34,6 +39,12 @@ import Darwin
         precondition(service.state == .running, service.error ?? "start failed")
         let runningNeedsConfirmation = try await service.needsQuitConfirmation()
         precondition(runningNeedsConfirmation, "running core must prompt even without system proxy")
+        let wasRunningBeforeTunnel = try await service.needsQuitConfirmation()
+        service.setTunnel(true); try await wait(service)
+        precondition(service.state == .running && !service.preferences.tunnelSettings.enabled,
+                     "failed TUN preflight must preserve running proxy")
+        precondition(service.error?.contains("授权网络助手") == true && wasRunningBeforeTunnel,
+                     "missing helper must be rejected before restarting core")
         let telemetry = service.telemetry
         telemetry.logLevel = "info"
         telemetry.setVisible("test", true)

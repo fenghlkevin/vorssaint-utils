@@ -26,7 +26,7 @@ struct PanelProxyView: View {
             ProxyActiveClientsView(telemetry: service.telemetry)
             Divider()
             ProxyMenuContents(service: service)
-            if let error = service.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(3) }
+            if let error = service.error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         }.onAppear { service.refreshTunnelAccess() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in service.refreshTunnelAccess() }
         .padding(12).background(ProxyVisibilityProbe(telemetry: service.telemetry).frame(width: 0, height: 0))

@@ -114,7 +114,7 @@ final class ProxyService: ObservableObject {
         guard !startupAttempted else { return }; startupAttempted = true
         run {
             if try await self.attachIfRunning() { return }
-            if self.preferences.autoStart { await self.startWithRecovery() }
+            if self.preferences.autoStart { await self.startAutomatically() }
             else if FileManager.default.fileExists(atPath: self.store.root.appendingPathComponent("system-proxy.plist").path) {
                 try await self.guardian.launch(executable: self.guardianExecutable, root: self.store.root)
                 _ = try await self.guardian.send(.init(command: "recover"))
@@ -258,13 +258,45 @@ final class ProxyService: ObservableObject {
         guard canStart, featureEnabled else { return }
         run { await self.startWithRecovery() }
     }
-    private func startWithRecovery() async {
-        do { try await startCore() }
+    /// Login can precede Wi-Fi/DHCP and the privileged helper becoming ready.
+    private func startAutomatically() async {
+        for attempt in 0..<7 {
+            guard !Task.isCancelled, featureEnabled, preferences.autoStart else { return }
+            let failure = await startWithRecovery()
+            guard let failure, state == .stopped, !Task.isCancelled,
+                  Self.isTransientStartupFailure(failure), attempt < 6 else { return }
+            let seconds = min(5 * (attempt + 1), 30)
+            statusDetail = "登录时网络或助手尚未就绪，\(seconds) 秒后重试（\(attempt + 1)/6）…"
+            telemetry.addLog(level: "warning", message: statusDetail)
+            do { try await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000) }
+            catch { return }
+        }
+    }
+    static func isTransientStartupFailure(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        let value = error as NSError
+        if value.domain == NSURLErrorDomain {
+            return [NSURLErrorTimedOut, NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost,
+                    NSURLErrorNetworkConnectionLost, NSURLErrorDNSLookupFailed,
+                    NSURLErrorNotConnectedToInternet].contains(value.code)
+        }
+        if value.domain == NSCocoaErrorDomain {
+            return [NSXPCConnectionInterrupted, NSXPCConnectionInvalid].contains(value.code)
+        }
+        return ["没有可用的物理网络服务", "网络设置同时被其他程序修改", "网络助手请求超时"]
+            .contains { error.localizedDescription.contains($0) }
+    }
+    @discardableResult
+    private func startWithRecovery() async -> Error? {
+        do { try await startCore(); return nil }
         catch {
             let message = error is CancellationError ? "启动已取消。" : error.localizedDescription
+            telemetry.addLog(level: "error", message: "代理启动失败：\(message)")
+            let startupError = error
             do { try await stopCore() }
-            catch { state = .failed; self.error = "\(message)\n停止或网络恢复未完成：\(error.localizedDescription)"; return }
+            catch { state = .failed; self.error = "\(message)\n停止或网络恢复未完成：\(error.localizedDescription)"; return error }
             api = nil; self.error = message
+            return startupError
         }
     }
     private func startCore(workOverride: URL? = nil) async throws {
@@ -655,11 +687,27 @@ extension ProxyService {
         if state != .running { var next = preferences; next.tunnelSettings.enabled = enabled; savePreferences(next); return }
         run {
             let previous = self.preferences
+            if enabled {
+                self.statusDetail = "正在检查增强模式与当前 VPN 的兼容性…"
+                do {
+                    guard let inspection = self.inspection else { throw ProxyFailure.message("请先导入配置。") }
+                    guard self.systemClient.available else { throw ProxyFailure.message("请先授权网络助手。") }
+                    var settings = previous.tunnelSettings
+                    settings.enabled = true
+                    _ = try await ProxyTunnelPreflight.plan(inspection: inspection, settings: settings)
+                    try Task.checkCancellation()
+                } catch {
+                    self.statusDetail = "增强模式未启用，当前代理保持运行。"
+                    self.telemetry.addLog(level: "error", message: "增强模式预检失败，保留当前连接：\(error.localizedDescription)")
+                    throw error
+                }
+            }
             try await self.stopCore()
             self.preferences.tunnelSettings.enabled = enabled
             do { try await self.startCore() }
             catch {
                 let reason = error.localizedDescription
+                self.telemetry.addLog(level: "error", message: "增强模式切换失败，正在恢复原模式：\(reason)")
                 try await self.stopCore(); self.preferences = previous
                 do { try await self.startCore() }
                 catch { try? await self.stopCore(); self.state = .failed; throw ProxyFailure.message("增强模式切换失败且旧模式无法恢复：\(reason)；\(error.localizedDescription)") }
