@@ -13,7 +13,13 @@ protocol ProxyTunnelNetwork: AnyObject {
     func owns(_ identity: ProxyTunnelIdentity) -> Bool
     func add(_ route: ProxyCIDR, to identity: ProxyTunnelIdentity) throws
     func remove(_ route: ProxyCIDR, from identity: ProxyTunnelIdentity) throws
+    func addRoutes(_ routes: [ProxyCIDR], to identity: ProxyTunnelIdentity) throws
+    func removeRoutes(_ routes: [ProxyCIDR], from identity: ProxyTunnelIdentity) throws
     func close(_ descriptor: Int32, identity: ProxyTunnelIdentity)
+}
+extension ProxyTunnelNetwork {
+    func addRoutes(_ routes: [ProxyCIDR], to identity: ProxyTunnelIdentity) throws { for route in routes { try add(route, to: identity) } }
+    func removeRoutes(_ routes: [ProxyCIDR], from identity: ProxyTunnelIdentity) throws { for route in routes { try remove(route, from: identity) } }
 }
 struct ProxyTunnelJournal: Codable {
     let identity: ProxyTunnelIdentity
@@ -44,7 +50,7 @@ final class ProxyTunnelLease {
         // Write ahead of every possible route mutation; cleanup checks exact ownership.
         try save(.init(identity: identity, routes: planned))
         do {
-            for route in planned { try backend.add(route, to: identity) }
+            try backend.addRoutes(planned, to: identity)
             let actual = try backend.snapshot(excluding: nil).routes
             guard planned.allSatisfy({ route in actual.contains { $0.prefix == route && $0.interface == identity.name } }) else { throw ProxyTunnelError(message: "TUN 路由写入后回读不一致。") }
             guard try backend.snapshot(excluding: identity.name).fingerprint == baseline.fingerprint else { throw ProxyTunnelError(message: "添加路由期间网络发生变化，已撤销增强模式。") }
@@ -68,7 +74,7 @@ final class ProxyTunnelLease {
         guard FileManager.default.fileExists(atPath: journalURL.path) else { return }
         let record = try JSONDecoder().decode(ProxyTunnelJournal.self, from: Data(contentsOf: journalURL))
         if backend.owns(record.identity) {
-            for route in record.routes.reversed() { try backend.remove(route, from: record.identity) }
+            try backend.removeRoutes(Array(record.routes.reversed()), from: record.identity)
         }
         // An absent/reused interface is never touched; all deletions are identity checked.
         try FileManager.default.removeItem(at: journalURL)

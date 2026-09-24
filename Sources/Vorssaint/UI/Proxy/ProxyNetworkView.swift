@@ -9,12 +9,19 @@ struct ProxyNetworkView: View {
     @State private var targetPort = 443
     var body: some View {
         Form {
+            if service.preferences.tunnelSettings.enabled || service.tunnelEffective {
+                Section {
+                    Button("关闭 TUN 并停止代理") { service.disableTunnelAndStop() }
+                    Text("启动或加载资源期间也可取消，不会再次启动代理。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("增强模式 / TUN") {
                 LabeledContent("网络助手", value: service.tunnelAccess)
                 HStack { Button("授权 / 打开系统批准") { service.authorizeTunnel() }; Button("刷新授权状态") { service.refreshTunnelAccess() }; Button("移除助手") { service.removeTunnelHelper() }.disabled(service.state != .stopped) }
                 Toggle("启用增强模式", isOn: Binding(get: { service.state == .running ? service.tunnelEffective : service.preferences.tunnelSettings.enabled }, set: service.setTunnel))
                 LabeledContent("实际状态", value: service.tunnelStatus)
-                Text("只由助手创建网卡并管理自有路由；核心以当前用户运行。默认保留系统 DNS，不劫持端口 53。VPN 全隧道、无法可靠绑定的 VPN 分流路由或出口变化时暂停增强模式。")
+                Text("只由助手创建网卡并管理自有路由；核心以当前用户运行。默认保留系统 DNS，不劫持端口 53。保留现有 VPN 分流路由；公司目标通过原 VPN 接口直连。VPN 全隧道或出口变化时暂停增强模式。")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("同时接管 IPv6", isOn: Binding(get: { service.preferences.tunnelSettings.ipv6 }, set: { value in var next = service.preferences; next.tunnelSettings.ipv6 = value; service.savePreferences(next) })).disabled(service.state != .stopped)
                 Text("关闭 IPv6 接管时，IPv6 继续使用系统路由；这不等同于禁用 IPv6。")

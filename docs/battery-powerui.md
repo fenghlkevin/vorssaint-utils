@@ -1,5 +1,37 @@
 # macOS 27 PowerUI system-limit backend
 
+## Investigation: retain charge above target (2026-09-23)
+
+Requested behavior: at 88% with a target of 85%, inhibit charging while retaining
+AC input, without intentionally draining to 85%. No supported configuration has
+been implemented for this behavior on the PowerUI backend.
+
+Read-only evidence on 27.0 (26A428): helper configuration had
+`dischargeAboveLimit=false`; PowerUI responses remained `command=automatic`,
+`setting=85`, `policy=85`. Telemetry recorded 86% -> 85%, negative battery
+current, then 0 mA at 12:15:28Z. This is consistent with system target discharge,
+but is not a controlled causal experiment. Instantaneous power sensors also
+disagree during transitions, so they do not establish a complete power budget.
+
+Helper diagnostics reported SMC result 132 for CHTE/CH0B/CH0C; this means the
+existing stop-charge route could not be validated, not proof the keys do not
+exist. CHIE was readable but its adapter-input control alone cannot independently
+inhibit charging and is not a substitute for the missing charge-control route.
+
+Runtime method enumeration (no client method invocation) found
+`temporarilyOverrideMCLTargetSoC:error:` but no `clearMCLOverride`.
+BatFi 4.0.0's `PowerUICharging.overrideMCLTarget` documents overriding to 100
+to release the system limit **in conjunction with SMC inhibit**. Its
+`clearMCLOverride` cancels renewal but relies on natural expiry when the clear
+selector is absent; stopping renewal is not immediate restoration. Therefore
+this override is neither a standalone stop-charge solution nor an acceptable
+experiment with guaranteed immediate rollback on this machine. Desktop-mode
+selectors have not been validated for parameter semantics or recovery.
+
+No setters, SMC writes, helper reinstallations or charge-setting changes were
+performed in this investigation. Do not expose a working “no discharge” toggle
+until independent charge inhibition and restoration have been demonstrated.
+
 Reference: BatFi tag 4.0.0, commit 72d4ae0052fcf8d6a004cecefd14962daf81cefa,
 `BatFiKit/Sources/Server/PowerUICharging.swift` (MIT, Adam Różyński).
 The selector names informed an independently written, ABI-checked adapter.

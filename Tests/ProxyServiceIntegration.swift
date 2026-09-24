@@ -13,6 +13,16 @@ import Darwin
         precondition(!ProxyService.isTransientStartupFailure(ProxyFailure.message("请先授权网络助手")))
         precondition(!ProxyService.isTransientStartupFailure(ProxyFailure.message("端口 7890 已被占用")))
         precondition(!ProxyService.isTransientStartupFailure(CancellationError()))
+        let slowInspection = try ProxyConfigCompiler.inspect(Data("proxies: []\nproxy-groups: []\nrule-providers: {slow: {type: http, behavior: classical, url: 'http://127.0.0.1:27181/slow', interval: 3600}}\nrules: ['RULE-SET,slow,DIRECT', 'MATCH,DIRECT']\n".utf8))
+        let slowWork = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: slowWork) }
+        let loading = Task { try await ProxyResources.prepare(slowInspection, work: slowWork) }
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let cancelledAt = Date(); loading.cancel()
+        do { try await loading.value; fatalError("cancelled resource download succeeded") }
+        catch { precondition(error is CancellationError, "resource cancellation must propagate") }
+        precondition(Date().timeIntervalSince(cancelledAt) < 3, "resource cancellation took too long")
+        print("Slow resource download cancellation passed")
         let root = URL(fileURLWithPath: CommandLine.arguments[1])
         let core = URL(fileURLWithPath: CommandLine.arguments[2])
         let guardian = URL(fileURLWithPath: CommandLine.arguments[3])
@@ -131,6 +141,12 @@ import Darwin
         let after = try await controller.send(.init(command: "status"))
         precondition(before.corePID == after.corePID && after.committed, "reopening restarted core")
         print("Service reopen recovered live profile and attached to the same core PID")
+        service.disableTunnelAndStop()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try await wait(service)
+        precondition(service.state == .stopped && !service.preferences.tunnelSettings.enabled, "emergency TUN stop failed")
+        try await Task.sleep(nanoseconds: 500_000_000)
+        precondition(service.state == .stopped, "emergency stop restarted proxy")
         let finalStop = await service.stopAndWait(); precondition(finalStop)
         _ = try await controller.send(.init(command: "exit"))
         await telemetry.finishArchive()

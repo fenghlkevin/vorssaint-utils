@@ -71,9 +71,9 @@ final class FakeTunnelNetwork: ProxyTunnelNetwork {
         check(answer == ["10.2.3.4"], "DNS answer decoding")
         do { _ = try ProxyCompanyDiagnostics.dnsAnswers(Data(response.prefix(15)), identifier: id); fatalError("truncated DNS accepted") } catch {}
         do { _ = try JSONDecoder().decode(ProxyCIDR.self, from: Data("{\"bytes\":[1],\"prefix\":99}".utf8)); fatalError("corrupt route journal accepted") } catch {}
-        let split = ProxyNetworkSnapshot(routes: [ProxyRoute(prefix: try ProxyCIDR("172.27.0.0/16"), gateway: "10.8.0.1", interface: "utun2")])
-        do { try ProxyTunnelBindingPolicy.validate(split, networks: ["utun2": [try ProxyCIDR("10.8.0.0/24")]]); fatalError("unsafe split route binding accepted") } catch {}
-        try ProxyTunnelBindingPolicy.validate(split, networks: ["utun2": [try ProxyCIDR("172.27.0.0/16")]])
+        let split = ProxyRoute(prefix: try ProxyCIDR("172.16.32.0/20"), gateway: "10.0.10.1", interface: "utun4")
+        let splitRoutes = try plan.routes(snapshot: .init(routes: original + [split]))
+        check(!splitRoutes.contains { $0.contains(try! ProxyCIDR("172.16.32.1")) }, "foreign split VPN route captured")
         print("TUN route exclusions, IPv6, VPN conflict, rollback, journal recovery and DNS parser passed")
     }
 }

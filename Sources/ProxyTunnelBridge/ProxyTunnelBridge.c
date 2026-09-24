@@ -186,3 +186,65 @@ int VPTLocalProcesses(uint16_t proxy_port, VPTLocalProcess *results, int capacit
     }
     return count;
 }
+
+// Route socket operations avoid spawning hundreds of route/netstat subprocesses.
+#include <net/route.h>
+#include <net/if_dl.h>
+#include <netinet/in.h>
+#include <stdatomic.h>
+int VPTRoute(const uint8_t *address, int length, int prefix, const char *interface, int add) {
+    if (!address || !interface || (length != 4 && length != 16) || prefix < 0 || prefix > length * 8) { errno = EINVAL; return -1; }
+    unsigned index = if_nametoindex(interface);
+    if (!index) { errno = ENXIO; return -1; }
+    struct { struct rt_msghdr header; unsigned char payload[512]; } message = {0};
+    struct sockaddr_in dst4 = {0}, mask4 = {0};
+    struct sockaddr_in6 dst6 = {0}, mask6 = {0};
+    struct sockaddr_dl gateway = {0};
+    unsigned char mask[16] = {0};
+    for (int i = 0; i < prefix; i++) mask[i / 8] |= (uint8_t)(0x80 >> (i % 8));
+    void *dst, *netmask; size_t size;
+    if (length == 4) {
+        dst4.sin_len = mask4.sin_len = sizeof(dst4); dst4.sin_family = mask4.sin_family = AF_INET;
+        memcpy(&dst4.sin_addr, address, 4); memcpy(&mask4.sin_addr, mask, 4);
+        dst = &dst4; netmask = &mask4; size = sizeof(dst4);
+    } else {
+        dst6.sin6_len = mask6.sin6_len = sizeof(dst6); dst6.sin6_family = mask6.sin6_family = AF_INET6;
+        memcpy(&dst6.sin6_addr, address, 16); memcpy(&mask6.sin6_addr, mask, 16);
+        dst = &dst6; netmask = &mask6; size = sizeof(dst6);
+    }
+    gateway.sdl_len = sizeof(gateway); gateway.sdl_family = AF_LINK; gateway.sdl_index = (unsigned short)index;
+    // Darwin routing sockaddr records are aligned to 32-bit boundaries.
+    size_t gatewaySize = (sizeof(gateway) + 3) & ~3;
+    memcpy(message.payload, dst, size);
+    memcpy(message.payload + size, &gateway, sizeof(gateway));
+    memcpy(message.payload + size + gatewaySize, netmask, size);
+    static atomic_int sequence = 0;
+    message.header.rtm_msglen = (unsigned short)(sizeof(message.header) + 2 * size + gatewaySize);
+    message.header.rtm_version = RTM_VERSION;
+    message.header.rtm_type = add ? RTM_ADD : RTM_DELETE;
+    message.header.rtm_index = (unsigned short)index;
+    message.header.rtm_flags = RTF_UP | RTF_STATIC;
+    message.header.rtm_addrs = RTA_DST | RTA_GATEWAY | RTA_NETMASK;
+    message.header.rtm_pid = getpid(); message.header.rtm_seq = atomic_fetch_add(&sequence, 1) + 1;
+    int fd = socket(PF_ROUTE, SOCK_RAW, 0);
+    if (fd < 0) return -1;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    struct timeval timeout = {2, 0}; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    int error = 0;
+    if (write(fd, &message, message.header.rtm_msglen) < 0) error = errno;
+    else {
+        char buffer[4096];
+        for (int attempt = 0; attempt < 256; attempt++) {
+            ssize_t count = read(fd, buffer, sizeof(buffer));
+            if (count < 0) { error = errno; break; }
+            if ((size_t)count < sizeof(struct rt_msghdr)) continue;
+            struct rt_msghdr reply; memcpy(&reply, buffer, sizeof(reply));
+            if (reply.rtm_pid == message.header.rtm_pid && reply.rtm_seq == message.header.rtm_seq) { error = reply.rtm_errno; break; }
+            error = ETIMEDOUT;
+        }
+    }
+    close(fd);
+    if (!add && error == ESRCH) return 0;
+    if (error) { errno = error; return -1; }
+    return 0;
+}

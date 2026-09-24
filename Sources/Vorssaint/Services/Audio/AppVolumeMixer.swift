@@ -436,7 +436,8 @@ final class AppVolumeMixer: ObservableObject {
             return
         }
         if systemOutputVolume != clamped { systemOutputVolume = clamped }
-        if clamped > 0, systemOutputMuted == true { systemOutputMuted = false }
+        // Read back the hardware switch: some outputs do not expose mute.
+        systemOutputMuted = Self.systemOutputIsMuted()
     }
 
     func setCurrentSystemSoundOutputVolume(_ volume: Double) {
@@ -450,6 +451,9 @@ final class AppVolumeMixer: ObservableObject {
         if systemSoundOutputVolume != clamped { systemSoundOutputVolume = clamped }
         if uid == currentOutputDeviceUID, systemOutputVolume != clamped {
             systemOutputVolume = clamped
+        }
+        if uid == currentOutputDeviceUID {
+            systemOutputMuted = Self.outputMuted(for: device.audioObjectID)
         }
     }
 
@@ -1693,6 +1697,11 @@ final class AppVolumeMixer: ObservableObject {
                                                     UInt32(MemoryLayout<Float32>.size),
                                                     &nextVolume)
             if status == noErr {
+                // A zero scalar alone can leave audio audible through a
+                // device's other playback paths. Engage its hardware mute as
+                // well, and release it when the user raises the level again.
+                // Devices without a mute property still use scalar volume.
+                setOutputMuted(clamped == 0, for: deviceID)
                 return true
             }
         }
@@ -1706,12 +1715,7 @@ final class AppVolumeMixer: ObservableObject {
     static func setSystemOutputVolume(_ volume: Double) -> Bool {
         guard let device = defaultOutputDeviceID() else { return false }
         let clamped = Float32(min(max(volume, 0), 1))
-        let applied = setOutputVolume(clamped, for: device)
-        // Mute is a separate switch from the level, so asking for a volume
-        // while the Mac is muted would set a number nobody can hear. Asking
-        // for sound means asking for sound, which is what the volume keys do.
-        if clamped > 0 { setOutputMuted(false, for: device) }
-        return applied
+        return setOutputVolume(clamped, for: device)
     }
 
     static func systemOutputVolumeLevel() -> Double? {

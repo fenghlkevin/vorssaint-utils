@@ -157,6 +157,9 @@ enum ProxyConfigCompiler {
             throw ProxyFailure.message("请确认策略名称兼容修复后再启动。")
         }
         var root = inspection.source
+        // Measure a second request over the established connection by default.
+        // Preserve an explicit user choice to include cold connection setup.
+        if root["unified-delay"] == nil { root["unified-delay"] = true }
         root["mixed-port"] = preferences.mixedPort
         root["allow-lan"] = preferences.allowLAN
         root["bind-address"] = preferences.allowLAN ? "*" : "127.0.0.1"
@@ -171,11 +174,61 @@ enum ProxyConfigCompiler {
             if let address6 = tunnel.address6 { tun["inet6-address"] = [address6 + "/126"]; root["ipv6"] = true }
             else { tun["inet6-address"] = [String]() }
             root["tun"] = tun
+            // TUN packets often carry only an IP. Recover HTTP/TLS/QUIC hostnames
+            // so the existing domain rules still work without changing system DNS.
+            if root["sniffer"] == nil {
+                root["sniffer"] = ["enable": true, "parse-pure-ip": true,
+                                   "force-dns-mapping": true, "override-destination": true,
+                                   "sniff": ["HTTP": ["ports": [80, 8080]],
+                                             "TLS": ["ports": [443, 8443]],
+                                             "QUIC": ["ports": [443, 8443]]]] as [String: Any]
+            }
+            // Explicit egress bindings preserve VPN split routes even when the
+            // tunnel address itself belongs to a different subnet.
+            let routes = Array(Set(tunnel.preservedRoutes)).sorted {
+                if $0.prefix.prefix != $1.prefix.prefix { return $0.prefix.prefix > $1.prefix.prefix }
+                return "\($0.prefix)|\($0.interface)" < "\($1.prefix)|\($1.interface)"
+            }
+            var proxies = root["proxies"] as? [[String: Any]] ?? []
+            var used = Set(inspection.nodeNames + inspection.groups.map(\.name))
+            var bindings: [String: String] = [:]
+            var rules: [String] = []
+            for route in routes {
+                guard route.interface != tunnel.interface else { continue }
+                let name: String
+                if let existing = bindings[route.interface] { name = existing }
+                else {
+                    var candidate = "Vorssaint VPN \(route.interface)"
+                    while used.contains(candidate) { candidate += "_" }
+                    used.insert(candidate); bindings[route.interface] = candidate; name = candidate
+                    proxies.append(["name": name, "type": "direct", "udp": true, "interface-name": route.interface])
+                }
+                rules.append("\(route.prefix.isIPv6 ? "IP-CIDR6" : "IP-CIDR"),\(route.prefix),\(name)")
+            }
+            root["proxies"] = proxies
+            root["rules"] = rules + (root["rules"] as? [String] ?? [])
         }
         root["profile"] = ["store-selected": false]
         var dns = root["dns"] as? [String: Any] ?? [:]
         dns["listen"] = "127.0.0.1:\(preferences.dnsPort)"
         if dns["proxy-server-nameserver"] == nil { dns["proxy-server-nameserver"] = ["system"] }
+        if let tunnel {
+            let routes = tunnel.preservedRoutes.sorted { $0.prefix.prefix > $1.prefix.prefix }
+            func bind(_ value: Any) -> Any {
+                if let values = value as? [String] { return values.map { bind($0) as! String } }
+                guard let server = value as? String, !server.contains("#"),
+                      let host = URL(string: server.contains("://") ? server : "udp://" + server)?.host,
+                      let address = try? ProxyCIDR(host),
+                      let route = routes.first(where: { $0.prefix.contains(address) }) else { return value }
+                return server + "#" + route.interface
+            }
+            for key in ["nameserver", "fallback", "default-nameserver", "proxy-server-nameserver", "direct-nameserver"] {
+                if let value = dns[key] { dns[key] = bind(value) }
+            }
+            for key in ["nameserver-policy", "proxy-server-nameserver-policy"] {
+                if let policies = dns[key] as? [String: Any] { dns[key] = policies.mapValues { bind($0) } }
+            }
+        }
         root["dns"] = dns
         let names = inspection.nodeNames + inspection.groups.map(\.name)
         if preferences.repairReferences, let rules = root["rules"] as? [String] {

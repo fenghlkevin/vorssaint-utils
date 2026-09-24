@@ -4,16 +4,18 @@ import SwiftUI
 struct ProxyDelayBadge: View {
     var delay: Int?
     var testing = false
+    var queued = false
     var date: Date?
     var blocked = false
     private var text: String {
         if blocked { return "拦截" }
         if testing { return "测试中…" }
+        if queued { return "等待中" }
         guard let delay else { return "未测试" }
         return delay > 0 ? "\(delay) ms" : "超时 / 失败"
     }
     private var color: Color {
-        if blocked || testing || delay == nil { return .secondary }
+        if blocked || testing || queued || delay == nil { return .secondary }
         guard let delay, delay > 0 else { return .red }
         return delay < 300 ? .green : .orange
     }

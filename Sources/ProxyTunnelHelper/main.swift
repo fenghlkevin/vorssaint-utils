@@ -35,17 +35,25 @@ final class TunnelNetwork: ProxyTunnelNetwork {
         }
         return false
     }
-    func add(_ route: ProxyCIDR, to identity: ProxyTunnelIdentity) throws {
+    private func change(_ route: ProxyCIDR, identity: ProxyTunnelIdentity, add: Bool) throws {
         guard owns(identity) else { throw ProxyTunnelError(message: "网卡归属校验失败。") }
-        let snapshot = try self.snapshot(excluding: nil)
-        guard !snapshot.routes.contains(where: { $0.prefix == route }) else { throw ProxyTunnelError(message: "候选路由已被其他网络服务占用。") }
-        _ = try ProxyNetworkCommand.run("/sbin/route", ["-n", "add", route.isIPv6 ? "-inet6" : "-inet", "-net", route.description, "-interface", identity.name])
+        let result = route.bytes.withUnsafeBufferPointer {
+            VPTRoute($0.baseAddress, Int32($0.count), Int32(route.prefix), identity.name, add ? 1 : 0)
+        }
+        guard result == 0 else { throw ProxyTunnelError(message: "TUN 路由操作失败（\(errno)）。") }
     }
-    func remove(_ route: ProxyCIDR, from identity: ProxyTunnelIdentity) throws {
+    func add(_ route: ProxyCIDR, to identity: ProxyTunnelIdentity) throws { try addRoutes([route], to: identity) }
+    func remove(_ route: ProxyCIDR, from identity: ProxyTunnelIdentity) throws { try removeRoutes([route], from: identity) }
+    func addRoutes(_ routes: [ProxyCIDR], to identity: ProxyTunnelIdentity) throws {
+        let existing = Set(try snapshot(excluding: nil).routes.map(\.prefix))
+        guard !routes.contains(where: { existing.contains($0) }) else { throw ProxyTunnelError(message: "候选路由已被其他网络服务占用。") }
+        // RTM_ADD fails on a concurrent insertion; it never overwrites a route.
+        for route in routes { try change(route, identity: identity, add: true) }
+    }
+    func removeRoutes(_ routes: [ProxyCIDR], from identity: ProxyTunnelIdentity) throws {
         guard owns(identity) else { return }
-        let existing = try snapshot(excluding: nil).routes
-        guard existing.contains(where: { $0.prefix == route && $0.interface == identity.name }) else { return }
-        _ = try ProxyNetworkCommand.run("/sbin/route", ["-n", "delete", route.isIPv6 ? "-inet6" : "-inet", "-net", route.description, "-interface", identity.name])
+        let existing = Set(try snapshot(excluding: nil).routes.filter { $0.interface == identity.name }.map(\.prefix))
+        for route in routes where existing.contains(route) { try change(route, identity: identity, add: false) }
     }
     func close(_ descriptor: Int32, identity: ProxyTunnelIdentity) {
         if owns(identity) { _ = try? ProxyNetworkCommand.run("/sbin/ifconfig", [identity.name, "down"]) }
@@ -92,7 +100,7 @@ final class TunnelController {
             do {
                 guard self.owner == nil || self.owner == id else { throw ProxyTunnelError(message: "无权操作另一会话。") }
                 switch command {
-                case "activate": guard self.owner == id else { throw ProxyTunnelError(message: "请先准备 TUN。") }; try self.lease.activate()
+                case "activate": guard self.owner == id else { throw ProxyTunnelError(message: "请先准备 TUN。") }; try self.lease.activate(); self.heartbeat = ProcessInfo.processInfo.systemUptime
                 case "heartbeat": self.heartbeat = ProcessInfo.processInfo.systemUptime
                 case "stop": try self.lease.restore(); self.owner = nil; self.issue = ""
                 default: throw ProxyTunnelError(message: "不支持的操作。")

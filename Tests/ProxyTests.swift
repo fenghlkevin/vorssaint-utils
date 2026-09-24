@@ -45,6 +45,22 @@ final class MemoryNetwork: ProxyNetworkStore {
         let output = try ProxyConfigCompiler.compile(inspected, preferences: preferences, secret: "test")
         let root = try JSONSerialization.jsonObject(with: output) as! [String: Any]
         check((root["rules"] as! [String])[1] == "DOMAIN,example.com,Proxy", "repair")
+        check(root["unified-delay"] as? Bool == true, "default tests exclude initial connection setup")
+        let coldInspection = try ProxyConfigCompiler.inspect(Data((fixture + "\nunified-delay: false\n").utf8))
+        let coldData = try ProxyConfigCompiler.compile(coldInspection, preferences: preferences, secret: "test")
+        let coldRoot = try JSONSerialization.jsonObject(with: coldData) as! [String: Any]
+        check(coldRoot["unified-delay"] as? Bool == false, "explicit cold-start timing choice preserved")
+        let vpnRoutes = [ProxyRoute(prefix: try ProxyCIDR("172.27.192.0/20"), gateway: "10.0.10.1", interface: "utun4")]
+        let vpnRuntime = ProxyTunnelRuntime(interface: "utun9", address4: "198.18.0.1", address6: nil, preservedRoutes: vpnRoutes)
+        let vpnData = try ProxyConfigCompiler.compile(inspected, preferences: preferences, secret: "test", tunnel: vpnRuntime)
+        let vpnConfig = try JSONSerialization.jsonObject(with: vpnData) as! [String: Any]
+        check((vpnConfig["sniffer"] as? [String: Any])?["parse-pure-ip"] as? Bool == true, "TUN must recover domains for domain rules")
+        check(root["sniffer"] == nil, "normal proxy must preserve sniffer configuration")
+        let vpnDNS = vpnConfig["dns"] as! [String: Any]
+        check((vpnDNS["nameserver-policy"] as! [String: String])["*.hlkj.com"] == "tcp://172.27.199.177:53#utun4", "company DNS must use VPN interface")
+        let vpnProxies = vpnConfig["proxies"] as! [[String: Any]]
+        check(vpnProxies.contains { $0["type"] as? String == "direct" && $0["interface-name"] as? String == "utun4" }, "VPN direct egress not bound")
+        check((vpnConfig["rules"] as! [String]).first == "IP-CIDR,172.27.192.0/20,Vorssaint VPN utun4", "VPN route must precede catch-all rules")
         check((root["dns"] as! [String: Any])["nameserver-policy"] != nil, "company DNS preserved")
         check(root["find-process-mode"] as? String == "always", "local process lookup always enabled")
         check(root["external-controller"] as? String == "127.0.0.1:19090", "controller bound locally")

@@ -11,6 +11,7 @@ struct ProxyTunnelRuntime {
     let interface: String
     let address4: String
     let address6: String?
+    var preservedRoutes: [ProxyRoute] = []
 }
 
 struct ProxyTunnelError: LocalizedError {
@@ -127,46 +128,6 @@ struct ProxyTunnelPlan: Codable {
             guard result.count <= 512 else { throw ProxyTunnelError(message: "排除网络过于复杂，路由计划超过 512 条；增强模式未启用。") }
         }
         guard !result.isEmpty else { throw ProxyTunnelError(message: "没有可接管的公网路由。") }
-        return result
-    }
-}
-
-// Mihomo v1.19.31 resolves outbound interfaces from interface address prefixes,
-// not the kernel route table. Reject split routes it cannot faithfully bind.
-enum ProxyTunnelBindingPolicy {
-    static func validate(_ snapshot: ProxyNetworkSnapshot, networks: [String: [ProxyCIDR]]) throws {
-        for route in snapshot.routes where route.isTunnel && route.prefix.prefix > 0 {
-            let matches = networks.flatMap { name, prefixes in prefixes.filter { $0.contains(route.prefix) }.map { (name, $0.prefix) } }
-            guard let longest = matches.map({ $0.1 }).max(),
-                  Set(matches.filter { $0.1 == longest }.map { $0.0 }) == [route.interface] else {
-                throw ProxyTunnelError(message: "现有 VPN 路由 \(route.prefix) 无法由当前核心可靠绑定至 \(route.interface)。增强模式未启用；请使用系统代理，公司网络仍沿用系统路由。")
-            }
-        }
-    }
-    static func interfaceNetworks() throws -> [String: [ProxyCIDR]] {
-        var first: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&first) == 0 else { throw ProxyTunnelError(message: "无法读取网卡地址，增强模式未启用。") }
-        defer { if let first { freeifaddrs(first) } }
-        var result: [String: [ProxyCIDR]] = [:], current = first
-        while let item = current {
-            defer { current = item.pointee.ifa_next }
-            let value = item.pointee
-            guard value.ifa_flags & UInt32(IFF_UP) != 0, let address = value.ifa_addr, let mask = value.ifa_netmask,
-                  [UInt8(AF_INET), UInt8(AF_INET6)].contains(address.pointee.sa_family) else { continue }
-            var ip = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            guard getnameinfo(address, socklen_t(address.pointee.sa_len), &ip, socklen_t(ip.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
-            let maskBytes: [UInt8]
-            if address.pointee.sa_family == UInt8(AF_INET) {
-                var raw = UnsafeRawPointer(mask).assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr
-                maskBytes = withUnsafeBytes(of: &raw) { Array($0) }
-            } else {
-                var raw = UnsafeRawPointer(mask).assumingMemoryBound(to: sockaddr_in6.self).pointee.sin6_addr
-                maskBytes = withUnsafeBytes(of: &raw) { Array($0) }
-            }
-            let bits = maskBytes.reduce(0) { $0 + $1.nonzeroBitCount }
-            let host = String(cString: ip).split(separator: "%")[0]
-            if let prefix = try? ProxyCIDR("\(host)/\(bits)") { result[String(cString: value.ifa_name), default: []].append(prefix) }
-        }
         return result
     }
 }

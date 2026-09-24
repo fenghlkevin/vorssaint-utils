@@ -3,6 +3,7 @@
 #define VP_TUN_BRIDGE_H
 #include <stdint.h>
 #include <stddef.h>
+int VPTRoute(const uint8_t *address, int length, int prefix, const char *interface, int add);
 int VPTCreate(char *name, size_t capacity);
 int VPTName(int fd, char *name, size_t capacity);
 int VPTBindFDReceiver(const char *path);

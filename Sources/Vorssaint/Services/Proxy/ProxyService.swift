@@ -31,6 +31,10 @@ final class ProxyService: ObservableObject {
     @Published private(set) var delays: [String: Int] = [:]
     @Published private(set) var testingNodes: Set<String> = []
     @Published private(set) var delayDates: [String: Date] = [:]
+    @Published private(set) var activeTestingNodes: Set<String> = []
+    @Published private(set) var delayTestTotal = 0
+    @Published private(set) var delayTestCompleted = 0
+    var delayTestProgress: String { "测试中 \(delayTestCompleted)/\(delayTestTotal)" }
     private var delayTask: Task<Void, Never>?
     private var delayGeneration = UUID()
     @Published private(set) var error: String?
@@ -335,7 +339,14 @@ final class ProxyService: ObservableObject {
             guard let reply = prepared.tunnel else { throw ProxyFailure.message("后台没有返回 TUN 状态。") }
             tunnelSession = true
             guard let name = reply.interface, let address = reply.address4 else { throw ProxyFailure.message("助手未返回有效的 TUN 网卡。") }
-            let runtime = ProxyTunnelRuntime(interface: name, address4: address, address6: reply.address6)
+            let snapshot = try await Task.detached { try ProxyNetworkSnapshot.read(excluding: name) }.value
+            let runtime = ProxyTunnelRuntime(interface: name, address4: address, address6: reply.address6,
+                                             preservedRoutes: snapshot.routes.filter {
+                                                 $0.isTunnel && $0.prefix.prefix > 1 &&
+                                                 (plan.ipv6 || !$0.prefix.isIPv6) &&
+                                                 !(try! ProxyCIDR("fe80::/10")).contains($0.prefix) &&
+                                                 !(try! ProxyCIDR("ff00::/8")).contains($0.prefix)
+                                             })
             try ProxyFiles.write(ProxyConfigCompiler.compile(inspection, preferences: preferences, secret: secret, tunnel: runtime), to: config)
             tunnelInterface = name
         }
@@ -386,7 +397,7 @@ final class ProxyService: ObservableObject {
     }
     private func stopCore() async throws {
         delayTask?.cancel(); delayTask = nil; delayGeneration = UUID()
-        testingNodes.removeAll(); delays.removeAll(); delayDates.removeAll()
+        testingNodes.removeAll(); activeTestingNodes.removeAll(); delayTestTotal = 0; delayTestCompleted = 0; delays.removeAll(); delayDates.removeAll()
         monitoring?.cancel(); monitoring = nil
         telemetry.stop()
         state = .stopping
@@ -468,23 +479,33 @@ final class ProxyService: ObservableObject {
     }
     func test(_ names: [String]) {
         guard state == .running, let api, testingNodes.isEmpty else { return }
-        let targets = Array(Set(names)).sorted().prefix(50).filter { !["REJECT", "REJECT-DROP"].contains($0) }
+        var seen = Set<String>()
+        let targets = Array(names.filter { !["REJECT", "REJECT-DROP"].contains($0) && seen.insert($0).inserted }.prefix(50))
+        guard !targets.isEmpty else { return }
         let generation = UUID(); delayGeneration = generation
-        testingNodes = Set(targets)
+        testingNodes = Set(targets); activeTestingNodes = []
+        delayTestTotal = targets.count; delayTestCompleted = 0
         delayTask = Task { [weak self] in
-            for name in targets {
-                guard !Task.isCancelled else { return }
-                let startedAt = Date()
+            await ProxyDelayBatch.run(targets, operation: { name in
                 let result = try? await api.request(["proxies", name, "delay"], query: [.init(name: "timeout", value: "5000"), .init(name: "url", value: "https://www.gstatic.com/generate_204")])
+                return result?["delay"] as? Int ?? -1
+            }, started: { [weak self] name in
+                guard let self, self.delayGeneration == generation, self.state == .running else { return }
+                self.activeTestingNodes.insert(name)
+            }, completed: { [weak self] name, delay, elapsed in
                 guard let self, !Task.isCancelled, self.delayGeneration == generation, self.state == .running else { return }
-                let delay = result?["delay"] as? Int ?? -1
                 self.delays[name] = delay > 0 ? delay : -1
                 self.delayDates[name] = Date()
+                self.activeTestingNodes.remove(name)
                 self.testingNodes.remove(name)
-                self.telemetry.addLog(level: delay > 0 ? "info" : "error", message: "节点测速 \(name)：\(delay > 0 ? "\(delay) ms" : "超时或失败")，请求耗时 \(Int(Date().timeIntervalSince(startedAt) * 1000)) ms")
-            }
+                self.delayTestCompleted += 1
+                self.telemetry.addLog(level: delay > 0 ? "info" : "error", message: "节点测速 \(name)：\(delay > 0 ? "\(delay) ms" : "超时或失败")，请求耗时 \(elapsed) ms")
+            })
+            guard let self, self.delayGeneration == generation else { return }
+            self.testingNodes.removeAll(); self.activeTestingNodes.removeAll(); self.delayTask = nil
         }
     }
+
     private func monitor() {
         monitoring?.cancel()
         monitoring = Task { [weak self] in
@@ -683,7 +704,21 @@ extension ProxyService {
             try await self.tunnelClient.unregister()
         }
     }
+    func disableTunnelAndStop() {
+        operation?.cancel()
+        Task { @MainActor in
+            let stopped = await self.stopAndWait()
+            var next = self.preferences
+            next.tunnelSettings.enabled = false
+            do { try self.store.save(next); self.preferences = next }
+            catch { self.error = error.localizedDescription }
+            if stopped { self.statusDetail = "增强模式已关闭，代理已停止。" }
+        }
+    }
     func setTunnel(_ enabled: Bool) {
+        if !enabled && (busy || state == .starting || state == .stopping || state == .failed) {
+            disableTunnelAndStop(); return
+        }
         if state != .running { var next = preferences; next.tunnelSettings.enabled = enabled; savePreferences(next); return }
         run {
             let previous = self.preferences
@@ -709,6 +744,7 @@ extension ProxyService {
                 let reason = error.localizedDescription
                 self.telemetry.addLog(level: "error", message: "增强模式切换失败，正在恢复原模式：\(reason)")
                 try await self.stopCore(); self.preferences = previous
+                if Task.isCancelled || error is CancellationError { throw CancellationError() }
                 do { try await self.startCore() }
                 catch { try? await self.stopCore(); self.state = .failed; throw ProxyFailure.message("增强模式切换失败且旧模式无法恢复：\(reason)；\(error.localizedDescription)") }
                 throw ProxyFailure.message("增强模式切换失败，已恢复原模式：\(reason)")

@@ -132,3 +132,34 @@ final class ProxyAPI: @unchecked Sendable {
         }
     }
 }
+
+/// A rolling window: a slow node occupies one slot, not the entire batch.
+enum ProxyDelayBatch {
+    static func run(_ names: [String],
+                    operation: @escaping @Sendable (String) async -> Int,
+                    started: @escaping @MainActor @Sendable (String) -> Void,
+                    completed: @escaping @MainActor @Sendable (String, Int, Int) -> Void) async {
+        await withTaskGroup(of: (String, Int, Int).self) { group in
+            var next = 0
+            func enqueue(_ name: String) async {
+                await started(name)
+                group.addTask {
+                    guard !Task.isCancelled else { return (name, -1, 0) }
+                    let start = Date()
+                    let result = await operation(name)
+                    return (name, result, Int(Date().timeIntervalSince(start) * 1000))
+                }
+            }
+            while next < min(3, names.count), !Task.isCancelled {
+                await enqueue(names[next]); next += 1
+            }
+            while let (name, delay, elapsed) = await group.next() {
+                guard !Task.isCancelled else { group.cancelAll(); break }
+                await completed(name, delay, elapsed)
+                if next < names.count, !Task.isCancelled {
+                    await enqueue(names[next]); next += 1
+                }
+            }
+        }
+    }
+}

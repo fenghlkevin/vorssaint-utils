@@ -286,7 +286,7 @@ struct MenuPanelView: View {
         case .keepAwake: return 400
         case .awayLock: return 280
         case .brightness: return 140
-        case .networkProxy: return 680
+        case .networkProxy: return 450
         case .networkInfo: return 460
         case .mixer: return 250
         case .system: return 460
@@ -496,6 +496,12 @@ struct MenuPanelView: View {
                          horizontalPadding: 7) {
                 SettingsRouter.shared.request(currentSettingsDestination)
                 appDelegate()?.openSettingsWindow()
+            }
+
+            if activeSection == .networkProxy {
+                footerButton("打开工作台", systemImage: "arrow.up.forward.square") {
+                    ProxyWindowController.shared.show()
+                }
             }
 
             Menu {

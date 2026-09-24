@@ -32,7 +32,7 @@ enum ProxyTunnelPreflight {
         let plan = ProxyTunnelPlan(ipv6: settings.ipv6, exclusions: exclusions.sorted())
         let snapshot = try await Task.detached { try ProxyNetworkSnapshot.read() }.value
         _ = try plan.routes(snapshot: snapshot)
-        try ProxyTunnelBindingPolicy.validate(snapshot, networks: ProxyTunnelBindingPolicy.interfaceNetworks())
+        // Foreign split routes are preserved and explicitly bound in the runtime config.
         return plan
     }
     static func resolve(_ host: String) async throws -> [String] {

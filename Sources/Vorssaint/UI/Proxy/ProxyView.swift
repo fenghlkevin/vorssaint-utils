@@ -27,7 +27,7 @@ struct ProxySettings: View {
             Button("打开代理工作台") { ProxyWindowController.shared.show() }.buttonStyle(.borderedProminent)
             Text("支持 SS、VLESS / Reality、远程规则集、版本回退及可选增强模式。")
                 .font(.callout).foregroundStyle(.secondary)
-            PanelProxyView()
+            PanelProxyView().frame(maxWidth: 420, alignment: .leading)
         }.padding(24)
     }
 }
@@ -95,14 +95,14 @@ struct ProxyWorkspaceView: View {
                         HStack {
                             Text(group.name).font(.headline)
                             Spacer()
-                            Button("测试延迟") { service.test(group.members) }
+                            Button(service.testingNodes.isEmpty ? "测试延迟" : service.delayTestProgress) { service.test(group.members) }.disabled(!service.testingNodes.isEmpty)
                         }
                         ForEach(group.members, id: \.self) { member in
                             HStack {
                                 Image(systemName: group.selected == member ? "checkmark.circle.fill" : "circle").foregroundStyle(group.selected == member ? .blue : .secondary)
                                 Text(member)
                                 Spacer()
-                                ProxyDelayBadge(delay: service.delays[member], testing: service.testingNodes.contains(member), date: service.delayDates[member], blocked: ["REJECT", "REJECT-DROP"].contains(member))
+                                ProxyDelayBadge(delay: service.delays[member], testing: service.activeTestingNodes.contains(member), queued: service.testingNodes.contains(member) && !service.activeTestingNodes.contains(member), date: service.delayDates[member], blocked: ["REJECT", "REJECT-DROP"].contains(member))
                                 Button("选择") { service.choose(group: group.name, member: member) }.disabled(group.selected == member)
                             }.padding(.vertical, 4)
                         }
@@ -130,6 +130,11 @@ struct ProxyWorkspaceView: View {
                 Toggle("Vorssaint 启动时自动启动代理", isOn: Binding(get: { service.preferences.autoStart }, set: service.setAutoStart))
                 Text("退出 Vorssaint 后代理继续运行；断开连接请点击停止代理。").font(.caption).foregroundStyle(.secondary)
                 HStack { Button("复制 Shell 代理命令") { service.copyShell() }; Button("复制取消代理命令") { service.copyUnset() } }
+                Menu("使用局域网 IP 复制 Shell 命令") {
+                    ForEach((try? NetworkInfoLocalAddresses.read())?.filter { !$0.isTunnel } ?? []) { address in
+                        Button("\(address.interface) · \(address.ip)") { service.copyShell(host: address.ip) }
+                    }
+                }.disabled(!service.preferences.allowLAN)
             }
             Section("快捷键") {
                 Text("在 Vorssaint 设置 → 快捷键 → 网络代理中配置工作台、系统代理切换和重载快捷键，默认关闭。")
