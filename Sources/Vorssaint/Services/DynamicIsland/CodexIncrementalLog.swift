@@ -47,12 +47,13 @@ final class CodexIncrementalLog {
 }
 
 enum CodexLogLifecycleState: String {
-    case running, completed
+    case running, completed, failed
 
     static func event(in object: [String: Any]) -> Self? {
         let type = object["type"] as? String ?? ""
         let payload = object["payload"] as? [String: Any]
         let payloadType = payload?["type"] as? String ?? ""
+        if ["task_failed", "turn_failed"].contains(payloadType) { return .failed }
         if payloadType == "task_started" {
             return .running
         }
@@ -76,5 +77,22 @@ enum CodexLogLifecycleState: String {
             return .completed
         }
         return nil
+    }
+}
+
+/// Opening the CLI (for example to manage /hooks) is not a running user task.
+enum CodexTaskActivity {
+    static func containsTask(_ objects: [[String: Any]]) -> Bool {
+        objects.contains { object in
+            guard let payload = object["payload"] as? [String: Any] else { return false }
+            if object["type"] as? String == "event_msg" {
+                return ["user_message", "task_started", "task_complete", "turn_complete", "task_failed"].contains(payload["type"] as? String ?? "")
+            }
+            if object["type"] as? String == "response_item" {
+                return payload["role"] as? String == "user" || payload["role"] as? String == "assistant"
+                    || ["function_call", "custom_tool_call", "function_call_output", "custom_tool_call_output"].contains(payload["type"] as? String ?? "")
+            }
+            return false
+        }
     }
 }

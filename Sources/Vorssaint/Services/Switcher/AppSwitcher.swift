@@ -176,7 +176,7 @@ final class AppSwitcher: ObservableObject {
             && UserDefaults.standard.bool(forKey: DefaultsKey.switcherEnabled)
         let canStartSession = enabled && Permissions.shared.accessibility
         routeLock.withLock { routeCanStartSession = canStartSession }
-        if canStartSession {
+        if canStartSession || RadialSwitcherKeyboard.needsTap {
             startObservingKeyboardLayout()
             startObservingWake()
             installTap()
@@ -342,6 +342,7 @@ final class AppSwitcher: ObservableObject {
             }
 
             let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+                | CGEventMask(1 << CGEventType.keyUp.rawValue)
                 | CGEventMask(1 << CGEventType.flagsChanged.rawValue)
                 | CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
                 | CGEventMask(1 << CGEventType.rightMouseDown.rawValue)
@@ -424,6 +425,7 @@ final class AppSwitcher: ObservableObject {
         // straight through so the user can record this feature's own
         // combination instead of opening the switcher with it.
         if capturing { return Unmanaged.passUnretained(event) }
+        if RadialSwitcherKeyboard.route(type: type, event: event) { return nil }
         if !active {
             guard canStartSession else { return Unmanaged.passUnretained(event) }
             if type == .flagsChanged {

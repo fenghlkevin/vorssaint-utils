@@ -4,7 +4,6 @@
 import AppKit
 import CoreBluetooth
 import CoreGraphics
-import IOKit.pwr_mgt
 import UserNotifications
 
 struct AwayLockPeripheral: Identifiable, Equatable { let id: UUID; var name: String; var rssi: Int; var lastSeen: Date }
@@ -29,6 +28,7 @@ enum AwayLockEnergyMode: String, CaseIterable, Identifiable {
     var pauseSeconds: TimeInterval { self == .maximum ? 12 : 6 }
 }
 private struct AwayLockDeviceSignal {
+    var returnSamples: [(value: Int, date: Date)] = []
     var samples: [Int] = []; var firstSeen: Date?; var lastSeen: Date?; var wasNear = false
     mutating func record(_ value: Int, now: Date = Date()) {
         // A long silence starts a new observation session. Do not let an old,
@@ -37,6 +37,8 @@ private struct AwayLockDeviceSignal {
         if let lastSeen, now.timeIntervalSince(lastSeen) > 60 {
             samples.removeAll(keepingCapacity: true); firstSeen = now; wasNear = false
         } else if firstSeen == nil { firstSeen = now }
+        returnSamples.append((value, now))
+        returnSamples = Array(returnSamples.suffix(2))
         samples.append(value); if samples.count > 9 { samples.removeFirst() }; lastSeen = now
     }
     var median: Int? { AwayLockSupport.median(samples) }
@@ -69,16 +71,15 @@ final class AwayLockService: NSObject, ObservableObject {
     private var weakSince: Date?; private var waitingForReturn = false
     private var lastDiagnosticCondition: String?
     private var monitoringWasActive = false
-    private var wakeOnReturnArmed = false
-    private var lastDisplayWakeAt = Date.distantPast
-    private let displayWakeCooldown: TimeInterval = 120
+    @Published private(set) var lockError: String?
+    @Published private(set) var isConfirmingLock = false
+    private var returnWake = AwayLockReturnWake()
+    private var returnUnlock = AwayLockReturnUnlock()
+    private var unlockTask: Task<Void, Never>?
+    @Published private(set) var unlockStatus: String?
+    private var lockConfirmation: Task<Void, Never>?
     private let diagnosticSession = String(UUID().uuidString.prefix(8))
     private var diagnosticSequence = 0
-    private var wakeRequestCount = 0
-    private var userActivityAssertion: IOPMAssertionID = 0
-    private var pendingWake: Task<Void, Never>?
-    private var wakeDiagnostics: Task<Void, Never>?
-    private var displayLifecycleGeneration = 0
     private var lastLockRequestAt: Date?
     private var observedDisplayState = "未知（尚未收到系统通知）"
     private var displayRecoveryUntil = Date.distantPast
@@ -104,15 +105,10 @@ final class AwayLockService: NSObject, ObservableObject {
             NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in
                     guard let self else { return }
-                    self.displayLifecycleGeneration += 1
-                    if self.pendingWake != nil {
-                        self.log("取消待发送的返回唤醒：收到系统事件 \(message)，交由系统恢复")
-                    }
-                    self.pendingWake?.cancel()
-                    self.pendingWake = nil
                     if let displayState {
                         self.observedDisplayState = displayState
                         if displayState == "唤醒" {
+                            self.returnWake.armed = false
                             self.finishSimulatedDepartureOnReturn()
                             self.displayRecoveryUntil = Date().addingTimeInterval(15)
                             self.weakSince = nil
@@ -125,6 +121,13 @@ final class AwayLockService: NSObject, ObservableObject {
         }
         DistributedNotificationCenter.default().addObserver(forName: NSNotification.Name("com.apple.screenIsUnlocked"),
             object: nil, queue: .main) { [weak self] _ in Task { @MainActor in
+                if self?.unlockTask != nil {
+                    self?.unlockStatus = "系统会话已解锁，已停止密码输入（无法识别是否由 Apple Watch 完成）"
+                    self?.log("收到系统解锁通知，停止自动输入")
+                }
+                self?.cancelReturnUnlock()
+                self?.returnWake.armed = false
+                AwayLockScreenControl.releaseWakeRequest()
                 self?.finishSimulatedDepartureOnReturn()
             } }
     }
@@ -137,9 +140,11 @@ final class AwayLockService: NSObject, ObservableObject {
     var isPaused: Bool { pauseUntil > Date() }
     var statusText: String {
         if isPaused { return "监测已暂停" }
+        if let lockError { return lockError }
+        if isConfirmingLock { return "正在确认系统锁定" }
         return switch state { case .disabled: "距离监测已关闭"; case .needsDevice: "请选择蓝牙设备"; case .scanning: "正在寻找目标设备"
         case .nearby: "设备就在附近"; case .weak: "设备可能已经离开"; case .countdown(let s): "将在 \(s) 秒后锁屏"
-        case .awaitingReturn: "已请求锁屏，等待设备明确返回"
+        case .awaitingReturn: "等待设备返回"
         case .bluetoothUnavailable: "蓝牙不可用" }
     }
     var detailText: String { latestAggregateRSSI.map { "聚合信号：\($0) dBm" } ?? "等待目标设备信号" }
@@ -272,6 +277,10 @@ final class AwayLockService: NSObject, ObservableObject {
             cancelSimulatedDeparture()
         }
         guard !isPaused else { cancelCountdown(); return }
+        guard !isConfirmingLock else { return }
+        // Keep evaluating proximity while locked: confirmed return drives display
+        // wake and optional unlock. Only the lock request itself rejects an
+        // already locked session.
         let ids = selectedIDs; guard !ids.isEmpty else { state = .needsDevice; return }
         let snapshots = ids.map { id -> (String, Bool, Int?, Bool) in
             // Inject only the observation; all subsequent policy, protection,
@@ -281,6 +290,13 @@ final class AwayLockService: NSObject, ObservableObject {
             let lossIsReliable = !lost || AwayLockSupport.canInferDepartureFromSilence(
                 firstSeen: s.firstSeen, lastSeen: s.lastSeen,
                 requiredObservationSeconds: lossSeconds)
+            if waitingForReturn && !lost && AwayLockSupport.hasFastReturn(
+                samples: s.returnSamples, threshold: threshold(for: id) + returnMargin, now: now) {
+                if (s.median ?? -127) < threshold(for: id) + returnMargin {
+                    log("返回加速确认：连续两次新信号达标，跳过旧弱信号；旧中位数=\(s.median ?? -127) dBm，新信号=\(s.returnSamples.map { $0.value })，返回线=\(threshold(for: id) + returnMargin) dBm")
+                }
+                s.samples = s.returnSamples.map { $0.value }
+            }
             let near = !lost && s.median.map { AwayLockSupport.isNear(rssi: $0, threshold: threshold(for: id), returnMargin: returnMargin, wasNear: s.wasNear) } == true
             if !lost { s.wasNear = near }; signals[id] = s
             return (id, near, s.median, lossIsReliable)
@@ -299,6 +315,8 @@ final class AwayLockService: NSObject, ObservableObject {
         let confirmedReturn = AwayLockSupport.hasConfirmedReturn(
             policy: policy.rawValue, primaryID: primaryID,
             readings: snapshots.map { (id: $0.0, near: $0.1) })
+        if lockError != nil && !confirmedReturn { return }
+        if confirmedReturn { lockError = nil }
         if waitingForReturn && !confirmedReturn {
             weakSince = nil; cancelCountdown(); state = .awaitingReturn
             logCondition("awaiting-confirmed-return",
@@ -315,12 +333,7 @@ final class AwayLockService: NSObject, ObservableObject {
             let summary = signalSummary(snapshots, now: now)
             if returned {
                 logCondition("returned", "设备已返回：\(summary)")
-                let shouldWake = wakeOnReturnArmed
-                log("返回唤醒检查：\(diagnosticContext)；设备详情：\(summary)")
-                wakeOnReturnArmed = false
-                if shouldWake { wakeDisplay(now: now) }
-                else { log("返回唤醒跳过：没有本功能锁屏请求授予的唤醒资格") }
-                notify("设备已返回", "目标蓝牙设备重新靠近 Mac")
+                wakeOnConfirmedReturn(now: now)
             } else if wasSuspectedAway {
                 logCondition("nearby", "锁屏已取消，设备恢复到附近：\(summary)")
             } else {
@@ -375,7 +388,6 @@ final class AwayLockService: NSObject, ObservableObject {
             log("完整模拟离开未执行：系统会话已锁定")
             return
         }
-        pendingWake?.cancel(); pendingWake = nil
         resetEvaluation()
         clearLockWarningNotification()
         isSimulatingDeparture = true
@@ -398,18 +410,94 @@ final class AwayLockService: NSObject, ObservableObject {
     }
 
     private func performAutomaticLockRequest() {
-        let didRequestLock = bool(DefaultsKey.awayLockAutomaticLock)
-        wakeOnReturnArmed = didRequestLock
-        if didRequestLock {
-            log("即将发送自动锁屏请求：\(diagnosticContext)")
-            lastLockRequestAt = Date()
-            QuickTogglesService.shared.lockScreen()
-            log("自动锁屏调用已返回（不代表系统已确认锁定）；下一次设备返回具有唤醒资格")
-        } else {
-            log("倒计时结束，但自动锁屏已关闭，未执行锁定，也不会在设备返回时唤醒显示器")
+        guard bool(DefaultsKey.awayLockAutomaticLock) else {
+            waitingForReturn = true; weakSince = nil
+            log("倒计时结束，自动锁屏已关闭；仅记录离开")
+            return
         }
-        waitingForReturn = true; weakSince = nil
+        guard !isConfirmingLock else { return }
+        guard AwayLockScreenControl.currentSessionLocked() == false else {
+            log("会话已经锁定或状态未知，不授予返回自动解锁资格")
+            return
+        }
+        isConfirmingLock = true
+        lastLockRequestAt = Date()
+        log("发送系统锁屏快捷键 Control–Command–Q，等待会话确认；不改变显示器电源")
+        lockConfirmation = Task { @MainActor [weak self] in
+            let result = await AwayLockScreenControl.lock()
+            guard !Task.isCancelled, let self else { return }
+            self.isConfirmingLock = false
+            self.lockConfirmation = nil
+            self.weakSince = nil
+            switch result {
+            case .locked:
+                for id in self.signals.keys { self.signals[id]?.returnSamples.removeAll() }
+                self.returnWake.armed = true
+                self.returnUnlock.armed = true
+                self.waitingForReturn = true
+                self.state = .awaitingReturn
+                self.log("系统会话已确认锁定；设备返回时遵循亮屏与密码解锁设置")
+            case .failed(let message):
+                self.lockError = message
+                self.log("锁屏未确认：\(message)；本次离开不再自动重试，设备返回或重新启用后恢复")
+            }
+        }
     }
+    func syncReturnUnlockPreference() {
+        cancelReturnUnlock()
+        unlockStatus = nil
+    }
+
+    private func cancelReturnUnlock() {
+        returnUnlock.armed = false
+        unlockTask?.cancel(); unlockTask = nil
+    }
+
+    func syncReturnWakePreference() {
+        cancelReturnUnlock()
+        if !bool(DefaultsKey.awayLockWakeOnReturn) {
+            AwayLockScreenControl.releaseWakeRequest()
+        }
+    }
+
+    private func wakeOnConfirmedReturn(now: Date) {
+        let shouldUnlock = returnUnlock.consume(enabled: bool(DefaultsKey.awayLockAutoUnlock),
+            locked: AwayLockScreenControl.currentSessionLocked() == true, now: now)
+        defer { if shouldUnlock { startReturnUnlock() } }
+        let power = AwayLockScreenControl.displaySleepCounts()
+        guard returnWake.consumeReturn(enabled: bool(DefaultsKey.awayLockWakeOnReturn),
+            locked: AwayLockScreenControl.currentSessionLocked() == true,
+            online: power.online, asleep: power.asleep, now: now) else {
+            log("设备返回，未发送亮屏请求：开关关闭、已手动唤醒、会话未锁定、显示器状态不符或仍在冷却期")
+            return
+        }
+        let result = AwayLockScreenControl.wakeDisplayOnce()
+        log("设备返回，单次亮屏请求 IOKit=\(result)；5 秒后释放，不重复亮屏（接口返回不代表屏幕已稳定）")
+        displayRecoveryUntil = now.addingTimeInterval(15)
+    }
+
+    private func startReturnUnlock() {
+        unlockTask?.cancel()
+        unlockStatus = "设备已返回，等待系统解锁；随后尝试一次密码解锁"
+        log(unlockStatus!)
+        unlockTask = Task { @MainActor [weak self] in
+            let result = await AwayLockAutoUnlock.run(allowed: { [weak self] in
+                guard let self, self.bool(DefaultsKey.awayLockEnabled),
+                      self.bool(DefaultsKey.awayLockAutoUnlock), !self.isPaused else { return false }
+                if case .nearby = self.state { return true }
+                return false
+            })
+            guard !Task.isCancelled, let self else { return }
+            self.unlockTask = nil
+            switch result {
+            case .unlocked: self.unlockStatus = "系统会话已解锁（可能由密码、Apple Watch 或手动操作完成）"
+            case .cancelled: self.unlockStatus = "自动解锁已取消"
+            case .failed(let reason): self.unlockStatus = reason
+            }
+            self.log(self.unlockStatus!)
+        }
+    }
+
     private var protectionReason: String? {
         if (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true {
             return "系统会话已经锁定，不再发送锁屏请求"
@@ -472,102 +560,6 @@ final class AwayLockService: NSObject, ObservableObject {
             }
         }
     }
-    private func wakeDisplay(now: Date) {
-        guard bool(DefaultsKey.awayLockWakeOnReturn) else {
-            log("设备已返回，但“设备靠近时唤醒显示器”已关闭，未执行唤醒")
-            return
-        }
-        let elapsed = now.timeIntervalSince(lastDisplayWakeAt)
-        guard elapsed >= displayWakeCooldown else {
-            let remaining = Int((displayWakeCooldown - elapsed).rounded(.up))
-            log("设备已返回，但为防止反复亮屏，本次唤醒已抑制（冷却剩余 \(remaining) 秒）")
-            return
-        }
-        let displayPower = displayPowerSnapshot
-        guard displayPower.allOnlineDisplaysAsleep else {
-            log("设备已明确返回，但未发送唤醒请求：\(displayPower.description)。显示器已经亮着时唤醒可能导致闪烁")
-            return
-        }
-        pendingWake?.cancel()
-        let generation = displayLifecycleGeneration
-        log("准备返回唤醒：先观察 3 秒，期间显示器状态变化则取消；\(displayPower.description)")
-        pendingWake = Task { @MainActor [weak self] in
-            guard let self else { return }
-            for _ in 0..<6 {
-                do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
-                let current = self.displayPowerSnapshot
-                guard self.displayLifecycleGeneration == generation,
-                      self.bool(DefaultsKey.awayLockEnabled),
-                      self.bool(DefaultsKey.awayLockWakeOnReturn), !self.isPaused,
-                      current.allOnlineDisplaysAsleep,
-                      current.description == displayPower.description,
-                      (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true,
-                      case .nearby = self.state else {
-                    self.log("返回唤醒已取消：设备、会话、开关或显示器状态变化；\(current.description)")
-                    self.pendingWake = nil
-                    return
-                }
-            }
-            self.pendingWake = nil
-            self.sendDisplayWake(now: Date())
-        }
-    }
-    private func sendDisplayWake(now: Date) {
-        // Reuse the returned ID as required by IOPMAssertionDeclareUserActivity.
-        // A successful return is only acknowledgement, never proof of an image.
-        wakeRequestCount += 1
-        log("发送显示器唤醒请求 #\(wakeRequestCount)：\(diagnosticContext)")
-        let result = IOPMAssertionDeclareUserActivity("Vorssaint Away Lock" as CFString, kIOPMUserActiveLocal, &userActivityAssertion)
-        log("显示器唤醒请求 #\(wakeRequestCount) 返回：IOKit=\(result)，assertionID=\(userActivityAssertion)；接口返回不等于屏幕已稳定点亮")
-        if result == kIOReturnSuccess {
-            lastDisplayWakeAt = now
-            displayRecoveryUntil = now.addingTimeInterval(15)
-            log("显示器唤醒请求已接受（120 秒内不再重复唤醒）；等待系统显示器状态通知")
-            observeWakeRecovery()
-        } else {
-            log("设备返回后的显示器唤醒请求失败（IOKit 错误 \(result)）")
-        }
-    }
-    private func observeWakeRecovery() {
-        wakeDiagnostics?.cancel()
-        wakeDiagnostics = Task { @MainActor [weak self] in
-            guard let self else { return }
-            var previous = ""
-            for second in 0...30 {
-                if second > 0 {
-                    do { try await Task.sleep(nanoseconds: 1_000_000_000) } catch { return }
-                }
-                let snapshot = self.displayPowerSnapshot.description
-                if snapshot != previous || second == 30 {
-                    self.log("唤醒后逐屏观测 +\(second) 秒：\(snapshot)（仅系统状态，不证明画面正常；不重试唤醒）")
-                    previous = snapshot
-                }
-            }
-            self.wakeDiagnostics = nil
-        }
-    }
-    private var displayPowerSnapshot: (allOnlineDisplaysAsleep: Bool, description: String) {
-        var count: UInt32 = 0
-        guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else {
-            return (false, "无法读取在线显示器电源状态，按安全策略跳过唤醒")
-        }
-        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
-        guard CGGetOnlineDisplayList(count, &displays, &count) == .success else {
-            return (false, "读取在线显示器电源状态失败，按安全策略跳过唤醒")
-        }
-        displays = Array(displays.prefix(Int(count)))
-        guard !displays.isEmpty else {
-            return (false, "二次枚举无在线显示器，取消唤醒")
-        }
-        let asleep = displays.filter { CGDisplayIsAsleep($0) != 0 }.count
-        let details = displays.sorted().map { id in
-            let mode = CGDisplayCopyDisplayMode(id)
-            return "ID=\(id)，内屏=\(CGDisplayIsBuiltin(id))，活动=\(CGDisplayIsActive(id))，休眠=\(CGDisplayIsAsleep(id))，像素=\(mode?.pixelWidth ?? 0)x\(mode?.pixelHeight ?? 0)，Hz=\(mode?.refreshRate ?? 0)"
-        }.joined(separator: "；")
-        return (AwayLockSupport.canWakeDisplays(onlineCount: displays.count, asleepCount: asleep),
-                "在线显示器 \(displays.count) 台，其中休眠 \(asleep) 台、非休眠 \(displays.count - asleep) 台；\(details)")
-    }
-    private func notify(_ title: String, _ body: String) { guard bool(DefaultsKey.awayLockNotifications) else { return }; let c = UNMutableNotificationContent(); c.title = title; c.body = body; UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: c, trigger: nil)) }
     private func presentLockWarningIfNeeded(now: Date = Date()) {
         guard !lockWarningPresentedForCurrentAway else {
             logCondition("lock-warning-deduplicated", "锁屏倒计时再次开始，但同一次离开过程已通知，不再重复发送")
@@ -595,12 +587,19 @@ final class AwayLockService: NSObject, ObservableObject {
         center.removePendingNotificationRequests(withIdentifiers: [lockWarningNotificationID])
         center.removeDeliveredNotifications(withIdentifiers: [lockWarningNotificationID])
     }
-    private func setPause(_ date: Date) { cancelSimulatedDeparture(); UserDefaults.standard.set(date.timeIntervalSince1970, forKey: DefaultsKey.awayLockPauseUntil); cancelCountdown(); objectWillChange.send() }
+    private func setPause(_ date: Date) {
+        cancelSimulatedDeparture()
+        cancelReturnUnlock()
+        returnWake.armed = false
+        AwayLockScreenControl.releaseWakeRequest()
+        lockConfirmation?.cancel(); lockConfirmation = nil; isConfirmingLock = false
+        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: DefaultsKey.awayLockPauseUntil)
+        cancelCountdown(); objectWillChange.send()
+    }
     private var diagnosticContext: String {
         let now = Date()
         let lockAge = lastLockRequestAt.map { String(format: "%.1f 秒", now.timeIntervalSince($0)) } ?? "本次运行未请求"
-        let wakeAge = lastDisplayWakeAt == .distantPast ? "本次运行未成功请求" : String(format: "%.1f 秒", now.timeIntervalSince(lastDisplayWakeAt))
-        return "显示器=\(observedDisplayState)，状态=\(state)，等待返回=\(waitingForReturn)，唤醒资格=\(wakeOnReturnArmed)，唤醒开关=\(bool(DefaultsKey.awayLockWakeOnReturn))，倒计时运行=\(countdownTimer != nil)，扫描中=\(central?.isScanning == true)，距锁屏请求=\(lockAge)，距唤醒请求=\(wakeAge)"
+        return "显示器=\(observedDisplayState)，状态=\(state)，等待返回=\(waitingForReturn)，锁定确认中=\(isConfirmingLock)，倒计时运行=\(countdownTimer != nil)，扫描中=\(central?.isScanning == true)，距锁屏请求=\(lockAge)，返回自动亮屏=\(bool(DefaultsKey.awayLockWakeOnReturn))"
     }
     private func logSystemEvent(_ message: String) {
         guard monitoringWasActive || bool(DefaultsKey.awayLockEnabled) else { return }
@@ -644,15 +643,15 @@ final class AwayLockService: NSObject, ObservableObject {
         }.sorted().joined(separator: "；")
     }
     private func cancelCountdown() { countdownTimer?.invalidate(); countdownTimer = nil; AwayLockCountdownOverlay.shared.hide() }
-    private func resetEvaluation() { isSimulatingDeparture = false; weakSince = nil; waitingForReturn = false; wakeOnReturnArmed = false; lockWarningPresentedForCurrentAway = false; cancelCountdown() }
+    private func resetEvaluation() {
+        lockConfirmation?.cancel(); lockConfirmation = nil; isConfirmingLock = false; lockError = nil
+        cancelReturnUnlock()
+        returnWake.armed = false
+        AwayLockScreenControl.releaseWakeRequest()
+        isSimulatingDeparture = false; weakSince = nil; waitingForReturn = false
+        lockWarningPresentedForCurrentAway = false; cancelCountdown()
+    }
     private func stop() {
-        pendingWake?.cancel(); pendingWake = nil
-        wakeDiagnostics?.cancel(); wakeDiagnostics = nil
-        if userActivityAssertion != 0 {
-            let result = IOPMAssertionRelease(userActivityAssertion)
-            log("停止监测，释放唤醒请求：ID=\(userActivityAssertion)，IOKit=\(result)")
-            userActivityAssertion = 0
-        }
         central?.stopScan(); evaluationTimer?.invalidate(); evaluationTimer = nil; energyTimer?.invalidate(); energyTimer = nil
         resetEvaluation(); state = .disabled; lastDiagnosticCondition = nil
         if monitoringWasActive { monitoringWasActive = false; log("监测已停止") }
@@ -706,6 +705,8 @@ extension AwayLockService: CBCentralManagerDelegate {
         let id = peripheral.identifier, value = RSSI.intValue; guard value < 0, advertisementThrottle.shouldForward(id) else { return }; let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? "未命名设备"
         Task { @MainActor in let reading = AwayLockPeripheral(id: id, name: name, rssi: value, lastSeen: Date()); self.queuePeripheralUpdate(reading)
             if name != "未命名设备" { var names = self.dictionary(DefaultsKey.awayLockDeviceNames); if names[id.uuidString] != name { names[id.uuidString] = name; UserDefaults.standard.set(names, forKey: DefaultsKey.awayLockDeviceNames) } }
-            if self.selectedIDs.contains(id.uuidString) { var signal = self.signals[id.uuidString] ?? AwayLockDeviceSignal(); signal.record(value); self.signals[id.uuidString] = signal } }
+            if self.selectedIDs.contains(id.uuidString) { var signal = self.signals[id.uuidString] ?? AwayLockDeviceSignal(); signal.record(value); self.signals[id.uuidString] = signal
+                if self.waitingForReturn { self.evaluate() }
+            } }
     }
 }

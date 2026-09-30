@@ -8,6 +8,7 @@ struct AwayLockSettings: View {
     @ObservedObject private var service = AwayLockService.shared
     @ObservedObject private var l10n = L10n.shared
     @AppStorage(DefaultsKey.awayLockEnabled) private var enabled = false
+    @AppStorage(DefaultsKey.panelShowAwayLock) private var showInPanel = true
     @AppStorage(DefaultsKey.awayLockPeripheralID) private var peripheralID = ""
     @AppStorage(DefaultsKey.awayLockPeripheralName) private var peripheralName = ""
     @AppStorage(DefaultsKey.awayLockThreshold) private var threshold = -74
@@ -17,8 +18,8 @@ struct AwayLockSettings: View {
     @AppStorage(DefaultsKey.awayLockGraceSeconds) private var graceSeconds = 5
     @AppStorage(DefaultsKey.awayLockProtectRecentInput) private var protectInput = true
     @AppStorage(DefaultsKey.awayLockPreventPresentation) private var preventPresentation = true
+    @AppStorage(DefaultsKey.awayLockWakeOnReturn) private var wakeOnReturn = false
     @AppStorage(DefaultsKey.awayLockAutomaticLock) private var automaticLock = true
-    @AppStorage(DefaultsKey.awayLockWakeOnReturn) private var wakeOnReturn = true
     @AppStorage(DefaultsKey.awayLockShowCountdown) private var showCountdown = true
     @AppStorage(DefaultsKey.awayLockNotifications) private var notifications = true
     @AppStorage(DefaultsKey.awayLockNotificationSound) private var notificationSound = true
@@ -34,32 +35,303 @@ struct AwayLockSettings: View {
 
     private var strings: AwayLockStrings { .strings(for: l10n.language) }
 
+    @AppStorage(DefaultsKey.awayLockAutoUnlock) private var autoUnlock = false
+    @State private var showingPassword = false
+    @State private var password = ""
+    @State private var passwordConfirmation = ""
+    @State private var passwordMessage: String?
+    @State private var selectedTab = 0
+    @State private var showingDevices = false
+    @ObservedObject private var permissions = Permissions.shared
+
     var body: some View {
-        let devices = service.settingsDevices
-        let visibleDevices = filteredDevices(from: devices)
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
                 HStack(spacing: 12) {
                     Image(systemName: "lock.laptopcomputer")
-                        .font(.system(size: 28))
-                        .foregroundStyle(Color.accentColor)
-                    VStack(alignment: .leading, spacing: 3) {
+                        .font(.system(size: 25)).foregroundStyle(Color.accentColor)
+                        .frame(width: 48, height: 48)
+                        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 13))
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(strings.title).font(.title2.bold())
-                        Text(strings.caption).foregroundStyle(.secondary)
+                        Text("人离开，Mac 自动锁屏。").foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Toggle(strings.enable, isOn: $enabled).labelsHidden().toggleStyle(.switch)
+                        .accessibilityLabel(strings.enable)
+                }
+                surface {
+                    HStack(spacing: 10) {
+                        Image(systemName: statusSymbol).foregroundStyle(statusColor)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(service.statusText).font(.headline)
+                            Text(service.isPaused ? "暂停期间不会自动锁屏" : service.detailText)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button(service.isPaused ? "恢复监测" : "暂停 30 分钟") {
+                            service.isPaused ? service.resumeNow() : service.pause(minutes: 30)
+                        }.disabled(!enabled)
                     }
                 }
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Toggle(strings.enable, isOn: $enabled)
-                        Divider()
-                        Text(strings.status).font(.headline)
-                        Label(statusText, systemImage: statusSymbol)
-                            .foregroundStyle(statusColor)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
+                Picker("设置分类", selection: $selectedTab) {
+                    Text("常用设置").tag(0)
+                    Text("高级与诊断").tag(1)
+                }.pickerStyle(.segmented).frame(maxWidth: 300)
+                if selectedTab == 0 { commonSettings } else { advancedSettings }
+            }
+            .frame(maxWidth: 820, alignment: .leading)
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .sheet(isPresented: $showingDevices) { deviceManager }
+        .sheet(isPresented: $showingPassword, onDismiss: { password = ""; passwordConfirmation = "" }) { passwordSettings }
+        .onChange(of: autoUnlock) { _, _ in service.syncReturnUnlockPreference() }
+        .alert("完整模拟离开？", isPresented: $confirmSimulatedLock) {
+            Button("取消", role: .cancel) { }
+            Button("开始模拟") { service.simulateDeparture() }
+        } message: {
+            Text("此操作会真正锁屏：经过当前离开判定、提醒和倒计时后锁定 Mac。请停止操作，锁屏后手动唤醒或解锁恢复真实检测。")
+        }
+        .onAppear { service.syncWithPreferences(); permissions.refresh() }
+        .onChange(of: wakeOnReturn) { _, _ in service.syncReturnWakePreference() }
+        .onChange(of: enabled) { _, _ in service.syncWithPreferences() }
+        .onChange(of: threshold) { _, _ in service.syncWithPreferences() }
+    }
+
+    private func surface<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 14, content: content)
+            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.primary.opacity(0.06)))
+    }
+
+    private func settingToggle(_ title: String, hint: String, value: Binding<Bool>) -> some View {
+        HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                if !hint.isEmpty { Text(hint).font(.caption).foregroundStyle(.secondary) }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Toggle(title, isOn: value)
+                .labelsHidden().toggleStyle(.switch).fixedSize()
+                .accessibilityLabel(title)
+                .accessibilityHint(hint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var panelVisibility: Binding<Bool> {
+        Binding(get: { showInPanel }, set: { shown in
+            guard shown || PanelLayout.order.contains(where: {
+                $0 != .awayLock && $0.isAvailable && PanelLayout.isShown($0)
+            }) else { return }
+            showInPanel = shown
+        })
+    }
+
+    private var commonSettings: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack { Text("跟随的设备").font(.headline); Spacer()
+                    Button("管理设备…") { showingDevices = true }.buttonStyle(.link)
                 }
-                GroupBox(strings.device) {
+                surface {
+                    if service.selectedSignals.isEmpty {
+                        Label("还没有选择设备", systemImage: "iphone.slash").foregroundStyle(.secondary)
+                    }
+                    ForEach(service.selectedSignals) { signal in
+                        HStack(spacing: 12) {
+                            Image(systemName: "iphone").font(.title2).foregroundStyle(.secondary)
+                                .frame(width: 36, height: 42)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(signal.name)
+                                Text(service.primaryID == signal.id ? "主设备 · \(signal.status)" : signal.status)
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(signal.rssi.map { "\($0) dBm" } ?? "等待信号")
+                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        }
+                    }
+                    Divider()
+                    Picker("锁屏条件", selection: Binding(get: { service.policy }, set: service.setPolicy)) {
+                        ForEach(AwayLockPolicy.allCases) { Text($0.title).tag($0) }
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 9) {
+                Text("离开之后").font(.headline)
+                surface {
+                    settingToggle("自动锁屏", hint: "确认设备离开后，锁定当前 Mac", value: $automaticLock)
+                    Divider()
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 12) {
+                            flowStep("01 · 检测", "信号变弱或失联")
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                            flowStep("02 · 确认", "持续 \(weakSeconds) 秒")
+                            Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                            flowStep("03 · 提醒", "\(graceSeconds) 秒后锁屏")
+                        }
+                        Text("信号变弱或失联 → 持续 \(weakSeconds) 秒 → \(graceSeconds) 秒后锁屏").font(.caption)
+                    }
+                    DisclosureGroup("调整距离与等待时间") {
+                        VStack(spacing: 14) {
+                            valueSlider("默认离开阈值", value: $threshold, range: -90 ... -55, suffix: "dBm")
+                            Text("设备的自定义阈值优先于默认值，可在“管理设备”中调整。")
+                                .font(.caption).foregroundStyle(.secondary)
+                            valueSlider(strings.weakDuration, value: $weakSeconds, range: 5 ... 60, suffix: strings.seconds)
+                            valueSlider(strings.grace, value: $graceSeconds, range: 3 ... 30, suffix: strings.seconds)
+                        }.padding(.top, 12)
+                    }
+                }
+            }
+            VStack(alignment: .leading, spacing: 9) {
+                Text("回来之后").font(.headline)
+                surface {
+                    settingToggle("靠近时亮屏", hint: "仅尝试亮屏一次；使用 Apple Watch 解锁时，只需开启这一项。", value: $wakeOnReturn)
+                    Divider()
+                    settingToggle("自动输入密码解锁", hint: "仅在本程序锁屏后的设备返回时尝试一次。使用 Apple Watch 时可保持关闭。", value: Binding(get: { autoUnlock }, set: { value in
+                        if value { passwordMessage = nil; showingPassword = true }
+                        else { autoUnlock = false }
+                    }))
+                    HStack {
+                        Button(autoUnlock ? "更新登录密码…" : "设置密码并启用…") { passwordMessage = nil; showingPassword = true }
+                        Button("删除保存的密码", role: .destructive) {
+                            autoUnlock = false
+                            service.syncReturnUnlockPreference()
+                            do { try AwayLockPassword.delete(); passwordMessage = "已删除保存的密码" }
+                            catch { passwordMessage = error.localizedDescription }
+                        }
+                    }
+                    Text("密码仅保存在本机钥匙串。开启密码解锁后，检测到设备靠近即可尝试登录；蓝牙距离不等同于身份验证。关闭亮屏时，仅在屏幕已经亮起的情况下尝试解锁。")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let message = passwordMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
+                    if let status = service.unlockStatus { Text(status).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            VStack(alignment: .leading, spacing: 9) {
+                Text("显示与保护").font(.headline)
+                surface {
+                    settingToggle("在菜单面板中显示", hint: "隐藏分区不会停止监测；至少保留一个可见分区。", value: panelVisibility)
+                    Divider()
+                    settingToggle("使用电脑时暂缓锁屏", hint: "最近有键鼠操作时取消倒计时", value: $protectInput)
+                    Divider()
+                    settingToggle("全屏与会议保护", hint: "全屏或会议应用在前台时暂缓锁屏", value: $preventPresentation)
+                    DisclosureGroup("自定义防误锁应用（\(protectedAppIDs.count)）") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(sortedProtectedAppIDs, id: \.self) { protectedAppRow($0) }
+                            Button("添加应用…") { addProtectedApplication() }
+                        }.padding(.top, 8)
+                    }
+                }
+            }
+            HStack {
+                if permissions.accessibility {
+                    Label("辅助功能已授权", systemImage: "checkmark.shield").foregroundStyle(.secondary)
+                } else {
+                    Button("授权辅助功能以使用自动锁屏") { Permissions.shared.requestAccessibility() }
+                }
+                Spacer()
+                Button("预览锁屏倒计时") { AwayLockCountdownOverlay.shared.preview(seconds: graceSeconds) }
+                    .disabled(!showCountdown)
+            }.font(.caption)
+        }
+    }
+
+    private var passwordSettings: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("设置自动解锁密码").font(.title2.bold())
+            Text("请输入当前 Mac 用户的登录密码。保存后启用自动输入；如果希望继续使用 Apple Watch，请取消并保持密码解锁关闭。")
+                .foregroundStyle(.secondary)
+            SecureField("Mac 登录密码", text: $password)
+            SecureField("再次输入密码", text: $passwordConfirmation)
+            Text("保存时不会验证密码。修改 Mac 登录密码后，需要在这里重新保存。")
+                .font(.caption).foregroundStyle(.secondary)
+            if let message = passwordMessage { Text(message).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("取消", role: .cancel) { password = ""; passwordConfirmation = ""; showingPassword = false }
+                Button("保存并启用") {
+                    do {
+                        service.syncReturnUnlockPreference()
+                        try AwayLockPassword.save(password)
+                        password = ""; passwordConfirmation = ""
+                        autoUnlock = true
+                        passwordMessage = "密码已保存到本机钥匙串"
+                        showingPassword = false
+                    } catch { passwordMessage = error.localizedDescription }
+                }.disabled(password.isEmpty || password != passwordConfirmation)
+            }
+        }.padding(24).frame(width: 460)
+    }
+
+    private func flowStep(_ caption: String, _ title: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(caption).font(.caption2).foregroundStyle(.secondary)
+            Text(title).font(.caption)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var advancedSettings: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Text("信号与扫描").font(.headline)
+            surface {
+                valueSlider(strings.lossDuration, value: $lossSeconds, range: 10 ... 90, suffix: strings.seconds)
+                Divider()
+                valueSlider("返回信号余量", value: $returnMargin, range: 2 ... 12, suffix: "dB")
+                Picker("节能扫描", selection: $energyMode) {
+                    ForEach(AwayLockEnergyMode.allCases) { Text($0.title).tag($0.rawValue) }
+                }
+            }
+            Text("提醒").font(.headline)
+            surface {
+                settingToggle("锁屏倒计时弹窗", hint: "显示当前设置的 \(graceSeconds) 秒倒计时", value: $showCountdown)
+                Divider()
+                settingToggle("系统通知", hint: "离开锁屏前显示通知", value: $notifications)
+                Divider()
+                settingToggle("倒计时提示音", hint: "", value: $notificationSound)
+            }
+            HStack { Text("诊断与事件").font(.headline); Spacer()
+                Button("复制全部日志") { service.copyEvents() }.disabled(service.events.isEmpty)
+            }
+            surface {
+                HStack { Text(service.statusText); Spacer(); Text(service.detailText).foregroundStyle(.secondary) }
+                DisclosureGroup("查看最近 20 条技术日志（共 \(service.events.count) 条）") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(service.events.prefix(20)) { event in
+                            HStack(alignment: .top, spacing: 10) {
+                                Text(event.date.formatted(date: .omitted, time: .standard)).monospacedDigit()
+                                Text(event.message).fixedSize(horizontal: false, vertical: true)
+                            }.font(.caption).textSelection(.enabled)
+                        }
+                        Button("清空事件") { service.clearEvents() }.disabled(service.events.isEmpty)
+                    }.padding(.top, 10)
+                }
+            }
+            HStack {
+                Button("完整模拟离开…") { confirmSimulatedLock = true }
+                    .disabled(!enabled || !automaticLock || service.isSimulatingDeparture)
+                if service.isSimulatingDeparture { Button("取消模拟") { service.cancelSimulatedDeparture() } }
+                Spacer()
+                Button("暂停到今天结束") { service.pauseForToday() }.disabled(!enabled)
+            }
+            Text("完整模拟会真正锁屏。只查看弹窗效果，请使用常用设置中的“预览锁屏倒计时”。")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private var deviceManager: some View {
+        let devices = service.settingsDevices
+        let visibleDevices = filteredDevices(from: devices)
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack { Text("管理设备").font(.title2.bold()); Spacer()
+                Button("完成") { showingDevices = false }.keyboardShortcut(.defaultAction)
+            }
+            Text("选择参与距离监测的设备，并设置主设备及自定义阈值。")
+                .foregroundStyle(.secondary)
+            GroupBox(strings.device) {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Toggle("显示未命名设备", isOn: $showUnnamedDevices).toggleStyle(.checkbox)
@@ -80,7 +352,7 @@ struct AwayLockSettings: View {
                                     ForEach(visibleDevices) { device in deviceRow(device) }
                                 }
                             }
-                            .frame(height: 240)
+                            .frame(minHeight: 160, idealHeight: 260, maxHeight: 320)
                         }
                         HStack { Text("已选择 \(service.selectedIDs.count) 台").foregroundStyle(.secondary); Spacer()
                             Button(service.isRescanning ? "扫描中…" : "重新扫描") { service.rescan() }.disabled(service.isRescanning)
@@ -107,98 +379,7 @@ struct AwayLockSettings: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(6)
                 }
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 14) {
-                        valueSlider(strings.threshold, value: $threshold, range: -90 ... -55, suffix: "dBm")
-                        valueSlider("Return margin", value: $returnMargin, range: 2 ... 12, suffix: "dB")
-                        valueSlider(strings.weakDuration, value: $weakSeconds, range: 5 ... 60, suffix: strings.seconds)
-                        valueSlider(strings.lossDuration, value: $lossSeconds, range: 10 ... 90, suffix: strings.seconds)
-                        valueSlider(strings.grace, value: $graceSeconds, range: 3 ... 30, suffix: strings.seconds)
-                        Toggle(strings.protectInput, isOn: $protectInput)
-                        Toggle("全屏与会议应用防误锁", isOn: $preventPresentation)
-                        if protectedAppIDs.isEmpty {
-                            Text("尚未添加自定义防误锁应用")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            VStack(alignment: .leading, spacing: 7) {
-                                Text("已防误锁应用")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                ForEach(sortedProtectedAppIDs, id: \.self) { bundleID in
-                                    protectedAppRow(bundleID)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        Button("添加防误锁应用…") { addProtectedApplication() }
-                        Picker("自适应节能扫描", selection: $energyMode) {
-                            ForEach(AwayLockEnergyMode.allCases) { Text($0.title).tag($0.rawValue) }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(6)
-                }
-                GroupBox("系统与提醒") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle("自动锁屏", isOn: $automaticLock)
-                        Toggle("设备靠近时唤醒显示器", isOn: $wakeOnReturn)
-                        Toggle("锁屏前显示 5 秒倒计时弹窗", isOn: $showCountdown)
-                        Text("关闭后仍会按离开规则自动锁屏，但不会弹出倒计时窗口。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("完整模拟离开…") { confirmSimulatedLock = true }
-                            .disabled(!automaticLock || service.isSimulatingDeparture)
-                            .alert("完整模拟离开？", isPresented: $confirmSimulatedLock) {
-                                Button("取消", role: .cancel) { }
-                                Button("开始模拟") { service.simulateDeparture() }
-                            } message: {
-                                Text("这不是预览：将所有目标设备临时视为离开，按当前设置经过弱信号持续时间、通知和倒计时后真正锁屏。输入及全屏保护仍生效，开始后请停止操作。手机留在旁边不会取消模拟；锁屏后请手动唤醒或解锁，恢复真实检测。不模拟蓝牙硬件失联，不修改设置。")
-                            }
-                        if service.isSimulatingDeparture {
-                            Button("取消完整模拟离开") { service.cancelSimulatedDeparture() }
-                        }
-                        Text("复用正式离开处理流程；通知与弹窗遵循当前开关。无需带手机离开，锁屏后手动唤醒或解锁结束模拟。")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Button("预览倒计时弹窗") {
-                            AwayLockCountdownOverlay.shared.preview(seconds: graceSeconds)
-                        }
-                        .disabled(!showCountdown)
-                        Toggle("系统通知", isOn: $notifications)
-                        Toggle("倒计时提示音", isOn: $notificationSound)
-                        HStack { Button("暂停 30 分钟") { service.pause(minutes: 30) }
-                            Button("暂停到今天结束") { service.pauseForToday() }
-                            if service.isPaused { Button("立即恢复") { service.resumeNow() } }
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
-                }
-                GroupBox("诊断与事件") {
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack { Text("当前信号"); Spacer(); Text(service.latestAggregateRSSI.map { "\($0) dBm" } ?? "—") }
-                        HStack { Text("监测状态"); Spacer(); Text(service.statusText) }
-                        Divider()
-                        ForEach(service.events.prefix(20)) { event in
-                            HStack(alignment: .top, spacing: 10) {
-                                Text(event.date.formatted(date: .omitted, time: .standard))
-                                    .monospacedDigit()
-                                Text(event.message).fixedSize(horizontal: false, vertical: true)
-                                Spacer(minLength: 0)
-                            }.font(.caption).textSelection(.enabled)
-                        }
-                        HStack {
-                            Button("复制全部日志") { service.copyEvents() }.disabled(service.events.isEmpty)
-                            Button("清空事件") { service.clearEvents() }.disabled(service.events.isEmpty)
-                            Text("显示最近 20 条，共 \(service.events.count) 条（最多保留 1000 条）")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
-                }
-            }
-            .padding(24)
-        }
-        .onAppear { service.syncWithPreferences() }
-        .onChange(of: enabled) { _, _ in service.syncWithPreferences() }
-        .onChange(of: threshold) { _, _ in service.syncWithPreferences() }
+        }.padding(24).frame(minWidth: 500, idealWidth: 580, maxWidth: 700)
     }
 
     private func valueSlider(_ title: String, value: Binding<Int>, range: ClosedRange<Int>, suffix: String) -> some View {
@@ -324,19 +505,6 @@ struct AwayLockSettings: View {
         manualDeviceUUID = ""; manualDeviceName = ""; manualDeviceError = nil
     }
 
-    private var statusText: String {
-        switch service.state {
-        case .disabled: return strings.enable
-        case .needsDevice: return strings.noDevice
-        case .scanning: return strings.searching
-        case .nearby(let rssi): return "Nearby · \(rssi) dBm"
-        case .weak(let seconds): return "Weak signal · \(seconds) \(strings.seconds)"
-        case .countdown(let seconds): return "Locking in \(seconds) \(strings.seconds)"
-        case .awaitingReturn: return "Locked · waiting for a confirmed return"
-        case .bluetoothUnavailable: return strings.bluetoothUnavailable
-        }
-    }
-
     private var statusSymbol: String {
         switch service.state {
         case .nearby: return "checkmark.circle.fill"
@@ -348,6 +516,8 @@ struct AwayLockSettings: View {
     }
 
     private var statusColor: Color {
+        if service.lockError != nil { return .red }
+        if service.isPaused || !enabled { return .secondary }
         switch service.state {
         case .nearby: return .green
         case .weak, .countdown: return .orange

@@ -4,9 +4,6 @@
 import Foundation
 
 enum AwayLockSupport {
-    static func canWakeDisplays(onlineCount: Int, asleepCount: Int) -> Bool {
-        onlineCount > 0 && asleepCount == onlineCount
-    }
     /// Reserve a complete scan window after a pause before silence can expire.
     static func canPauseScan(readings: [(near: Bool, lastSeen: Date?)], now: Date,
                              pauseSeconds: TimeInterval, scanSeconds: TimeInterval,
@@ -15,6 +12,16 @@ enum AwayLockSupport {
         return readings.allSatisfy { reading in
             guard reading.near, let seen = reading.lastSeen, seen <= now else { return false }
             return now.timeIntervalSince(seen) + pauseSeconds + scanSeconds < Double(lossSeconds)
+        }
+    }
+
+    /// Two consecutive fresh observations, not a single RSSI spike or old readings.
+    static func hasFastReturn(samples: [(value: Int, date: Date)], threshold: Int, now: Date) -> Bool {
+        guard samples.count >= 2 else { return false }
+        let pair = Array(samples.suffix(2))
+        let gap = pair[1].date.timeIntervalSince(pair[0].date)
+        return gap >= 0.5 && gap <= 4 && pair.allSatisfy {
+            $0.value < 0 && $0.value >= threshold && $0.date <= now && now.timeIntervalSince($0.date) <= 4
         }
     }
 

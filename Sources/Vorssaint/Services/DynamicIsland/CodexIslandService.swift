@@ -3,29 +3,7 @@ import CoreText
 import Foundation
 import SQLite3
 
-struct CodexIslandSession: Codable, Equatable, Identifiable {
-    enum Status: String, Codable { case running, waiting, completed, failed }
-    let id: String
-    var project: String
-    var title: String
-    var detail: String
-    var status: Status
-    var startedAt: Date
-    var updatedAt: Date
-}
-
-private struct CodexHookEvent: Codable {
-    let event: String
-    let sessionID: String
-    let project: String
-    let title: String
-    let detail: String
-    let timestamp: Date
-    let approvalID: String?
-}
-
-/// Receives small, local-only state envelopes written by the Codex hook
-/// subprocess. Full prompts, tool inputs and transcripts are never persisted.
+/// Local Codex state, request-scoped approvals and optional Bark notifications.
 final class CodexIslandService: ObservableObject {
     static let shared = CodexIslandService()
 
@@ -38,7 +16,13 @@ final class CodexIslandService: ObservableObject {
     }
     @Published private(set) var sessions: [CodexIslandSession] = []
     @Published private(set) var hookInstalled = false
+    @Published private(set) var hookHealth: CodexHookHealth = .checking
+    private var hookHealthCheckedAt = Date.distantPast
+    private var hookHealthCheckInFlight = false
     @Published private(set) var lastError: String?
+    @Published private(set) var approvalDestination = CodexHookBridge.approvalDestination
+    @Published private(set) var approvals: [CodexIslandApproval] = []
+    @Published private(set) var approvalFeedback: [String: String] = [:]
     @Published var soundEnabled: Bool { didSet { UserDefaults.standard.set(soundEnabled, forKey: "dynamicIsland.codexSoundEnabled") } }
     @Published var soundVolume: Double { didSet { UserDefaults.standard.set(soundVolume, forKey: "dynamicIsland.codexSoundVolume") } }
     @Published var expandOnCompletion: Bool { didSet { UserDefaults.standard.set(expandOnCompletion, forKey: "dynamicIsland.codexExpandOnCompletion") } }
@@ -56,6 +40,8 @@ final class CodexIslandService: ObservableObject {
     @Published var promptFilters: String { didSet { UserDefaults.standard.set(promptFilters, forKey: "dynamicIsland.codexPromptFilters") } }
 
     private var firstRefresh = true
+    private var hookDirectories: [String: String] = [:]
+    private var hookTargets: [String: (app: String?, tty: String?)] = [:]
     private let monitoringStartedAt = Calendar.current.startOfDay(for: Date())
     private let refreshQueue = DispatchQueue(label: "Vorssaint.codexIsland.refresh", qos: .utility)
     private let logReader = CodexIslandLogReader()
@@ -74,7 +60,7 @@ final class CodexIslandService: ObservableObject {
         contentFontSize = UserDefaults.standard.object(forKey: "dynamicIsland.codexFontSize") as? Double ?? 11
         panelWidth = UserDefaults.standard.object(forKey: "dynamicIsland.codexPanelWidth") as? Double ?? 600
         let storedPanelHeight = UserDefaults.standard.object(forKey: "dynamicIsland.codexPanelHeight") as? Double
-        panelHeight = storedPanelHeight == nil || storedPanelHeight! <= 320 ? 560 : storedPanelHeight!
+        panelHeight = min(max(storedPanelHeight ?? 420, 220), 560)
         showSubagents = UserDefaults.standard.object(forKey: "dynamicIsland.codexShowSubagents") as? Bool ?? true
         subagentNotification = UserDefaults.standard.string(forKey: "dynamicIsland.codexSubagentNotification") ?? "main"
         builtInFiltersEnabled = UserDefaults.standard.object(forKey: "dynamicIsland.codexBuiltInFilters") as? Bool ?? true
@@ -85,22 +71,58 @@ final class CodexIslandService: ObservableObject {
         }
     }
 
-    var activeSession: CodexIslandSession? {
-        sessions.sorted { lhs, rhs in
-            if lhs.status == .waiting, rhs.status != .waiting { return true }
-            if rhs.status == .waiting, lhs.status != .waiting { return false }
-            return lhs.updatedAt > rhs.updatedAt
-        }.first
+    var orderedSessions: [CodexIslandSession] { IslandSessionPresentation.ordered(sessions) }
+
+    @Published var focusedNotificationSessionID: String?
+    @Published var recentSessionsExpanded = false
+    @Published private var presentationDate = Date()
+
+    var panelPlan: IslandSessionPanelPlan {
+        IslandSessionPanelPlan(sessions: enabled ? sessions : [], focusedID: focusedNotificationSessionID, now: presentationDate)
     }
+    var displayedSessions: [CodexIslandSession] { panelPlan.primary }
+    var activeSession: CodexIslandSession? { orderedSessions.first }
+    var islandContentHeight: CGFloat {
+        panelPlan.height(maximum: panelHeight, recentExpanded: recentSessionsExpanded, visibleRows: displayMode == "compact" ? 1 : 3)
+    }
+    func showAllSessions() { focusedNotificationSessionID = nil; recentSessionsExpanded = false }
 
     var runningCount: Int { sessions.filter { $0.status == .running }.count }
     var waitingCount: Int { sessions.filter { $0.status == .waiting }.count }
 
-    func respondToApproval(for session: CodexIslandSession, allow: Bool) {
-        let directory = CodexHookBridge.responseDirectory
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let response = directory.appendingPathComponent(session.id + ".response")
-        try? (allow ? "allow" : "deny").write(to: response, atomically: true, encoding: .utf8)
+    func approval(for session: CodexIslandSession) -> CodexIslandApproval? {
+        approvals.first { $0.sessionID == session.id && $0.expiresAt > Date() }
+    }
+
+    func setApprovalDestination(_ destination: CodexApprovalDestination) {
+        do {
+            try CodexHookBridge.setApprovalDestination(destination)
+            approvalDestination = destination
+            lastError = nil
+        } catch {
+            lastError = "审批显示端保存失败，仍使用原来的设置。"
+        }
+    }
+
+    func respondToApproval(for session: CodexIslandSession, requestID: String, allow: Bool) {
+        guard approvalDestination == .island,
+              let request = approval(for: session), request.id == requestID,
+              approvalFeedback[requestID] == nil,
+              let response = CodexHookSupport.responseURL(id: requestID, directory: CodexHookBridge.responseDirectory) else { return }
+        do {
+            try FileManager.default.createDirectory(at: CodexHookBridge.responseDirectory, withIntermediateDirectories: true,
+                                                  attributes: [.posixPermissions: 0o700])
+            try (allow ? "allow" : "deny").write(to: response, atomically: true, encoding: .utf8)
+            approvalFeedback[requestID] = allow ? "已发送允许，等待 Codex 接收" : "已发送拒绝，等待 Codex 接收"
+            lastError = nil
+        } catch { lastError = "审批发送失败，请重试或返回 Codex 处理。" }
+    }
+
+    private func notify(_ kind: IslandPhoneEvent, session: CodexIslandSession) {
+        guard !firstRefresh, Date().timeIntervalSince(session.updatedAt) < 60 else { return }
+        let filters = CodexIslandLogReader.Filters(builtIn: builtInFiltersEnabled, paths: pathFilters, prompts: promptFilters)
+        guard !CodexIslandLogReader.isFiltered(cwd: hookDirectories[session.id] ?? "", prompt: session.title, filters: filters) else { return }
+        IslandPhonePushService.shared.notify(kind, session: session)
     }
 
     func syncHookInstallation() {
@@ -108,10 +130,25 @@ final class CodexIslandService: ObservableObject {
             if enabled { try CodexHookInstaller.install() }
             else { try CodexHookInstaller.uninstall() }
             hookInstalled = enabled
+            hookHealthCheckedAt = .distantPast
             lastError = nil
         } catch {
             hookInstalled = false
             lastError = error.localizedDescription
+        }
+    }
+
+    func checkHookHealth() {
+        guard enabled, !hookHealthCheckInFlight else { return }
+        hookHealthCheckInFlight = true
+        hookHealthCheckedAt = Date()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let health = CodexHookHealth.inspect()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.hookHealthCheckInFlight = false
+                self.hookHealth = health
+            }
         }
     }
 
@@ -120,6 +157,17 @@ final class CodexIslandService: ObservableObject {
         // directory scan must neither block scrolling nor enqueue more scans.
         guard enabled, !refreshInFlight else { return }
         refreshInFlight = true
+        if Date().timeIntervalSince(hookHealthCheckedAt) >= 60 { checkHookHealth() }
+        CodexHookBridge.updateHeartbeat()
+        let expired = approvals.filter { $0.expiresAt <= Date() }
+        for request in expired {
+            approvals.removeAll { $0.id == request.id }
+            approvalFeedback[request.id] = nil
+            if let index = sessions.firstIndex(where: { $0.id == request.sessionID }), approval(for: sessions[index]) == nil {
+                sessions[index].status = .running
+                sessions[index].detail = "审批已过期，请返回 Codex 处理"
+            }
+        }
         let generation = refreshGeneration
         let currentSessions = sessions
         let startedAt = monitoringStartedAt
@@ -133,17 +181,24 @@ final class CodexIslandService: ObservableObject {
                 guard let self else { return }
                 self.refreshInFlight = false
                 guard self.enabled, self.refreshGeneration == generation else { return }
-                var attention = false
-                for event in events { attention = self.apply(event) || attention }
+                var attentionSessionID: String?
+                self.presentationDate = Date()
+                for event in events {
+                    if self.apply(event), self.expandOnCompletion || self.sessions.first(where: { $0.id == event.sessionID })?.status != .completed {
+                        attentionSessionID = event.sessionID
+                    }
+                }
                 self.mergeSessionLogs(logs)
                 let retained = self.sessions.filter {
                     $0.updatedAt >= self.monitoringStartedAt
                         && Date().timeIntervalSince($0.updatedAt) <= 6 * 60 * 60
                 }
                 if self.sessions != retained { self.sessions = retained }
-                if attention, !self.firstRefresh {
-                    let completed = self.sessions.first?.status == .completed
+                if let attentionSessionID, !self.firstRefresh {
+                    let completed = self.sessions.first(where: { $0.id == attentionSessionID })?.status == .completed
                     if !completed || self.expandOnCompletion {
+                        self.focusedNotificationSessionID = attentionSessionID
+                        self.recentSessionsExpanded = false
                         DynamicIslandService.shared.activateCodex(duration: completed ? 4 : 5)
                     }
                 }
@@ -158,18 +213,28 @@ final class CodexIslandService: ObservableObject {
             if let index = updated.firstIndex(where: { $0.id == log.id }) {
                 let previous = updated[index]
                 // Hooks applied after the scan began retain their authority.
-                guard !(previous.status == .waiting && Date().timeIntervalSince(previous.updatedAt) < 5 * 60),
+                guard approval(for: previous) == nil,
                       previous.updatedAt <= log.updatedAt else { continue }
                 updated[index] = log
                 updated[index].startedAt = previous.startedAt
-                if !firstRefresh, previous.status == .running, log.status == .completed {
+                if previous.status != log.status {
+                    if log.status == .waiting { notify(.question, session: log) }
+                    else if log.status == .failed { notify(.warning, session: log) }
+                }
+                if !firstRefresh, previous.status != .completed, log.status == .completed {
                     play(.completed)
-                    if expandOnCompletion { DynamicIslandService.shared.activateCodex(duration: 4) }
+                    notify(.completed, session: log)
+                    if expandOnCompletion {
+                        focusedNotificationSessionID = log.id
+                        recentSessionsExpanded = false
+                        DynamicIslandService.shared.activateCodex(duration: 4)
+                    }
                 } else if !firstRefresh, previous.status != .running, log.status == .running {
                     play(.started)
                 }
             } else {
                 updated.append(log)
+                if log.status == .waiting { notify(.question, session: log) }
                 if !firstRefresh, Date().timeIntervalSince(log.updatedAt) < 15 { play(.started) }
             }
         }
@@ -178,45 +243,105 @@ final class CodexIslandService: ObservableObject {
     }
 
     private func apply(_ event: CodexHookEvent) -> Bool {
-        let normalized = event.event.lowercased()
-        if normalized.contains("subagent"), !showSubagents { return false }
+        // Parent session IDs are used for sub-agent hooks. Never mark the parent complete.
+        if event.event.hasPrefix("Subagent") {
+            if showSubagents, let index = sessions.firstIndex(where: { $0.id == event.sessionID }) {
+                sessions[index].detail = event.detail
+            }
+            return false
+        }
+        if ["Stop", "Interrupt", "SessionEnd"].contains(event.event) {
+            let cancelled = approvals.filter { $0.sessionID == event.sessionID }
+            for request in cancelled { approvalFeedback[request.id] = nil }
+            approvals.removeAll { $0.sessionID == event.sessionID }
+        }
+        if let cwd = event.cwd { hookDirectories[event.sessionID] = cwd }
+        if let app = event.terminalApp { hookTargets[event.sessionID] = (app, event.terminalTTY) }
+        // Keep navigation metadata, but do not create tasks for CLI startup/shutdown.
+        if event.event == "SessionStart" { return false }
+        if ["SessionEnd", "Stop", "Interrupt"].contains(event.event),
+           !sessions.contains(where: { $0.id == event.sessionID }) { return false }
+        let isResolution = event.event == "ApprovalResolved" || event.event == "ApprovalExpired" || event.event == "ApprovalHandedOff"
+        if isResolution, let requestID = event.approvalID {
+            guard approvals.contains(where: { $0.id == requestID }) else { return false }
+            approvals.removeAll { $0.id == requestID }
+            approvalFeedback[requestID] = nil
+            if !approvals.contains(where: { $0.sessionID == event.sessionID }) {
+            }
+        }
         let status: CodexIslandSession.Status
-        if normalized.contains("permission") { status = .waiting }
-        else if normalized.contains("stop") { status = .completed }
-        else if normalized.contains("fail") || normalized.contains("error") { status = .failed }
-        else { status = .running }
-
+        switch event.event {
+        case "PermissionRequest":
+            guard approvalDestination == .island else { return false }
+            guard let id = event.approvalID, UUID(uuidString: id) != nil,
+                  let deadline = event.approvalExpiresAt, deadline > Date() else { return false }
+            if !approvals.contains(where: { $0.id == id }) {
+                approvals.append(.init(id: id, sessionID: event.sessionID, operation: event.operation ?? event.detail, expiresAt: deadline))
+            }
+            status = .waiting
+        case "Stop", "Interrupt", "SessionEnd": status = .completed
+        case "Failure", "Error": status = .failed
+        default: status = .running
+        }
         let previousStatus = sessions.first(where: { $0.id == event.sessionID })?.status
         if let index = sessions.firstIndex(where: { $0.id == event.sessionID }) {
+            if sessions[index].updatedAt > event.timestamp, !isResolution, event.event != "PermissionRequest" { return false }
             sessions[index].project = event.project
             if !event.title.isEmpty { sessions[index].title = event.title }
             sessions[index].detail = event.detail
             sessions[index].status = status
             sessions[index].updatedAt = event.timestamp
         } else {
-            sessions.append(CodexIslandSession(id: event.sessionID,
-                                                project: event.project,
-                                                title: event.title.isEmpty ? "Codex 任务" : event.title,
-                                                detail: event.detail,
-                                                status: status,
-                                                startedAt: event.timestamp,
-                                                updatedAt: event.timestamp))
+            sessions.append(CodexIslandSession(id: event.sessionID, project: event.project,
+                                               title: event.title.isEmpty ? event.project : event.title,
+                                               detail: event.detail, status: status,
+                                               startedAt: event.timestamp, updatedAt: event.timestamp))
+        }
+        if let index = sessions.firstIndex(where: { $0.id == event.sessionID }) {
+            if let remaining = approval(for: sessions[index]) {
+                sessions[index].status = .waiting
+                sessions[index].detail = remaining.operation
+            }
+            let session = sessions[index]
+            if event.event == "PermissionRequest" { notify(.approval, session: session) }
+            else if previousStatus != status && status == .completed && event.event == "Stop" { notify(.completed, session: session) }
+            else if previousStatus != status && status == .failed { notify(.warning, session: session) }
+            else if event.event == "Interrupt" { notify(.warning, session: session) }
         }
         sessions.sort { $0.updatedAt > $1.updatedAt }
-        let suppressSubagentNotice = normalized.contains("subagent") && subagentNotification == "main"
-        if previousStatus != status, !suppressSubagentNotice {
+        if previousStatus != status {
             switch status {
             case .waiting: play(.waiting)
             case .completed: play(.completed)
             case .failed: play(.failed)
-            case .running:
-                if normalized.contains("session") || previousStatus == nil { play(.started) }
+            case .running: if previousStatus == nil { play(.started) }
             }
         }
-        return !suppressSubagentNotice && (status == .waiting || status == .completed || status == .failed)
+        return status == .waiting || status == .completed || status == .failed
     }
 
     func openCodex(_ session: CodexIslandSession? = nil) {
+        if let session, let target = hookTargets[session.id], target.app == "Apple_Terminal",
+           let tty = target.tty, tty.hasPrefix("/dev/ttys"),
+           tty.dropFirst(9).allSatisfy({ $0.isNumber }) {
+            let script = """
+            tell application "Terminal"
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        if tty of t is "\(tty)" then
+                            set selected tab of w to t
+                            set index of w to 1
+                            activate
+                            return
+                        end if
+                    end repeat
+                end repeat
+                activate
+            end tell
+            """
+            DispatchQueue.global(qos: .userInitiated).async { _ = AppleScriptRunner.runDetailed(script) }
+            return
+        }
         if let session,
            let deepLink = URL(string: "codex://threads/\(session.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? session.id)"),
            NSWorkspace.shared.open(deepLink) { return }
@@ -301,98 +426,85 @@ final class CodexIslandService: ObservableObject {
 }
 
 enum CodexHookBridge {
-    static let inboxDirectory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/Vorssaint/CodexIsland/inbox", isDirectory: true)
-    static let responseDirectory = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/Vorssaint/CodexIsland/responses", isDirectory: true)
+    private static var storageRoot: URL {
+        #if VORSSAINT_TESTING
+        if let path = ProcessInfo.processInfo.environment["VORSSAINT_ISLAND_TEST_ROOT"] { return URL(fileURLWithPath: path) }
+        #endif
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Vorssaint/CodexIsland", isDirectory: true)
+    }
+    static var approvalDestination: CodexApprovalDestination {
+        guard let value = try? String(contentsOf: storageRoot.appendingPathComponent("approval-destination"), encoding: .utf8),
+              let destination = CodexApprovalDestination(rawValue: value) else { return .island }
+        return destination
+    }
+    static func setApprovalDestination(_ destination: CodexApprovalDestination) throws {
+        try FileManager.default.createDirectory(at: storageRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try destination.rawValue.write(to: storageRoot.appendingPathComponent("approval-destination"), atomically: true, encoding: .utf8)
+    }
 
+    static var inboxDirectory: URL { storageRoot.appendingPathComponent("inbox", isDirectory: true) }
+    static var responseDirectory: URL { storageRoot.appendingPathComponent("responses", isDirectory: true) }
+
+    static let heartbeatURL = inboxDirectory.deletingLastPathComponent().appendingPathComponent("heartbeat")
+
+    static func updateHeartbeat() {
+        try? FileManager.default.createDirectory(at: inboxDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? Data().write(to: heartbeatURL, options: .atomic)
+    }
+    private static var receiverIsAlive: Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: heartbeatURL.path),
+              let modified = attributes[.modificationDate] as? Date else { return false }
+        return Date().timeIntervalSince(modified) < 8
+    }
+    private static func publish(_ event: CodexHookEvent) throws {
+        try FileManager.default.createDirectory(at: inboxDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let url = inboxDirectory.appendingPathComponent(String(format: "%.6f-%@.json", Date().timeIntervalSince1970, UUID().uuidString))
+        try JSONEncoder.codexIsland.encode(event).write(to: url, options: .atomic)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
     static func runAndExit() -> Never {
         autoreleasepool {
+            // No running receiver: leave Codex's own approval flow in charge immediately.
+            guard receiverIsAlive else { exit(0) }
             let input = FileHandle.standardInput.readDataToEndOfFile()
-            guard let object = try? JSONSerialization.jsonObject(with: input) as? [String: Any] else { exit(0) }
-            let baseEvent = string(in: object, keys: ["hook_event_name", "event", "event_name", "type"]) ?? "Update"
-            let reportedStatus = string(in: object, keys: ["status", "result_status"])?.lowercased() ?? ""
-            let event = reportedStatus == "failed" || reportedStatus == "error" ? "Failure" : baseEvent
-            let sessionID = string(in: object, keys: ["session_id", "sessionId", "conversation_id", "thread_id"])
-                ?? string(in: object, keys: ["transcript_path"]).map { URL(fileURLWithPath: $0).lastPathComponent }
-                ?? "codex-default"
-            let cwd = string(in: object, keys: ["cwd", "working_directory", "project_path"]) ?? ""
-            let project = cwd.isEmpty ? "Codex" : URL(fileURLWithPath: cwd).lastPathComponent
-            let prompt = string(in: object, keys: ["prompt", "user_prompt", "message"]) ?? ""
-            let tool = string(in: object, keys: ["tool_name", "tool", "name"]) ?? ""
-            let title = compact(prompt, fallback: project == "Codex" ? "Codex 任务" : project, limit: 52)
-            let detail = eventDetail(event: event, tool: tool)
-            let approvalID = baseEvent.lowercased().contains("permission") ? sessionID : nil
-            if approvalID != nil {
-                try? FileManager.default.createDirectory(at: responseDirectory, withIntermediateDirectories: true)
-                try? FileManager.default.removeItem(at: responseDirectory.appendingPathComponent(sessionID + ".response"))
-            }
-            let envelope = CodexHookEvent(event: event, sessionID: sessionID, project: project,
-                                          title: title, detail: detail, timestamp: Date(), approvalID: approvalID)
-            do {
-                try FileManager.default.createDirectory(at: inboxDirectory, withIntermediateDirectories: true)
-                let url = inboxDirectory.appendingPathComponent(String(format: "%.6f-%@.json", Date().timeIntervalSince1970, UUID().uuidString))
-                try JSONEncoder.codexIsland.encode(envelope).write(to: url, options: .atomic)
-            } catch { }
-            if approvalID != nil {
-                let responseURL = responseDirectory.appendingPathComponent(sessionID + ".response")
-                let deadline = Date().addingTimeInterval(295)
-                while Date() < deadline {
-                    if let decision = try? String(contentsOf: responseURL, encoding: .utf8) {
-                        try? FileManager.default.removeItem(at: responseURL)
-                        let behavior = decision == "allow" ? "allow" : "deny"
-                        let output: [String: Any] = ["hookSpecificOutput": [
-                            "hookEventName": "PermissionRequest",
-                            "decision": ["behavior": behavior]
-                        ]]
-                        if let data = try? JSONSerialization.data(withJSONObject: output) {
-                            FileHandle.standardOutput.write(data)
-                        }
-                        exit(0)
-                    }
-                    Thread.sleep(forTimeInterval: 0.1)
+            guard var event = try? CodexHookSupport.decode(input, environment: ProcessInfo.processInfo.environment) else { exit(0) }
+            if event.event == "PermissionRequest", approvalDestination == .codex { exit(0) }
+            do { try publish(event) } catch { exit(0) }
+            guard let requestID = event.approvalID,
+                  let responseURL = CodexHookSupport.responseURL(id: requestID, directory: responseDirectory),
+                  let deadline = event.approvalExpiresAt else { exit(0) }
+            defer { try? FileManager.default.removeItem(at: responseURL) }
+            while Date() < deadline && receiverIsAlive {
+                if approvalDestination == .codex {
+                    event.event = "ApprovalHandedOff"
+                    event.detail = "已交由 Codex 审批"
+                    event.timestamp = Date()
+                    try? publish(event)
+                    return
                 }
+                if let decision = try? String(contentsOf: responseURL, encoding: .utf8),
+                   let output = try? CodexHookSupport.response(decision) {
+                    FileHandle.standardOutput.write(output)
+                    event.event = "ApprovalResolved"
+                    event.detail = decision == "allow" ? "Codex 已接收允许" : "Codex 已接收拒绝"
+                    event.timestamp = Date()
+                    try? publish(event)
+                    return
+                }
+                Thread.sleep(forTimeInterval: 0.1)
             }
+            event.event = "ApprovalExpired"
+            event.detail = "审批已过期，请返回 Codex 处理"
+            event.timestamp = Date()
+            try? publish(event)
         }
         exit(0)
-    }
-
-    private static func eventDetail(event: String, tool: String) -> String {
-        let value = event.lowercased()
-        if value.contains("permission") { return "需要你的确认" }
-        if value.contains("stop") { return "任务已完成" }
-        if value.contains("sessionstart") || value.contains("session_start") { return "会话已开始" }
-        if value.contains("prompt") { return "正在分析任务" }
-        if value.contains("tool") { return tool.isEmpty ? "正在执行工具" : "正在执行 \(tool)" }
-        return "正在工作"
-    }
-
-    private static func compact(_ value: String, fallback: String, limit: Int) -> String {
-        let line = value.split(whereSeparator: \.isNewline).first.map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let source = line.isEmpty ? fallback : line
-        return source.count > limit ? String(source.prefix(limit)) + "…" : source
-    }
-
-    private static func string(in object: Any, keys: [String]) -> String? {
-        if let dictionary = object as? [String: Any] {
-            for key in keys {
-                if let value = dictionary[key] as? String, !value.isEmpty { return value }
-            }
-            for value in dictionary.values {
-                if let found = string(in: value, keys: keys) { return found }
-            }
-        } else if let array = object as? [Any] {
-            for value in array {
-                if let found = string(in: value, keys: keys) { return found }
-            }
-        }
-        return nil
     }
 }
 
 private enum CodexHookInstaller {
-    static let eventNames = ["PermissionRequest", "PostToolUse", "SessionStart", "Stop", "SubagentStop", "UserPromptSubmit"]
+    static let eventNames = ["PermissionRequest", "PostToolUse", "SessionStart", "SessionEnd", "Interrupt", "Stop", "SubagentStart", "SubagentStop", "UserPromptSubmit"]
     static let configURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/hooks.json")
 
     static func install() throws {
@@ -402,7 +514,7 @@ private enum CodexHookInstaller {
         let command = "'\(executable.replacingOccurrences(of: "'", with: "'\\''"))' --vorssaint-codex-hook"
         for eventName in eventNames {
             var groups = hooks[eventName] as? [[String: Any]] ?? []
-            let timeout = eventName == "PermissionRequest" ? 300 : 5
+            let timeout = eventName == "PermissionRequest" ? 300 : (["SessionEnd", "Interrupt"].contains(eventName) ? 3 : 5)
             var exists = false
             groups = groups.map { group in
                 var updated = group
@@ -411,6 +523,7 @@ private enum CodexHookInstaller {
                     guard (entry["command"] as? String)?.contains("--vorssaint-codex-hook") == true else { return entry }
                     exists = true
                     var updatedEntry = entry
+                    updatedEntry["command"] = command
                     updatedEntry["timeout"] = timeout
                     return updatedEntry
                 }
@@ -474,6 +587,8 @@ private final class CodexIslandLogReader {
     private var cursors: [URL: CodexIncrementalLog] = [:]
     private typealias Metadata = (id: String, project: String, cwd: String, threadSource: String, startedAt: Date)
     private var metadataCache: [URL: Metadata] = [:]
+    private var logsWithTasks = Set<URL>()
+    private var questionTrackers: [URL: CodexQuestionTracker] = [:]
     private var statusCache: [URL: CodexIslandSession.Status] = [:]
     private var detailCache: [URL: String] = [:]
     private var incomingObjects: [URL: [[String: Any]]] = [:]
@@ -507,7 +622,9 @@ private final class CodexIslandLogReader {
         let candidates = recentSessionLogCandidates(in: root)
         let active = Set(candidates.map { $0.0 })
         cursors = cursors.filter { active.contains($0.key) }
+        logsWithTasks.formIntersection(active)
         metadataCache = metadataCache.filter { active.contains($0.key) }
+        questionTrackers = questionTrackers.filter { active.contains($0.key) }
         statusCache = statusCache.filter { active.contains($0.key) }
         detailCache = detailCache.filter { active.contains($0.key) }
         logTitles = logTitles.filter { active.contains(URL(fileURLWithPath: $0.key)) }
@@ -521,7 +638,9 @@ private final class CodexIslandLogReader {
             cursors[url] = cursor
             guard let batch = try? cursor.read(url) else { continue }
             if batch.reset {
+                logsWithTasks.remove(url)
                 metadataCache[url] = nil
+                questionTrackers[url] = nil
                 statusCache[url] = nil
                 detailCache[url] = nil
                 logTitles[url.path] = nil
@@ -529,10 +648,12 @@ private final class CodexIslandLogReader {
             guard let metadata = metadataCache[url] ?? sessionMetadata(at: url) else { continue }
             metadataCache[url] = metadata
             guard metadata.threadSource == "user" else { continue }
+            if CodexTaskActivity.containsTask(batch.objects) { logsWithTasks.insert(url) }
+            guard logsWithTasks.contains(url) else { continue }
             incomingObjects[url] = batch.objects
             let previousSession = previous.first { $0.id == metadata.id }
             let title = titles[metadata.id] ?? logTitles[url.path] ?? sessionTitle(at: url, fallback: metadata.project)
-            guard !isFiltered(cwd: metadata.cwd, prompt: title, filters: filters) else { continue }
+            guard !Self.isFiltered(cwd: metadata.cwd, prompt: title, filters: filters) else { continue }
             logTitles[url.path] = title
             let status = sessionStatus(at: url, modified: modified, previousStatus: previousSession?.status)
             result.append(CodexIslandSession(id: metadata.id, project: metadata.project, title: title,
@@ -641,6 +762,7 @@ private final class CodexIslandLogReader {
               let payload = object["payload"] as? [String: Any] else { return nil }
         let source: String
         if let value = payload["thread_source"] as? String { source = value }
+        else if let value = payload["source"] as? String, ["cli", "vscode", "exec", "app"].contains(value) { source = "user" }
         else { source = "" }
         let id = (payload["session_id"] as? String) ?? (payload["id"] as? String) ?? url.lastPathComponent
         let cwd = payload["cwd"] as? String ?? ""
@@ -649,7 +771,7 @@ private final class CodexIslandLogReader {
         return (id, project, cwd, source, startedAt)
     }
 
-    private func isFiltered(cwd: String, prompt: String, filters: Filters) -> Bool {
+    static func isFiltered(cwd: String, prompt: String, filters: Filters) -> Bool {
         if filters.builtIn {
             let knownPaths = ["/.codex/memories", "/chronicle/screen_recording", "/.claude-mem"]
             let knownPrompts = ["## Memory Writing Agent", "# Overview Generate 0 to 3 hyperpersonalized suggestions", "Using the supplied git context below, generate", "What topic or area is the user exploring?"]
@@ -682,6 +804,7 @@ private final class CodexIslandLogReader {
     }
 
     private func sessionDetail(at url: URL, status: CodexIslandSession.Status) -> String {
+        if let prompt = questionTrackers[url]?.prompt { return prompt }
         if let detail = newSessionDetail(at: url, status: status) { detailCache[url] = detail }
         return detailCache[url] ?? (status == .completed ? "任务已完成" : "正在工作")
     }
@@ -689,8 +812,12 @@ private final class CodexIslandLogReader {
     private func newSessionDetail(at url: URL, status: CodexIslandSession.Status) -> String? {
         for object in (incomingObjects[url] ?? []).reversed() {
             guard let type = object["type"] as? String else { continue }
+            if status == .failed, let payload = object["payload"] as? [String: Any] {
+                return String(((payload["message"] as? String) ?? "任务执行失败").prefix(1000))
+            }
             if status == .completed {
-                if type == "task_complete", let payload = object["payload"] as? [String: Any],
+                if let payload = object["payload"] as? [String: Any],
+                   type == "task_complete" || payload["type"] as? String == "task_complete",
                    let message = payload["last_agent_message"] as? String {
                     let summary = message.split(separator: "\n").first.map(String.init)?
                         .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -700,6 +827,11 @@ private final class CodexIslandLogReader {
                    payload["type"] as? String == "turn_aborted" { return "任务已停止" }
             }
             if type == "response_item", let payload = object["payload"] as? [String: Any] {
+                if status == .completed, payload["role"] as? String == "assistant",
+                   payload["phase"] as? String == "final_answer", let content = payload["content"] as? [[String: Any]] {
+                    let text = content.compactMap { $0["text"] as? String }.joined(separator: "\n")
+                    if !text.isEmpty { return String(text.prefix(1000)) }
+                }
                 if payload["type"] as? String == "custom_tool_call", let name = payload["name"] as? String {
                     return "正在执行 \(name)"
                 }
@@ -713,11 +845,17 @@ private final class CodexIslandLogReader {
     private func sessionStatus(at url: URL, modified: Date,
                                previousStatus: CodexIslandSession.Status?) -> CodexIslandSession.Status {
         var latestStatus = statusCache[url]
+        var questions = questionTrackers[url] ?? CodexQuestionTracker()
+        let previouslyAsked = questions.callID != nil
         for object in incomingObjects[url] ?? [] {
+            questions.apply(object)
             if let event = CodexLogLifecycleState.event(in: object) {
                 latestStatus = CodexIslandSession.Status(rawValue: event.rawValue)
             }
         }
+        questionTrackers[url] = questions
+        if questions.callID != nil { return .waiting }
+        if previouslyAsked, latestStatus == nil { latestStatus = .running }
         if let latestStatus {
             if statusCache[url] != latestStatus { detailCache[url] = nil }
             statusCache[url] = latestStatus

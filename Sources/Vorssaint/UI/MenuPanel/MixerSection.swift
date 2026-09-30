@@ -30,6 +30,7 @@ struct MixerSection: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var mixer = AppVolumeMixer.shared
+    @ObservedObject private var alertVolume = SystemAlertVolumeService.shared
     @ObservedObject private var inputManager = AudioInputDeviceManager.shared
     @ObservedObject private var outputSwitcher = SoundOutputSwitcher.shared
     @ObservedObject private var preciseVolumeRoller = PreciseVolumeRollerService.shared
@@ -82,6 +83,12 @@ struct MixerSection: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("NSSystemColorsDidChangeNotification"))) { _ in
             refreshSliderTint()
+        }
+        .task {
+            while !Task.isCancelled {
+                alertVolume.refresh()
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
         .onAppear {
             soundOutputSwitcherUIDs = SoundOutputSwitcher.shared.selectedDeviceUIDs()
@@ -143,10 +150,13 @@ struct MixerSection: View {
         let tint = Color.blue
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                deviceIdentity(systemImage: "speaker.wave.2.fill",
-                               title: l10n.s.mixerSystemOutputTitle,
-                               subtitle: outputSubtitle,
-                               tint: tint)
+                deviceVolumeButton(systemImage: "speaker.wave.2.fill",
+                                   zeroImage: "speaker.slash.fill",
+                                   title: l10n.s.mixerSystemOutputTitle,
+                                   subtitle: outputSubtitle,
+                                   tint: tint,
+                                   volume: mixer.systemOutputVolume,
+                                   action: mixer.toggleCurrentOutputVolume)
 
                 Spacer(minLength: 6)
 
@@ -193,10 +203,13 @@ struct MixerSection: View {
         let tint = Color.orange
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                deviceIdentity(systemImage: "bell.fill",
-                               title: l10n.s.mixerSoundEffectsOutputTitle,
-                               subtitle: systemSoundSubtitle,
-                               tint: tint)
+                deviceVolumeButton(systemImage: "bell.fill",
+                                   zeroImage: "bell.slash.fill",
+                                   title: l10n.s.mixerSoundEffectsOutputTitle,
+                                   subtitle: systemSoundSubtitle,
+                                   tint: tint,
+                                   volume: alertVolume.volume,
+                                   action: alertVolume.toggle)
 
                 Spacer(minLength: 6)
 
@@ -224,15 +237,21 @@ struct MixerSection: View {
                 .help(l10n.s.mixerSoundEffectsOutputTooltip)
             }
 
-            if let volume = mixer.systemSoundOutputVolume {
+            if let volume = alertVolume.volume {
                 deviceVolumeRow(volume: volume,
                                 binding: systemSoundOutputVolumeBinding,
                                 editorID: "system-sound-output",
                                 accessibilityLabel: l10n.s.mixerSoundEffectsOutputTitle) {
-                    mixer.setCurrentSystemSoundOutputVolume($0)
+                    alertVolume.setVolume($0)
                 }
             }
 
+            if alertVolume.failed {
+                inputMessage([.zhHans, .zhTW, .zhHK].contains(l10n.language)
+                             ? "无法读取或设置提示音音量，请稍后重试。"
+                             : "Could not read or set alert volume. Please try again.",
+                             systemImage: "exclamationmark.triangle")
+            }
             if systemSoundOutputDevices.isEmpty {
                 inputMessage(l10n.s.mixerSystemOutputNoDevices, systemImage: "bell.slash")
             }
@@ -280,8 +299,8 @@ struct MixerSection: View {
 
     private var systemSoundOutputVolumeBinding: Binding<Double> {
         Binding(
-            get: { mixer.systemSoundOutputVolume ?? 0 },
-            set: { mixer.setCurrentSystemSoundOutputVolume($0) }
+            get: { alertVolume.volume ?? 0 },
+            set: { alertVolume.setVolume($0) }
         )
     }
 
@@ -443,10 +462,13 @@ struct MixerSection: View {
         let tint = Color.purple
         return VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                deviceIdentity(systemImage: "mic.fill",
-                               title: l10n.s.mixerInputTitle,
-                               subtitle: microphoneSubtitle,
-                               tint: tint)
+                deviceVolumeButton(systemImage: "mic.fill",
+                                   zeroImage: "mic.slash.fill",
+                                   title: l10n.s.mixerInputTitle,
+                                   subtitle: microphoneSubtitle,
+                                   tint: tint,
+                                   volume: inputManager.currentInputVolume,
+                                   action: inputManager.toggleCurrentInputVolume)
 
                 Spacer(minLength: 6)
 
@@ -537,6 +559,33 @@ struct MixerSection: View {
         }
     }
 
+    private func deviceVolumeButton(systemImage: String,
+                                    zeroImage: String,
+                                    title: String,
+                                    subtitle: String,
+                                    tint: Color,
+                                    volume: Double?,
+                                    action: @escaping () -> Void) -> some View {
+        let isZero = volume == 0
+        let chinese = [.zhHans, .zhTW, .zhHK].contains(l10n.language)
+        let hint = isZero
+            ? (chinese ? "恢复归零前的音量（无记录时为 50%）" : "Restore previous volume (50% if unavailable)")
+            : (chinese ? "将音量设为 0%" : "Set volume to 0%")
+        return Button(action: action) {
+            deviceIdentity(systemImage: isZero ? zeroImage : systemImage,
+                           title: title,
+                           subtitle: subtitle,
+                           tint: tint)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(volume == nil)
+        .help(hint)
+        .accessibilityLabel(title)
+        .accessibilityValue(volume.map { "\(Int(($0 * 100).rounded()))%" } ?? "—")
+        .accessibilityHint(hint)
+    }
+
     private func deviceIdentity(systemImage: String,
                                 title: String,
                                 subtitle: String,
@@ -566,7 +615,7 @@ struct MixerSection: View {
     }
 
     private var systemSoundSubtitle: String {
-        [.zhHans, .zhTW, .zhHK].contains(l10n.language) ? "提醒与界面音效" : "Alerts and interface sounds"
+        [.zhHans, .zhTW, .zhHK].contains(l10n.language) ? "提示音（相对于输出音量）" : "Alerts (relative to output volume)"
     }
 
     private var microphoneSubtitle: String {

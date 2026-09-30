@@ -1,0 +1,4 @@
+module RadialTrackpadInput {
+    header "TrackpadInput.h"
+    export *
+}

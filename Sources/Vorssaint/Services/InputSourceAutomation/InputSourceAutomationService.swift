@@ -11,9 +11,14 @@ final class InputSourceAutomationService: ObservableObject {
 
     @Published private(set) var activeApplication: NSRunningApplication?
     @Published private(set) var activeDomain: String?
+    @Published private(set) var menuApplication: NSRunningApplication?
+    @Published private(set) var menuDomain: String?
     @Published private(set) var isRunning = false
 
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var menuApplicationObserver: NSObjectProtocol?
+    private var lastExternalApplication: NSRunningApplication?
+    private var menuDomainGeneration = 0
     private var rulesObserver: NSObjectProtocol?
     private var inputSourceObserver: NSObjectProtocol?
     private var browserTimer: Timer?
@@ -25,7 +30,19 @@ final class InputSourceAutomationService: ObservableObject {
     private let manualOverrideDuration: TimeInterval = 15
     private let punctuation = EnglishPunctuationService()
 
-    private init() {}
+    private init() {
+        lastExternalApplication = Self.externalFrontmostApplication()
+        // Keep tracking while automation is disabled, so the first rule can be
+        // created even after the menu has activated our own process.
+        menuApplicationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                    as? NSRunningApplication,
+                  app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+            Task { @MainActor [weak self] in self?.lastExternalApplication = app }
+        }
+    }
 
     func syncWithPreferences() {
         let enabled = AppFeature.inputSourceAutomation.isAvailable
@@ -37,14 +54,27 @@ final class InputSourceAutomationService: ObservableObject {
     }
 
     func refreshMenuContext() {
-        guard let app = Self.externalFrontmostApplication() else { return }
-        if activeApplication?.processIdentifier != app.processIdentifier {
-            activeApplication = app
-            activeDomain = nil
+        if let app = Self.externalFrontmostApplication() {
+            lastExternalApplication = app
         }
-        // Domain discovery is still available when creating the first rule.
-        if Self.browserBundleIDs.contains(app.bundleIdentifier ?? "") {
-            requestDomain(for: app)
+        let app = lastExternalApplication.flatMap { $0.isTerminated ? nil : $0 }
+        if menuApplication?.processIdentifier != app?.processIdentifier {
+            menuDomain = nil
+        }
+        menuApplication = app
+        menuDomainGeneration &+= 1
+        guard let app, Self.browserBundleIDs.contains(app.bundleIdentifier ?? "") else { return }
+        let pid = app.processIdentifier
+        let generation = menuDomainGeneration
+        // Menu discovery must never change the runtime context or apply a rule
+        // to the app currently receiving keyboard events (which can be us).
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let domain = BrowserDomainResolver.domain(processIdentifier: pid)
+            DispatchQueue.main.async {
+                guard let self, self.menuDomainGeneration == generation,
+                      self.menuApplication?.processIdentifier == pid else { return }
+                self.menuDomain = domain
+            }
         }
     }
 
@@ -106,11 +136,8 @@ final class InputSourceAutomationService: ObservableObject {
     }
 
     private func refreshActiveApplication() {
-        // Normal activation must include Vorssaint itself. The Settings window can
-        // have its own app rule; filtering our PID here left the previous external
-        // app cached, so a rule for the Developer build never took effect. Only
-        // refreshMenuContext() deliberately skips our process, because opening the
-        // menu bar panel should continue to describe the app behind the panel.
+        // Runtime activation includes our Settings window. The menu edits a
+        // separate external-app snapshot, so this cannot replace its target.
         guard isRunning, let app = NSWorkspace.shared.frontmostApplication else { return }
         activeApplication = app
         activeDomain = nil

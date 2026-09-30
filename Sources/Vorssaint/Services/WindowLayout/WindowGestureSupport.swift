@@ -506,7 +506,7 @@ enum WindowEdgeSnapSupport {
                 } else if point.x >= frame.maxX - horizontalCorner {
                     action = .topRight
                 } else {
-                    action = .topHalf
+                    action = .maximize
                 }
             } else if nearBottom {
                 if point.x <= frame.minX + horizontalCorner {
@@ -514,7 +514,8 @@ enum WindowEdgeSnapSupport {
                 } else if point.x >= frame.maxX - horizontalCorner {
                     action = .bottomRight
                 } else {
-                    action = .bottomHalf
+                    action = frame.height > frame.width ? .bottomHalf
+                        : thirdAction(fraction: (point.x - frame.minX) / frame.width)
                 }
             } else if nearLeft {
                 if point.y >= frame.maxY - verticalCorner {
@@ -522,7 +523,8 @@ enum WindowEdgeSnapSupport {
                 } else if point.y <= frame.minY + verticalCorner {
                     action = .bottomLeft
                 } else {
-                    action = .leftHalf
+                    action = frame.height > frame.width
+                        ? thirdAction(fraction: (frame.maxY - point.y) / frame.height) : .leftHalf
                 }
             } else {
                 if point.y >= frame.maxY - verticalCorner {
@@ -530,10 +532,23 @@ enum WindowEdgeSnapSupport {
                 } else if point.y <= frame.minY + verticalCorner {
                     action = .bottomRight
                 } else {
-                    action = .rightHalf
+                    action = frame.height > frame.width
+                        ? thirdAction(fraction: (frame.maxY - point.y) / frame.height) : .rightHalf
                 }
             }
 
+            if frame.height > frame.width, isThird(action) {
+                // Rotate the thirds geometry into horizontal bands on portrait displays.
+                let visible = screen.visibleFrame
+                let virtual = CGRect(x: 0, y: 0, width: visible.height, height: visible.width)
+                let rect = WindowLayoutGeometry.rect(for: action, current: virtual, visibleFrame: virtual,
+                    windowGap: WindowLayoutGaps.windowGap, screenGap: WindowLayoutGaps.screenGap)
+                let rotated = CGRect(x: visible.minX + rect.minY, y: visible.maxY - rect.maxX,
+                                     width: rect.height, height: rect.width).integral
+                let anchor: WindowLayoutAction = action == .centerThird ? .center
+                    : (action == .leftThird || action == .leftTwoThirds ? .topHalf : .bottomHalf)
+                return WindowEdgeSnapTarget(action: anchor, frame: rotated, visibleFrame: visible)
+            }
             let targetFrame = WindowLayoutGeometry.rect(for: action,
                                                         current: screen.visibleFrame,
                                                         visibleFrame: screen.visibleFrame,
@@ -544,6 +559,35 @@ enum WindowEdgeSnapSupport {
                                         visibleFrame: screen.visibleFrame)
         }
         return nil
+    }
+
+    /// Five contiguous bottom-edge zones: 1/3, 2/3, center, 2/3, 1/3.
+    static func thirdAction(fraction: CGFloat) -> WindowLayoutAction {
+        switch fraction {
+        case ..<0.3: return .leftThird
+        case ..<0.4: return .leftTwoThirds
+        case ..<0.6: return .centerThird
+        case ..<0.7: return .rightTwoThirds
+        default: return .rightThird
+        }
+    }
+
+    private static func isThird(_ action: WindowLayoutAction) -> Bool {
+        [.leftThird, .centerThird, .rightThird, .leftTwoThirds, .rightTwoThirds].contains(action)
+    }
+
+    /// Quartz coordinates: preserve the pointer's horizontal grip when a tiled
+    /// window is pulled free, and fit the restored size to the destination screen.
+    static func restoredDragFrame(originalSize: CGSize, tiledFrame: CGRect,
+                                  pointerStart: CGPoint, pointerNow: CGPoint,
+                                  visibleFrame: CGRect) -> CGRect {
+        let width = min(originalSize.width, visibleFrame.width)
+        let height = min(originalSize.height, visibleFrame.height)
+        let grip = min(1, max(0, (pointerStart.x - tiledFrame.minX) / max(1, tiledFrame.width)))
+        let titleOffset = min(32, max(8, pointerStart.y - tiledFrame.minY))
+        return CGRect(x: min(max(pointerNow.x - width * grip, visibleFrame.minX), visibleFrame.maxX - width),
+                      y: min(max(pointerNow.y - titleOffset, visibleFrame.minY), visibleFrame.maxY - height),
+                      width: width, height: height).integral
     }
 
     private enum Edge {

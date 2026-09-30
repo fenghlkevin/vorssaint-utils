@@ -27,6 +27,7 @@ final class AudioInputDeviceManager: ObservableObject {
     @Published private(set) var preferredUnavailable = false
     @Published private(set) var lastError: String?
 
+    private var inputVolumeBeforeZero: [String: Double] = [:]
     private var listenerInstalled = false
     /// Stored so stop() can remove the HAL listeners when the mixer leaves
     /// the hub.
@@ -110,14 +111,31 @@ final class AudioInputDeviceManager: ObservableObject {
         refreshAndApply()
     }
 
+    func toggleCurrentInputVolume() {
+        guard let uid = effectiveInputDeviceUID,
+              let device = inputDevices.first(where: { $0.uid == uid }),
+              let volume = Self.inputVolume(for: device.audioObjectID) else { return }
+        setCurrentInputVolume(volume > 0 ? 0 : (inputVolumeBeforeZero[uid] ?? 0.5))
+    }
+
     func setCurrentInputVolume(_ volume: Double) {
         let clamped = min(max(volume, 0), 1)
         guard let uid = effectiveInputDeviceUID,
-              let device = inputDevices.first(where: { $0.uid == uid }),
-              Self.setInputVolume(Float32(clamped), for: device.audioObjectID) else {
+              let device = inputDevices.first(where: { $0.uid == uid }) else {
             refreshAndApply()
             return
         }
+        let previous = Self.inputVolume(for: device.audioObjectID).map(Double.init)
+        guard Self.setInputVolume(Float32(clamped), for: device.audioObjectID) else {
+            refreshAndApply()
+            return
+        }
+        if clamped > 0 {
+            inputVolumeBeforeZero[uid] = clamped
+        } else if let previous, previous > 0 {
+            inputVolumeBeforeZero[uid] = previous
+        }
+        refresh.discardInFlight()
         if currentInputVolume != clamped { currentInputVolume = clamped }
     }
 

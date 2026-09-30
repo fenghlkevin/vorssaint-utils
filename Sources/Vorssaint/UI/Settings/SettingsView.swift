@@ -377,6 +377,7 @@ struct SettingsView: View {
         case .permissions: PermissionsSettings()
         case .textSnippets: TextSnippetsSettings()
         case .radialMenu: RadialMenuSettings()
+        case .radialSwitcher: RadialSwitcherSettings()
         case .commandBar: CommandBarSettings()
         case .energy: EnergySettings()
         case .batteryManagement: BatteryManagementSettings()

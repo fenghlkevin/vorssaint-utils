@@ -196,6 +196,8 @@ struct GlobalShortcut: Equatable, Hashable {
     // Space for the wheel, on the same free control-option-command layer.
     static let radialMenuDefault = GlobalShortcut(keyCode: Int64(kVK_Space),
                                                   modifiers: [.control, .option, .command])
+    static let radialSwitcherDefault = GlobalShortcut(keyCode: Int64(kVK_ANSI_W),
+                                                      modifiers: [.control, .option, .command])
     // N for notes, on the same free control-option-command layer.
     static let scratchpadDefault = GlobalShortcut(keyCode: Int64(kVK_ANSI_N),
                                                   modifiers: [.control, .option, .command])

@@ -492,6 +492,7 @@ if (( TEST )); then
         Sources/Vorssaint/Services/Metrics/SustainedAlertGate.swift \
         Sources/Vorssaint/Services/WindowLayout/WindowLayoutSupport.swift \
         Sources/Vorssaint/Services/WindowLayout/WindowGestureSupport.swift \
+        Sources/Vorssaint/Services/WindowLayout/WindowSnapIslandSupport.swift \
         Sources/Vorssaint/Core/WindowDirectionalStrings.swift \
         Sources/Vorssaint/Services/CleaningMode/CleaningUnlockCounter.swift \
         Sources/Vorssaint/Services/Display/ExtraBrightnessSupport.swift \
@@ -554,7 +555,13 @@ if (( TEST )); then
 fi
 
 echo "▸ Compiling ($BUILD_CONFIGURATION) against $(basename "$SDK")…"
-NATIVE_BRIDGE_FLAGS=(-I Sources/MenuBarNativeBridge/include -framework Security)
+NATIVE_BRIDGE_FLAGS=(-I Sources/MenuBarNativeBridge/include -I Sources/RadialTrackpadInput/include -framework Security)
+TRACKPAD_OBJECTS=(build/RadialPinchRecognizer.o build/RadialTapRecognizer.o build/RadialTrackpadInput.o)
+compile_radial_trackpad() {
+    clang -c Sources/RadialTrackpadInput/PinchRecognizer.c -I Sources/RadialTrackpadInput/include -target "$TARGET" -isysroot "$SDK" -o "${TRACKPAD_OBJECTS[1]}"
+    clang -c Sources/RadialTrackpadInput/TapRecognizer.c -I Sources/RadialTrackpadInput/include -target "$TARGET" -isysroot "$SDK" -o "${TRACKPAD_OBJECTS[2]}"
+    clang -c Sources/RadialTrackpadInput/TrackpadInput.c -I Sources/RadialTrackpadInput/include -target "$TARGET" -isysroot "$SDK" -o "${TRACKPAD_OBJECTS[3]}"
+}
 compile_menu_bar_bridge() {
     clang -fobjc-arc -target "$TARGET" -isysroot "$SDK" \
         -I Sources/MenuBarNativeBridge/include \
@@ -567,6 +574,7 @@ if (( DEV )); then
     APP_OBJECT_DIR="build/objects/$EXECUTABLE"
     mkdir -p build "$APP_OBJECT_DIR"
     compile_menu_bar_bridge
+    compile_radial_trackpad
     bash Tools/build-proxy-yaml.sh build/proxy-yaml
     clang -c Sources/ProxyTunnelBridge/ProxyTunnelBridge.c -I Sources/ProxyTunnelBridge/include -target "$TARGET" -isysroot "$SDK" -o build/ProxyTunnelBridge.o
     APP_OUTPUT_FILE_MAP="$APP_OBJECT_DIR/output-file-map.json"
@@ -575,17 +583,18 @@ if (( DEV )); then
         -output-file-map "$APP_OUTPUT_FILE_MAP" -emit-executable -emit-module-path "$APP_OBJECT_DIR/$EXECUTABLE.swiftmodule" \
         -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${VM_STATISTICS_COMPAT_FLAGS[@]}" \
         "${BUILD_VARIANT_FLAGS[@]}" \
-        "${NATIVE_BRIDGE_FLAGS[@]}" build/MenuBarClientCoreBridge.o -I Sources/ProxyYAML/include build/proxy-yaml/libProxyYAML.a -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o \
+        "${NATIVE_BRIDGE_FLAGS[@]}" build/MenuBarClientCoreBridge.o "${TRACKPAD_OBJECTS[@]}" -I Sources/ProxyYAML/include build/proxy-yaml/libProxyYAML.a -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o \
         "${APP_SOURCES[@]}" -o "build/$EXECUTABLE"
 else
     rm -rf build
     mkdir -p build
     compile_menu_bar_bridge
+    compile_radial_trackpad
     bash Tools/build-proxy-yaml.sh build/proxy-yaml
     clang -c Sources/ProxyTunnelBridge/ProxyTunnelBridge.c -I Sources/ProxyTunnelBridge/include -target "$TARGET" -isysroot "$SDK" -o build/ProxyTunnelBridge.o
     swiftc "${APP_OPTIMIZATION_FLAGS[@]}" -target "$TARGET" -sdk "$SDK" \
         "${SDK_COMPAT_FLAGS[@]}" "${VM_STATISTICS_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" \
-        "${NATIVE_BRIDGE_FLAGS[@]}" build/MenuBarClientCoreBridge.o -I Sources/ProxyYAML/include build/proxy-yaml/libProxyYAML.a -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o \
+        "${NATIVE_BRIDGE_FLAGS[@]}" build/MenuBarClientCoreBridge.o "${TRACKPAD_OBJECTS[@]}" -I Sources/ProxyYAML/include build/proxy-yaml/libProxyYAML.a -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o \
         "${APP_SOURCES[@]}" -o "build/$EXECUTABLE"
 fi
 
@@ -688,6 +697,8 @@ cp Resources/com.vorssaint.utils.fan-control.plist \
 cp Resources/Info.plist "$STAGE/Contents/Info.plist"
 cp CHANGELOG.md "$STAGE/Contents/Resources/CHANGELOG.md"
 cp Resources/OnlySwitch-LICENSE.txt "$STAGE/Contents/Resources/OnlySwitch-LICENSE.txt"
+cp Resources/LumaRing-LICENSE.txt "$STAGE/Contents/Resources/LumaRing-LICENSE.txt"
+cp Resources/OpenMultitouchSupport-LICENSE.txt "$STAGE/Contents/Resources/OpenMultitouchSupport-LICENSE.txt"
 # Departure Mono is explicitly supplied by the local developer for the Codex
 # island. Bundle it when present so the installed app does not depend on Vibe
 # Island remaining installed at runtime.

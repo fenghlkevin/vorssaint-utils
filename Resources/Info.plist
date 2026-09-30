@@ -57,7 +57,7 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Vorssaint uses Automation to show Apple Music playback in Dynamic Island, move files in Finder, send items to the Trash and open Terminal commands when you ask for Homebrew actions.</string>
+	<string>Vorssaint uses Automation to switch Safari, Chrome and Edge tabs when requested, show Apple Music playback in Dynamic Island, move files in Finder, send items to the Trash and open Terminal commands when you ask for Homebrew actions.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Vorssaint reads upcoming calendar events to show time reminders in Dynamic Island.</string>
 	<key>NSAudioCaptureUsageDescription</key>

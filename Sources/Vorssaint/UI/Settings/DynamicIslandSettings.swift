@@ -45,19 +45,39 @@ struct DynamicIslandSettings: View {
                 }
                 sectionTitle("集成")
                 settingsCard {
-                    settingRow(icon: "terminal.fill", tint: .blue, title: "AI Hook", detail: codex.lastError ?? (codex.hookInstalled ? "已连接 Codex，正在接收 AI 任务状态" : "启用后显示 AI 任务状态")) {
+                    settingRow(icon: "terminal.fill", tint: .blue, title: "AI Hook", detail: codex.lastError ?? codex.hookHealth.message) {
                         Toggle("", isOn: $codex.enabled).labelsHidden()
                     }
                 }
                 }
                 if selectedSettingsTab == .aiHook {
                 moduleHeader("AI Hook", detail: "管理 AI 会话的显示、通知、过滤与声音", symbol: "terminal.fill", color: .blue)
+                settingsCard {
+                    settingRow(icon: "checkmark.shield", tint: codex.hookHealth == .ready ? .green : .orange,
+                               title: "Codex 审批接入", detail: codex.hookHealth.message) {
+                        Button("重新检查") { codex.checkHookHealth() }
+                    }
+                    Text("在 Codex 的 /hooks 中找到命令包含 VorssaintDeveloper 的条目并信任。安装或路径变更后需要重新检查；只读任务日志无法提供审批按钮。")
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.bottom, 12)
+                }
+                settingsCard {
+                    settingRow(icon: "rectangle.on.rectangle", tint: .blue, title: "审批显示端",
+                               detail: "选择 Codex 原生时，Vorssaint 不拦截审批；正在等待的请求也会交回 Codex。") {
+                        Picker("审批显示端", selection: Binding(get: { codex.approvalDestination }, set: { codex.setApprovalDestination($0) })) {
+                            ForEach(CodexApprovalDestination.allCases, id: \.rawValue) { destination in
+                                Text(destination.title).tag(destination)
+                            }
+                        }.labelsHidden().frame(width: 150)
+                    }
+                    Text("仅控制 Vorssaint 的命令审批。Computer Use 应用授权仍在 Codex 中处理；其他程序（例如 Vibe Island）的 Hook 不受此设置控制。")
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.bottom, 12)
+                }
                 sectionTitle("显示 · 实时预览")
                 codexPreview
                 sectionTitle("显示 · 会话卡片")
                 settingsCard {
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) { Text("显示模式").font(.body.weight(.medium)); Text("简洁模式仅显示最重要的一条会话").font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment: .leading, spacing: 2) { Text("显示模式").font(.body.weight(.medium)); Text("简洁模式露出一条，详细模式最多三条，其余滚动查看").font(.caption).foregroundStyle(.secondary) }
                         Spacer()
                         Picker("", selection: $codex.displayMode) { Text("简洁").tag("compact"); Text("详细").tag("detailed") }
                             .pickerStyle(.segmented).frame(width: 150)
@@ -79,10 +99,12 @@ struct DynamicIslandSettings: View {
                 settingsCard {
                     sliderRow("内容字体", value: $codex.contentFontSize, range: 10...15, suffix: "pt")
                     Divider().padding(.leading, 16)
-                    sliderRow("最大宽度", value: $codex.panelWidth, range: 520...760, suffix: "pt")
+                    sliderRow("面板宽度", value: $codex.panelWidth, range: 520...760, suffix: "pt")
                     Divider().padding(.leading, 16)
-                    sliderRow("最大高度", value: $codex.panelHeight, range: 220...560, suffix: "pt")
+                    sliderRow("高度上限", value: $codex.panelHeight, range: 220...560, suffix: "pt")
                 }
+                Text("AI 面板会随会话数量调整高度，超过上限后滚动显示。音乐、定时器和备忘保留各自布局。")
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 4)
                 sectionTitle("通知 · 完成与子任务")
                 settingsCard {
                     settingRow(icon: "rectangle.expand.vertical", tint: .orange, title: "收到完成通知时展开", detail: "关闭后保持收起；审批仍会立即展开") {
@@ -116,6 +138,7 @@ struct DynamicIslandSettings: View {
                         Text("首条提示词匹配任意前缀时隐藏").font(.caption).foregroundStyle(.secondary)
                     }.padding(16)
                 }
+                IslandPhonePushSettings()
                 sectionTitle("声音 · AI Hook 提示音")
                 settingsCard {
                     settingRow(icon: "speaker.wave.2.fill", tint: .purple, title: "任务事件提示音", detail: "会话开始、任务完成、错误和等待审批时播放") {

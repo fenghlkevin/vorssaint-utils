@@ -276,9 +276,15 @@ private struct FeatureHubRow: View {
                         : AnyShapeStyle(Color.secondary.opacity(0.22)))
                 .frame(width: 30, height: 30)
                 .overlay(
-                    Image(systemName: symbolName)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(installed ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
+                    Group {
+                        if feature == .networkProxy {
+                            ProxyBrandIcon(size: 16)
+                        } else {
+                            Image(systemName: symbolName)
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                    }
+                    .foregroundStyle(installed ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
                 )
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -664,6 +670,7 @@ extension AppFeature {
         switch self {
         case .dynamicIsland: return "灵动岛"
         case .switcher: return s.switcherSection
+        case .radialSwitcher: return "环形切换器"
         case .dockPreview: return s.dockPreviewName
         case .dockClick: return hub.titleDockClick
         case .windowMaximizer: return s.windowMaximizeName
@@ -734,6 +741,7 @@ extension AppFeature {
         switch self {
         case .dynamicIsland: return "在刘海区域显示系统音乐与视频播放控制"
         case .switcher: return hub.descSwitcher
+        case .radialSwitcher: return "独立的应用、窗口和浏览器标签环形切换器"
         case .dockPreview: return hub.descDockPreview
         case .dockClick: return hub.descDockClick
         case .windowMaximizer: return hub.descWindowMaximizer

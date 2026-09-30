@@ -233,6 +233,7 @@ final class FeatureRuntime: ObservableObject {
         },
         .cameraPreview: { CameraPreviewService.shared.syncWithPreferences() },
         .radialMenu: { RadialMenuService.shared.syncWithPreferences() },
+        .radialSwitcher: { RadialSwitcherService.shared.syncWithPreferences() },
         .scratchpad: { ScratchpadService.shared.syncWithPreferences() },
         .translation: { TranslationService.shared.syncWithPreferences() },
         .liveSubtitles: {

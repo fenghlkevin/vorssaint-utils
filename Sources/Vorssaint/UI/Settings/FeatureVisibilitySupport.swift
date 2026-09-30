@@ -9,7 +9,7 @@ import Foundation
 enum SettingsPage: Hashable {
     case general, features, permissions, energy, batteryManagement, monitor
     case translation, networkInfo, networkProxy
-    case mouse, dynamicIsland, switcher, keyDebounce, superKey, inputSourceAutomation, cutPaste, autoQuit, cleaner, uninstaller, urlCleaner, homebrew, appUpdates, menuBarIcons, awayLock, media, clipboard, windowLayout, shelf, quickTools, textSnippets, screenshot, radialMenu, commandBar, killProcess
+    case mouse, dynamicIsland, switcher, radialSwitcher, keyDebounce, superKey, inputSourceAutomation, cutPaste, autoQuit, cleaner, uninstaller, urlCleaner, homebrew, appUpdates, menuBarIcons, awayLock, media, clipboard, windowLayout, shelf, quickTools, textSnippets, screenshot, radialMenu, commandBar, killProcess
     case shortcuts, advanced, about, releaseNotes, support
 }
 
@@ -161,6 +161,7 @@ extension AppFeature {
         switch self {
         case .dynamicIsland: return FeatureSettingsDestination(.dynamicIsland)
         case .switcher: return FeatureSettingsDestination(.switcher, sectionAnchor: .switcher)
+        case .radialSwitcher: return FeatureSettingsDestination(.radialSwitcher)
         case .dockPreview: return FeatureSettingsDestination(.switcher, sectionAnchor: .dock)
         case .dockClick: return FeatureSettingsDestination(.switcher, sectionAnchor: .dockClick)
         case .windowMaximizer:
@@ -278,6 +279,7 @@ enum FeatureVisibilitySupport {
                              .middleClick]
         case .dynamicIsland: return [.dynamicIsland]
         case .switcher: return [.switcher, .dockPreview, .dockClick]
+        case .radialSwitcher: return [.radialSwitcher]
         case .windowLayout: return [.windowLayout]
         case .autoQuit: return [.autoQuit]
         case .clipboard: return [.clipboardHistory, .pastePlain, .finderCutPaste]

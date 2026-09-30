@@ -34,7 +34,7 @@ enum FeaturePreset: String, CaseIterable, Identifiable {
                     .monitorCPU, .monitorGPU, .monitorMemory,
                     .monitorNetwork, .monitorDisk, .monitorPower]
         case .windows:
-            return [.switcher, .windowLayout, .dockPreview, .dockClick, .windowMaximizer]
+            return [.switcher, .radialSwitcher, .windowLayout, .dockPreview, .dockClick, .windowMaximizer]
         case .battery:
             // The lean monitor: battery, memory pressure and the processor,
             // with nothing that listens to input events.
@@ -114,7 +114,7 @@ extension AppFeature {
         case .mixer:
             return UserDefaults.standard.bool(forKey: DefaultsKey.preciseVolumeRollerEnabled)
                 ? .keyboard : .idle
-        case .pastePlain, .soundOutputSwitcher, .micMute,
+        case .radialSwitcher, .pastePlain, .soundOutputSwitcher, .micMute,
              .musicBlock, .bluetoothSleep, .keepAwake, .brightness, .quickLauncher, .quickToggles, .colorPicker,
              .screenOCR, .cleaningMode, .mediaTools, .cleaner, .uninstaller, .homebrew, .screenshot,
              .cameraPreview, .scratchpad, .commandBar, .screenRecorder, .fanControl, .translation, .liveSubtitles,

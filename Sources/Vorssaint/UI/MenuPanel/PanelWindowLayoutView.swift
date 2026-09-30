@@ -13,13 +13,15 @@ struct PanelWindowLayoutView: View {
     @AppStorage(DefaultsKey.windowGestureModifiers) private var gestureModifiers = WindowGestureSupport.defaultModifierStorageValue
     @AppStorage(DefaultsKey.windowLayoutHiddenActions) private var hiddenActionsRaw = ""
     @State private var editingActions = false
-    @State private var systemTilingEnabled = WindowEdgeSnapSupport.isSystemTilingEnabled
+    @State private var showMore = false
 
     var onClose: () -> Void
 
     private var text: WindowLayoutFeatureStrings {
         FeatureStrings.windowLayout(l10n.language)
     }
+
+    private var copy: WindowSnapCopy { WindowSnapCopy(language: l10n.language) }
 
     private let columns = [
         GridItem(.flexible(), spacing: 7),
@@ -32,14 +34,17 @@ struct PanelWindowLayoutView: View {
             intro
             actionGroup(title: text.halves, actions: [.leftHalf, .rightHalf, .topHalf, .bottomHalf])
             actionGroup(title: text.thirds, actions: [.leftThird, .centerThird, .rightThird, .leftTwoThirds, .rightTwoThirds])
-            actionGroup(title: text.sixths, actions: [
-                .topLeftSixth, .topCenterSixth, .topRightSixth,
-                .bottomLeftSixth, .bottomCenterSixth, .bottomRightSixth,
-            ])
             actionGroup(title: text.corners, actions: [.topLeft, .topRight, .bottomLeft, .bottomRight])
-            actionGroup(title: text.other, actions: [
-                .maximize, .marginMaximize, .fullScreen, .center, .previousDisplay, .nextDisplay, .restore,
-            ])
+            actionGroup(title: text.other, actions: [.maximize, .center, .restore, .nextDisplay])
+            DisclosureGroup(copy.advanced, isExpanded: $showMore) {
+                actionGroup(title: text.sixths, actions: [
+                    .topLeftSixth, .topCenterSixth, .topRightSixth,
+                    .bottomLeftSixth, .bottomCenterSixth, .bottomRightSixth,
+                ])
+                actionGroup(title: text.other, actions: [.marginMaximize, .fullScreen, .previousDisplay])
+                advancedControls
+            }
+            .font(.system(size: 11))
             if let message = resultMessage {
                 Label(message, systemImage: resultSymbol)
                     .font(.system(size: 10.5, weight: .medium))
@@ -49,11 +54,11 @@ struct PanelWindowLayoutView: View {
         }
         .onAppear {
             PanelInteractionState.shared.viewKeepsPopoverOpen = true
-            refreshSystemTilingState()
+            refreshSnapState()
         }
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didBecomeActiveNotification)) { _ in
-            refreshSystemTilingState()
+            refreshSnapState()
         }
         .onDisappear { PanelInteractionState.shared.viewKeepsPopoverOpen = false }
     }
@@ -101,34 +106,18 @@ struct PanelWindowLayoutView: View {
 
     private var intro: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Toggle(text.edgeSnapEnable, isOn: $edgeSnapEnabled)
-                .toggleStyle(.checkbox)
+            Toggle(copy.activation, isOn: $edgeSnapEnabled)
+                .toggleStyle(.switch)
                 .controlSize(.small)
-                .font(.system(size: 10.5, weight: .medium))
-                .onChange(of: edgeSnapEnabled) { _, _ in
-                    WindowLayoutService.shared.syncWithPreferences()
-                }
-            Text(text.edgeSnapCaption)
-                .font(.system(size: 9.5))
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-            if systemTilingEnabled {
-                Label(text.edgeSnapSystemConflict, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-                if edgeSnapEnabled {
-                    Text(text.edgeSnapWaitingForSystem)
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Button(text.edgeSnapOpenSystemSettings) {
-                    NSWorkspace.shared.open(WindowEdgeSnapSupport.desktopAndDockSettingsURL)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
-            }
+                .font(.system(size: 11, weight: .semibold))
+                .onChange(of: edgeSnapEnabled) { _, _ in service.syncWithPreferences() }
+            Label(!permissions.accessibility ? text.missingPermission
+                  : (edgeSnapEnabled ? copy.enabled : copy.disabled),
+                  systemImage: edgeSnapEnabled ? "checkmark.circle.fill" : "info.circle")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+
+            WindowSnapGuide(compact: true)
             Divider()
             Text(text.caption)
                 .font(.system(size: 10))
@@ -147,6 +136,23 @@ struct PanelWindowLayoutView: View {
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if !permissions.accessibility {
+                Button {
+                    Permissions.shared.requestAccessibility()
+                    Permissions.shared.openAccessibilitySettings()
+                } label: {
+                    Label(text.missingPermission, systemImage: "hand.raised.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+        }
+        .panelCard()
+    }
+
+    private var advancedControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
             Divider()
             Toggle(text.gestureEnable, isOn: $gestureEnabled)
                 .toggleStyle(.checkbox)
@@ -171,23 +177,10 @@ struct PanelWindowLayoutView: View {
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if !permissions.accessibility {
-                Button {
-                    Permissions.shared.requestAccessibility()
-                    Permissions.shared.openAccessibilitySettings()
-                } label: {
-                    Label(text.missingPermission, systemImage: "hand.raised.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.mini)
-            }
         }
-        .panelCard()
     }
 
-    private func refreshSystemTilingState() {
-        systemTilingEnabled = WindowEdgeSnapSupport.isSystemTilingEnabled
+    private func refreshSnapState() {
         WindowLayoutService.shared.syncWithPreferences()
     }
 
@@ -210,12 +203,16 @@ struct PanelWindowLayoutView: View {
                             }
                         } label: {
                             VStack(spacing: 2) {
-                                Label(title(for: action), systemImage: editingActions
-                                        ? (hidden.contains(action) ? "eye.slash" : "eye")
-                                        : action.symbolName)
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.82)
+                                HStack(spacing: 6) {
+                                    WindowLayoutGlyph(action: action)
+                                    if editingActions {
+                                        Image(systemName: hidden.contains(action) ? "eye.slash" : "eye")
+                                    }
+                                    Text(title(for: action))
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.82)
+                                }
                                 if shortcutsEnabled, action.supportsShortcut,
                                    let shortcut = action.savedShortcut {
                                     Text(shortcut.displayString)

@@ -9,6 +9,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     targets: [
         .target(name: "ProxyTunnelBridge", path: "Sources/ProxyTunnelBridge", publicHeadersPath: "include"),
+        .target(name: "RadialTrackpadInput", path: "Sources/RadialTrackpadInput", publicHeadersPath: "include"),
         .target(name: "ProxyYAML", path: "Sources/ProxyYAML", publicHeadersPath: "include", cSettings: [.headerSearchPath("libyaml"), .define("HAVE_CONFIG_H")]),
         .target(
             name: "MenuBarNativeBridge",
@@ -21,7 +22,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Vorssaint",
-            dependencies: ["VMStatisticsCompat", "MenuBarNativeBridge", "ProxyYAML", "ProxyTunnelBridge"],
+            dependencies: ["VMStatisticsCompat", "MenuBarNativeBridge", "ProxyYAML", "ProxyTunnelBridge", "RadialTrackpadInput"],
             path: "Sources/Vorssaint"
         )
     ]

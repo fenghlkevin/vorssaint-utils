@@ -28,6 +28,7 @@ enum IslandTimePresentation: Equatable {
 final class TimeReminderService: ObservableObject {
     static let shared = TimeReminderService()
     @Published private(set) var presentation: IslandTimePresentation?
+    @Published private(set) var runningTimer: IslandRunningTimer?
     @Published var calendarEnabled: Bool { didSet { UserDefaults.standard.set(calendarEnabled, forKey: "dynamicIsland.calendarEnabled"); if calendarEnabled { requestCalendarAccess() } } }
     @Published var breakEnabled: Bool { didSet { UserDefaults.standard.set(breakEnabled, forKey: "dynamicIsland.breakEnabled") } }
     @Published var breakMinutes: Int { didSet { UserDefaults.standard.set(breakMinutes, forKey: "dynamicIsland.breakMinutes") } }
@@ -42,9 +43,7 @@ final class TimeReminderService: ObservableObject {
     private let eventStore = EKEventStore()
     private var runningKind: RunningKind?
     private var title = "倒计时"
-    private var endDate: Date?
-    private var pausedRemaining: Int?
-    private var totalSeconds = 0
+    private var timerClock = IslandTimerClock()
     private var lastCalendarCheck = Date.distantPast
     private var workStartedAt = Date()
     private var dismissedMeetingID: String?
@@ -62,19 +61,21 @@ final class TimeReminderService: ObservableObject {
         completionSoundVolume = UserDefaults.standard.object(forKey: "dynamicIsland.completionSoundVolume") as? Double ?? 0.35
     }
 
-    func startCountdown(title: String, minutes: Int) { start(.countdown, title: title.isEmpty ? "倒计时" : title, minutes: minutes) }
-    func startFocus(minutes: Int) { start(.focus, title: "专注模式", minutes: minutes) }
-    private func start(_ kind: RunningKind, title: String, minutes: Int) {
-        runningKind = kind; self.title = title; totalSeconds = max(1, minutes) * 60
-        endDate = Date().addingTimeInterval(TimeInterval(totalSeconds)); pausedRemaining = nil; tick()
-    }
-    func toggleCountdownPause() {
-        guard runningKind == .countdown else { return }
-        if let remaining = pausedRemaining { endDate = Date().addingTimeInterval(TimeInterval(remaining)); pausedRemaining = nil }
-        else { pausedRemaining = remainingSeconds }
+    func startCountdown(title: String, minutes: Int) { startCountdown(title: title, seconds: max(1, minutes) * 60) }
+    func startCountdown(title: String, seconds: Int) { start(.countdown, title: title.isEmpty ? "倒计时" : title, seconds: seconds) }
+    func startFocus(minutes: Int) { start(.focus, title: "专注", seconds: max(1, minutes) * 60) }
+    private func start(_ kind: RunningKind, title: String, seconds: Int) {
+        guard seconds > 0 else { return }
+        completion = nil; completionDeadline = nil; completionRemainingSeconds = 0
+        runningKind = kind; self.title = title
+        timerClock.start(seconds: seconds)
         tick()
     }
-    func stopTimer() { runningKind = nil; endDate = nil; pausedRemaining = nil; refreshPresentation() }
+    func toggleCountdownPause() {
+        timerClock.togglePause()
+        tick()
+    }
+    func stopTimer() { runningKind = nil; timerClock.stop(); refreshPresentation() }
     func dismissBreak(minutes: Int = 10) { breakSnoozedUntil = Date().addingTimeInterval(TimeInterval(minutes * 60)); workStartedAt = Date(); refreshPresentation() }
     func startBreak() { breakSnoozedUntil = Date().addingTimeInterval(10 * 60); workStartedAt = Date(); refreshPresentation() }
     func dismissMeeting() { dismissedMeetingID = currentMeeting()?.eventIdentifier; refreshPresentation() }
@@ -82,13 +83,10 @@ final class TimeReminderService: ObservableObject {
     var isCompletionPresented: Bool { if case .completed = completion { return true }; return false }
     func joinMeeting() { if case let .meeting(_, _, url) = presentation, let url { NSWorkspace.shared.open(url) } }
 
-    var remainingSeconds: Int {
-        if let pausedRemaining { return pausedRemaining }
-        return max(0, Int((endDate?.timeIntervalSinceNow ?? 0).rounded(.up)))
-    }
+    var remainingSeconds: Int { timerClock.remaining() }
 
     func tick() {
-        if let endDate, pausedRemaining == nil, endDate <= Date() {
+        if timerClock.hasFinished() {
             let finishedTitle = runningKind == .focus ? "专注结束" : "倒计时结束"
             let finishedMessage = runningKind == .focus ? "本次专注已经完成，可以休息一下了。" : "“\(title)”倒计时已经结束。"
             stopTimer()
@@ -127,11 +125,14 @@ final class TimeReminderService: ObservableObject {
            Date().timeIntervalSince(workStartedAt) >= TimeInterval(breakMinutes * 60) {
             candidates.append(.breakReminder(minutes: breakMinutes))
         }
+        let nextTimer = runningKind == nil ? nil : IslandRunningTimer(title: title, remaining: remainingSeconds,
+                                                                     total: timerClock.duration, paused: timerClock.isPaused)
+        if runningTimer != nextTimer { runningTimer = nextTimer }
         if let runningKind {
             let remaining = remainingSeconds
             switch runningKind {
-            case .countdown: candidates.append(.countdown(title: title, remaining: remaining, total: totalSeconds, paused: pausedRemaining != nil))
-            case .focus: candidates.append(.focus(remaining: remaining, total: totalSeconds))
+            case .countdown: candidates.append(.countdown(title: title, remaining: remaining, total: timerClock.duration, paused: timerClock.isPaused))
+            case .focus: candidates.append(.focus(remaining: remaining, total: timerClock.duration))
             }
         }
         let nextPresentation = candidates.max(by: { $0.priority < $1.priority })

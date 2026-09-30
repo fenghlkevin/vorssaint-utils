@@ -141,7 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                     .scrollInverter, .focusFollowsMouse, .smoothScroll, .mouseNavigation, .switcher,
                     .dockPreview, .finderCutPaste, .finderRename, .autoQuit, .dockClick,
                     .middleClick, .windowMaximizer, .keyboardDebounce, .windowLayout,
-                    .textSnippets, .brightness, .radialMenu, .mouseButtonShortcuts,
+                    .textSnippets, .brightness, .radialMenu, .radialSwitcher, .mouseButtonShortcuts,
                     .superKey, .mixer,
                 ])
             }
@@ -881,6 +881,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // reopening would make the panel look impossible to close.
         guard allowRecentClose || Date().timeIntervalSince(popoverClosedAt) > 0.35 else { return }
         guard let button = button ?? statusController.button else { return }
+
+        // Capture the app behind the panel before show/makeKey/activate can
+        // make Vorssaint the frontmost application.
+        MainActor.assumeIsolated {
+            InputSourceAutomationService.shared.refreshMenuContext()
+        }
 
         // The panel measures itself against this while the popover lays out, so
         // it has to be known before the content is asked for its size.

@@ -19,6 +19,11 @@ struct InputSourceAutomationStrings {
     let forceEnglishPunctuation: String
     let remove: String
     let permissionHint: String
+    let appRuleLabel: String
+    let websiteRuleLabel: String
+    let currentApp: String
+    let noRuleForApp: String
+    let addRule: String
 
     static func current(_ language: AppLanguage) -> InputSourceAutomationStrings {
         switch language {
@@ -32,7 +37,10 @@ struct InputSourceAutomationStrings {
                          defaultInputSource: "输入法策略", followLastUsed: "跟随上一次使用",
                          followLastUsedHint: "记住你在这个软件或网站中最后手动选择的输入法。",
                          forceEnglishPunctuation: "强制英文标点", remove: "移除",
-                         permissionHint: "网站识别和强制英文标点需要“辅助功能”权限。")
+                         permissionHint: "网站识别和强制英文标点需要“辅助功能”权限。",
+                         appRuleLabel: "软件规则", websiteRuleLabel: "网站规则",
+                         currentApp: "当前软件", noRuleForApp: "尚未设置输入法规则",
+                         addRule: "添加规则")
         case .zhTW, .zhHK:
             return .init(pageTitle: "輸入法自動切換", enable: "啟用輸入法自動切換",
                          description: "切換軟件或瀏覽器網站時，自動使用已設定的預設輸入法。網站規則優先於軟件規則。",
@@ -43,7 +51,10 @@ struct InputSourceAutomationStrings {
                          defaultInputSource: "輸入法策略", followLastUsed: "跟隨上一次使用",
                          followLastUsedHint: "記住你在這個軟件或網站中最後手動選擇的輸入法。",
                          forceEnglishPunctuation: "強制英文標點", remove: "移除",
-                         permissionHint: "網站識別和強制英文標點需要「輔助使用」權限。")
+                         permissionHint: "網站識別和強制英文標點需要「輔助使用」權限。",
+                         appRuleLabel: "軟件規則", websiteRuleLabel: "網站規則",
+                         currentApp: "目前軟件", noRuleForApp: "尚未設定輸入法規則",
+                         addRule: "新增規則")
         default:
             return .init(pageTitle: "Input Source Automation", enable: "Enable input source automation",
                          description: "Automatically use the configured input source when switching apps or websites. Website rules take priority over app rules.",
@@ -54,7 +65,10 @@ struct InputSourceAutomationStrings {
                          defaultInputSource: "Input source behavior", followLastUsed: "Follow last used",
                          followLastUsedHint: "Remember the input source you last selected in this app or website.",
                          forceEnglishPunctuation: "Force English punctuation", remove: "Remove",
-                         permissionHint: "Website detection and forced English punctuation require Accessibility permission.")
+                         permissionHint: "Website detection and forced English punctuation require Accessibility permission.",
+                         appRuleLabel: "App rule", websiteRuleLabel: "Website rule",
+                         currentApp: "Current app", noRuleForApp: "No input source rule yet",
+                         addRule: "Add rule")
         }
     }
 }

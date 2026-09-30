@@ -288,6 +288,10 @@ enum SettingsDirectory {
                                                  FeatureStrings.radialMenu(language).kindApp,
                                                  FeatureStrings.radialMenu(language).kindMedia,
                                                  FeatureStrings.radialMenu(language).kindSubmenu]),
+                SettingsDirectoryItem(page: .radialSwitcher,
+                                      title: "环形切换器",
+                                      icon: "circle.hexagongrid",
+                                      keywords: ["应用切换", "窗口切换", "浏览器标签", "快捷操作", "触控板"]),
             ]),
             (categories.app, [
                 SettingsDirectoryItem(page: .shortcuts, title: s.shortcutsPageTitle, icon: "command",

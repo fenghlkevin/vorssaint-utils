@@ -14,7 +14,7 @@ import Foundation
 /// keys are never touched.
 enum AppFeature: String, CaseIterable {
     // Windows and Dock
-    case dynamicIsland, switcher, dockPreview, dockClick, windowMaximizer, windowLayout, autoQuit
+    case dynamicIsland, switcher, radialSwitcher, dockPreview, dockClick, windowMaximizer, windowLayout, autoQuit
     // Mouse and keyboard
     case scrollInverter, focusFollowsMouse, smoothScroll, mouseNavigation, mouseButtonShortcuts, middleClick,
          keyboardDebounce, textSnippets, superKey, inputSourceAutomation
@@ -89,7 +89,7 @@ extension AppFeature {
     var group: FeatureGroup {
         switch self {
         case .liveSubtitles: return .tools
-        case .dynamicIsland, .switcher, .dockPreview, .dockClick, .windowMaximizer, .windowLayout, .autoQuit:
+        case .dynamicIsland, .switcher, .radialSwitcher, .dockPreview, .dockClick, .windowMaximizer, .windowLayout, .autoQuit:
             return .windowsDock
         case .scrollInverter, .focusFollowsMouse, .smoothScroll, .mouseNavigation, .mouseButtonShortcuts, .middleClick,
              .keyboardDebounce, .textSnippets, .superKey, .inputSourceAutomation:
@@ -118,6 +118,7 @@ extension AppFeature {
         case .liveSubtitles: return "captions.bubble"
         case .dynamicIsland: return "rectangle.topthird.inset.filled"
         case .switcher: return "rectangle.on.rectangle"
+        case .radialSwitcher: return "circle.hexagongrid"
         case .dockPreview: return "dock.rectangle"
         case .dockClick: return "dock.arrow.down.rectangle"
         case .windowMaximizer: return "arrow.up.left.and.arrow.down.right"
@@ -203,6 +204,7 @@ extension AppFeature {
         case .liveSubtitles: return []
         case .dynamicIsland: return [DefaultsKey.dynamicIslandEnabled]
         case .switcher: return [DefaultsKey.switcherEnabled]
+        case .radialSwitcher: return [DefaultsKey.radialSwitcherEnabled]
         case .dockPreview: return [DefaultsKey.dockPreviewEnabled]
         case .dockClick: return [DefaultsKey.dockClickMinimize,
                                  DefaultsKey.dockClickHide,
@@ -267,6 +269,7 @@ extension AppFeature {
         // (dark mode included) works without a permission.
         case .quickToggles: return [.automationFinder]
         case .switcher: return [.accessibility, .screenRecording]
+        case .radialSwitcher: return [.accessibility, .screenRecording]
         case .dockPreview: return [.accessibility, .screenRecording]
         case .screenOCR: return [.screenRecording]
         case .translation: return [.screenRecording, .accessibility]
@@ -275,7 +278,7 @@ extension AppFeature {
         // access stays contextual, and Accessibility only keeps typing timing.
         case .screenRecorder: return [.screenRecording, .accessibility, .microphone]
         case .cameraPreview: return [.camera]
-        case .keepAwake: return [.accessibility]
+        case .keepAwake, .awayLock: return [.accessibility]
         case .batteryManagement: return [.notifications]
         case .brightness: return [.accessibility]
         case .cleaner: return [.fullDiskAccess, .filesAndFolders, .notifications]
@@ -285,7 +288,7 @@ extension AppFeature {
         case .diskImageInstaller: return [.appManagement]
         case .mixer: return [.audioCapture, .accessibility]
         case .monitorCPU, .monitorMemory, .monitorDisk, .monitorPower: return [.notifications]
-        case .dynamicIsland, .clipboardHistory, .shelf, .urlCleaner, .awayLock,
+        case .dynamicIsland, .clipboardHistory, .shelf, .urlCleaner,
              .soundOutputSwitcher, .musicBlock,
              .extraBrightness, .bluetoothSleep, .quickLauncher, .colorPicker, .micMute, .mediaTools,
              .scratchpad, .monitorGPU, .monitorNetwork, .fanControl, .killProcess, .menuBarIcons, .networkInfo, .networkProxy:
@@ -298,7 +301,7 @@ extension AppFeature {
     /// is actually used.
     var onboardingPermissions: [AppPermission] {
         switch self {
-        case .keepAwake, .brightness, .radialMenu, .quickToggles, .cleaner,
+        case .keepAwake, .brightness, .radialMenu, .radialSwitcher, .quickToggles, .cleaner,
              .uninstaller, .homebrew, .appUpdates, .mixer, .cameraPreview,
              .micMute, .translation, .liveSubtitles:
             return []
@@ -334,6 +337,8 @@ extension AppFeature {
             let keys = feature.enabledKeys
             guard keys.isEmpty || keys.contains(where: boolFor) else { return false }
             switch (feature, permission) {
+            case (.radialSwitcher, .screenRecording):
+                return boolFor(DefaultsKey.radialSwitcherPreviews)
             case (.switcher, .screenRecording):
                 return !boolFor(DefaultsKey.switcherSimpleMode)
             case (.radialMenu, .accessibility):

@@ -26,6 +26,30 @@ struct MetricsTests {
             checks += 1
             if !condition { failures.append(message()) }
         }
+        // The floating island must hit exactly the cells it paints, including
+        // secondary displays with negative origins and portrait displays.
+        for screen in [CGRect(x: 0, y: 0, width: 1440, height: 875),
+                       CGRect(x: -1920, y: -300, width: 1920, height: 1055),
+                       CGRect(x: 1440, y: 0, width: 900, height: 1575),
+                       CGRect(x: 0, y: 0, width: 600, height: 775)] {
+            let island = WindowSnapIslandLayout(visibleFrame: screen)
+            expect(screen.contains(island.expandedFrame), "Snap island stays inside visible display")
+            expect(screen.contains(island.compactFrame), "Compact island stays inside visible display")
+            expect(island.cells.count == 16, "Snap island exposes all sixteen layout cells")
+            for cell in island.cells {
+                expect(island.expandedFrame.contains(cell.frame), "Snap island cell stays inside panel")
+                let center = CGPoint(x: cell.frame.midX, y: cell.frame.midY)
+                expect(island.action(at: center) == cell.action, "Snap island cell selects its painted layout")
+                expect(island.shouldExpand(at: center, expanded: true), "Selection keeps island expanded")
+            }
+            let compactCenter = CGPoint(x: island.compactFrame.midX, y: island.compactFrame.midY)
+            expect(island.shouldExpand(at: compactCenter, expanded: false), "Approach expands island")
+            let outside = CGPoint(x: island.expandedFrame.midX, y: island.expandedFrame.minY - 25)
+            expect(!island.shouldExpand(at: outside, expanded: true), "Leaving collapses island")
+            expect(island.action(at: outside) == nil, "Outside cannot select a layout")
+            let header = CGPoint(x: island.expandedFrame.midX, y: island.expandedFrame.maxY - 15)
+            expect(island.action(at: header) == nil, "Island header cannot accidentally maximize")
+        }
         func expectEqual(_ actual: String, _ expected: String, _ label: String) {
             checks += 1
             if actual != expected { failures.append("\(label): got \"\(actual)\", expected \"\(expected)\"") }
@@ -4742,22 +4766,22 @@ struct MetricsTests {
                         screens: [WindowEdgeSnapScreen] = [snapScreen]) -> WindowEdgeSnapTarget? {
             WindowEdgeSnapSupport.target(at: point, screens: screens)
         }
-        let topSnapFrame = WindowLayoutGeometry.rect(for: .topHalf,
+        let topSnapFrame = WindowLayoutGeometry.rect(for: .maximize,
                                                      current: snapVisibleFrame,
                                                      visibleFrame: snapVisibleFrame)
         expect(snapTarget(CGPoint(x: 720, y: snapVisibleFrame.maxY))
-               == WindowEdgeSnapTarget(action: .topHalf,
+               == WindowEdgeSnapTarget(action: .maximize,
                                        frame: topSnapFrame,
                                        visibleFrame: snapVisibleFrame),
-               "touching the lower edge of the menu bar previews the upper half")
-        expect(snapTarget(CGPoint(x: 720, y: 900))?.action == .topHalf,
+               "touching the lower edge of the menu bar previews maximization")
+        expect(snapTarget(CGPoint(x: 720, y: 900))?.action == .maximize,
                "the full menu bar band remains a top snap target")
         expect(snapTarget(CGPoint(x: 720, y: snapVisibleFrame.maxY - 13)) == nil,
                "the top target does not reach below its activation band")
         expect(snapTarget(CGPoint(x: 0, y: 450))?.action == .leftHalf
                && snapTarget(CGPoint(x: 1440, y: 450))?.action == .rightHalf
-               && snapTarget(CGPoint(x: 720, y: 0))?.action == .bottomHalf,
-               "all four straight edges choose their matching halves")
+               && snapTarget(CGPoint(x: 720, y: 0))?.action == .centerThird,
+               "side edges choose halves and the bottom chooses thirds")
         expect(snapTarget(CGPoint(x: 0, y: snapVisibleFrame.maxY))?.action == .topLeft
                && snapTarget(CGPoint(x: 1440, y: snapVisibleFrame.maxY))?.action == .topRight
                && snapTarget(CGPoint(x: 0, y: 0))?.action == .bottomLeft
@@ -4799,6 +4823,41 @@ struct MetricsTests {
                    $0 == "EnableTilingByEdgeDrag" ? true : false
                },
                "one enabled system edge gesture is enough to prevent competing previews")
+
+        expect(snapTarget(CGPoint(x: 300, y: 0))?.action == .leftThird
+               && snapTarget(CGPoint(x: 500, y: 0))?.action == .leftTwoThirds
+               && snapTarget(CGPoint(x: 950, y: 0))?.action == .rightTwoThirds
+               && snapTarget(CGPoint(x: 1140, y: 0))?.action == .rightThird,
+               "sliding along the bottom selects all five third layouts")
+        let portraitSnapScreen = WindowEdgeSnapScreen(
+            frame: CGRect(x: -900, y: -300, width: 900, height: 1500),
+            visibleFrame: CGRect(x: -900, y: -260, width: 900, height: 1430))
+        let portraitTop = snapTarget(CGPoint(x: -900, y: 825), screens: [portraitSnapScreen])
+        let portraitMiddle = snapTarget(CGPoint(x: 0, y: 450), screens: [portraitSnapScreen])
+        expect(portraitTop?.action == .topHalf && portraitTop!.frame.width == 900
+               && abs(portraitTop!.frame.height - 1430 / 3.0) <= 1
+               && portraitTop!.frame.maxY == portraitSnapScreen.visibleFrame.maxY,
+               "portrait side thirds rotate into full-width top bands, preserving negative origins")
+        expect(portraitMiddle?.action == .center && portraitMiddle!.frame.width == 900
+               && abs(portraitMiddle!.frame.midY - portraitSnapScreen.visibleFrame.midY) <= 1,
+               "portrait side center third is vertically centered")
+        expect(snapTarget(CGPoint(x: -450, y: 1200), screens: [portraitSnapScreen])?.action == .maximize
+               && snapTarget(CGPoint(x: -450, y: -300), screens: [portraitSnapScreen])?.action == .bottomHalf,
+               "portrait top maximizes and bottom offers a half")
+        let pullFree = WindowEdgeSnapSupport.restoredDragFrame(
+            originalSize: CGSize(width: 800, height: 500),
+            tiledFrame: CGRect(x: 0, y: 25, width: 720, height: 875),
+            pointerStart: CGPoint(x: 540, y: 45), pointerNow: CGPoint(x: 900, y: 200),
+            visibleFrame: CGRect(x: 0, y: 25, width: 1440, height: 875))
+        expect(pullFree == CGRect(x: 300, y: 180, width: 800, height: 500),
+               "pulling free preserves the title-bar grip instead of jumping to the old position")
+        let smallDisplayRestore = WindowEdgeSnapSupport.restoredDragFrame(
+            originalSize: CGSize(width: 1200, height: 900),
+            tiledFrame: CGRect(x: 0, y: 25, width: 720, height: 875),
+            pointerStart: CGPoint(x: 540, y: 45), pointerNow: CGPoint(x: -400, y: 200),
+            visibleFrame: CGRect(x: -800, y: 0, width: 800, height: 600))
+        expect(smallDisplayRestore == CGRect(x: -800, y: 0, width: 800, height: 600),
+               "restoration fits a smaller destination display without going off screen")
 
         let dragFrame = CGRect(x: 100, y: 100, width: 800, height: 500)
         expect(WindowEdgeSnapSupport.classify(

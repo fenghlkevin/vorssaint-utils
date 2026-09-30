@@ -17,7 +17,6 @@ struct WindowLayoutSettings: View {
     @AppStorage(DefaultsKey.windowGestureRaiseWindow) private var gestureRaiseWindow = false
     @AppStorage(DefaultsKey.windowLayoutWindowGap) private var windowGap = 0
     @AppStorage(DefaultsKey.windowLayoutScreenGap) private var screenGap = 0
-    @State private var systemTilingEnabled = WindowEdgeSnapSupport.isSystemTilingEnabled
     // Same preference the Switcher page exposes next to Dock Preview; it is
     // mirrored here because it is a window-juggling behavior people look for
     // on this page too.
@@ -26,6 +25,8 @@ struct WindowLayoutSettings: View {
     private var text: WindowLayoutFeatureStrings {
         FeatureStrings.windowLayout(l10n.language)
     }
+
+    private var copy: WindowSnapCopy { WindowSnapCopy(language: l10n.language) }
 
     var body: some View {
         Form {
@@ -45,29 +46,21 @@ struct WindowLayoutSettings: View {
                 }
             }
 
-            Section(text.gestureSection) {
-                Toggle(text.edgeSnapEnable, isOn: $edgeSnapEnabled)
+            Section(copy.activation) {
+                WindowSnapGuide()
+                Toggle(copy.activation, isOn: $edgeSnapEnabled)
                     .onChange(of: edgeSnapEnabled) { _, _ in
                         WindowLayoutService.shared.syncWithPreferences()
                     }
-                Text(text.edgeSnapCaption)
+                Label(!permissions.accessibility ? text.missingPermission
+                      : (edgeSnapEnabled ? copy.enabled : copy.disabled),
+                      systemImage: edgeSnapEnabled ? "checkmark.circle.fill" : "info.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if systemTilingEnabled {
-                    Label(text.edgeSnapSystemConflict, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                    if edgeSnapEnabled {
-                        Text(text.edgeSnapWaitingForSystem)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Button(text.edgeSnapOpenSystemSettings) {
-                        NSWorkspace.shared.open(WindowEdgeSnapSupport.desktopAndDockSettingsURL)
-                    }
-                    .controlSize(.small)
-                }
-                Divider()
+
+            }
+
+            Section(copy.freeDrag) {
                 Toggle(text.gestureEnable, isOn: $gestureEnabled)
                     .onChange(of: gestureEnabled) { _, _ in
                         WindowLayoutService.shared.syncWithPreferences()
@@ -191,10 +184,10 @@ struct WindowLayoutSettings: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { refreshSystemTilingState() }
+        .onAppear { refreshSnapState() }
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didBecomeActiveNotification)) { _ in
-            refreshSystemTilingState()
+            refreshSnapState()
         }
     }
 
@@ -233,8 +226,7 @@ struct WindowLayoutSettings: View {
         return "\(name) (\(value) px)"
     }
 
-    private func refreshSystemTilingState() {
-        systemTilingEnabled = WindowEdgeSnapSupport.isSystemTilingEnabled
+    private func refreshSnapState() {
         WindowLayoutService.shared.syncWithPreferences()
     }
 
@@ -338,7 +330,10 @@ private struct WindowLayoutActionRow: View {
                 Button {
                     WindowLayoutService.shared.apply(action)
                 } label: {
-                    Label(title, systemImage: symbol)
+                    HStack {
+                        WindowLayoutGlyph(action: action)
+                        Text(title)
+                    }
                 }
                 .disabled(!applyEnabled)
                 Spacer()

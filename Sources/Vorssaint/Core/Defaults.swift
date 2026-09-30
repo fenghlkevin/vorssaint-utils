@@ -78,6 +78,8 @@ enum DefaultsKey {
     static let awayLockPreventPresentation = "awayLockPreventPresentation"
     static let awayLockProtectedApps = "awayLockProtectedApps"
     static let awayLockAutomaticLock = "awayLockAutomaticLock"
+    // Optional return wake; disabled by default.
+    static let awayLockAutoUnlock = "awayLockAutoUnlock"
     static let awayLockWakeOnReturn = "awayLockWakeOnReturn"
     static let awayLockShowCountdown = "awayLockShowCountdown"
     static let awayLockNotifications = "awayLockNotifications"
@@ -648,6 +650,23 @@ enum DefaultsKey {
 
     // Radial menu: a wheel of actions on a shortcut.
     static let radialMenuEnabled = "radialMenuEnabled"
+    static let radialSwitcherPresentation = "radialSwitcherPresentation"
+    static let radialSwitcherEnabled = "radialSwitcherEnabled"
+    static let radialSwitcherShortcut = "radialSwitcherShortcut"
+    static let radialSwitcherActionShortcut = "radialSwitcherActionShortcut"
+    static let radialSwitcherHoldToSelect = "radialSwitcherHoldToSelect"
+    static let radialSwitcherPreviews = "radialSwitcherPreviews"
+    static let radialSwitcherSortByName = "radialSwitcherSortByName"
+    static let radialSwitcherIncludeMinimized = "radialSwitcherIncludeMinimized"
+    static let radialSwitcherAppPageSize = "radialSwitcherAppPageSize"
+    static let radialSwitcherWindowPageSize = "radialSwitcherWindowPageSize"
+    static let radialSwitcherAppRules = "radialSwitcherAppRules"
+    static let radialSwitcherFavorites = "radialSwitcherFavorites"
+    static let radialSwitcherActionProfiles = "radialSwitcherActionProfiles"
+    static let radialSwitcherActionModeApps = "radialSwitcherActionModeApps"
+    static let radialSwitcherStyles = "radialSwitcherStyles"
+    static let radialSwitcherTrackpadTap = "radialSwitcherTrackpadTap"
+    static let radialSwitcherPinchMinimize = "radialSwitcherPinchMinimize"
     static let radialMenuShortcut = "radialMenuShortcut"
     static let radialMenuAtPointer = "radialMenuAtPointer" // false: screen center
     static let radialMenuMouseButton = "radialMenuMouseButton" // RadialMenuMouseTrigger.rawValue
@@ -879,7 +898,8 @@ enum Defaults {
         DefaultsKey.awayLockPreventPresentation: true,
         DefaultsKey.awayLockProtectedApps: [String](),
         DefaultsKey.awayLockAutomaticLock: true,
-        DefaultsKey.awayLockWakeOnReturn: true,
+        DefaultsKey.awayLockWakeOnReturn: false,
+        DefaultsKey.awayLockAutoUnlock: false,
         DefaultsKey.awayLockShowCountdown: true,
         DefaultsKey.awayLockNotifications: true,
         DefaultsKey.awayLockNotificationSound: true,
@@ -1023,6 +1043,16 @@ enum Defaults {
         DefaultsKey.snippetLibraryEnabled: false,
         DefaultsKey.snippetLibraryShortcut: GlobalShortcut.snippetLibraryDefault.storageValue,
         DefaultsKey.radialMenuEnabled: false,
+        DefaultsKey.radialSwitcherEnabled: false,
+        DefaultsKey.radialSwitcherShortcut: GlobalShortcut.radialSwitcherDefault.storageValue,
+        DefaultsKey.radialSwitcherHoldToSelect: false,
+        DefaultsKey.radialSwitcherPreviews: true,
+        DefaultsKey.radialSwitcherSortByName: true,
+        DefaultsKey.radialSwitcherIncludeMinimized: true,
+        DefaultsKey.radialSwitcherAppPageSize: 12,
+        DefaultsKey.radialSwitcherWindowPageSize: 6,
+        DefaultsKey.radialSwitcherTrackpadTap: 0,
+        DefaultsKey.radialSwitcherPinchMinimize: false,
         DefaultsKey.radialMenuShortcut: GlobalShortcut.radialMenuDefault.storageValue,
         DefaultsKey.radialMenuAtPointer: true,
         DefaultsKey.radialMenuMouseButton: RadialMenuMouseTrigger.off.rawValue,

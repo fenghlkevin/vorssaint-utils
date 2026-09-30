@@ -11,11 +11,20 @@ private final class KeyableDynamicIslandPanel: NSPanel {
 
 final class DynamicIslandService: ObservableObject {
     static let shared = DynamicIslandService()
+    var expandedCanvasSize: NSSize {
+        let codex = CodexIslandService.shared
+        let width = IslandUtilityLayout.panelWidth(codex.panelWidth)
+        switch expandedCanvas {
+        case "codex": return NSSize(width: width, height: codex.islandContentHeight)
+        case "music": return NSSize(width: width, height: 246)
+        case "time": return NSSize(width: width, height: 260)
+        case "memo": return NSSize(width: width, height: 310)
+        default: return NSSize(width: 780, height: 310)
+        }
+    }
     var expandedSize: NSSize {
-        // Every tab shares the calendar design's canvas. Switching content
-        // must never resize the AppKit window: that causes the lower edge to
-        // jump and makes the tab animation appear to stutter.
-        NSSize(width: 780 * expandedScale, height: 310 * expandedScale)
+        NSSize(width: expandedCanvasSize.width * expandedScale,
+               height: expandedCanvasSize.height * expandedScale)
     }
     @Published private(set) var expandedScale: CGFloat = 1
     @Published private(set) var usesLaptopLayout = false
@@ -30,6 +39,24 @@ final class DynamicIslandService: ObservableObject {
     @Published var elapsedTime = 0.0
     @Published var duration = 0.0
     @Published var outputVolume = 0.5
+    @Published private(set) var musicShuffle = false
+    @Published private(set) var musicRepeat = "off"
+    private let mediaCommands = IslandMediaCommands()
+    private var modesQueryInFlight = false
+    private var seekPendingUntil = Date.distantPast
+    var scriptedPlayer: String? {
+        switch nowPlaying?.appBundleIdentifier {
+        case "com.apple.Music": return "Music"
+        case "com.spotify.client": return "Spotify"
+        default: return nil
+        }
+    }
+    var canSeek: Bool { nowPlaying != nil && duration > 0 && (scriptedPlayer != nil || mediaCommands.canSeek) }
+    var musicSourceName: String {
+        guard let identifier = nowPlaying?.appBundleIdentifier,
+              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) else { return "Apple Music" }
+        return url.deletingPathExtension().lastPathComponent
+    }
     @Published private(set) var musicLaunchInProgress = false
     @Published private(set) var expanded = false
     @Published private(set) var showsExpandedContent = false
@@ -42,6 +69,7 @@ final class DynamicIslandService: ObservableObject {
     @Published private(set) var codexActivationID = UUID()
     @Published private(set) var codexTabActive = true
     @Published private(set) var expandedCanvas = "codex"
+    @Published private(set) var isMusicVolumePopoverPresented = false
     private var window: NSWindow?
     private var monitor: Any?
     private var globalClickMonitor: Any?
@@ -64,6 +92,7 @@ final class DynamicIslandService: ObservableObject {
     private var collapseWorkItem: DispatchWorkItem?
     private var musicLaunchTimeoutWorkItem: DispatchWorkItem?
     private var codexAttentionDeadline: Date?
+    private var dismissedByOutsideClick = false
     private var activeDisplayNumber: NSNumber?
     private var primaryButtonWasDown = false
     private init() {
@@ -247,7 +276,9 @@ final class DynamicIslandService: ObservableObject {
             ? 10
             : (hasNotch ? screen.safeAreaInsets.top + (isBuiltInDisplay ? 0 : 8) : 28)
         if compactHeight != nextCompactHeight { compactHeight = nextCompactHeight }
-        let size = expandedSize
+        // Keep the hosting canvas stable while the visible island animates inside it.
+        // It accommodates every tab and the largest AI panel without AppKit resizing.
+        let size = NSSize(width: 780 * expandedScale, height: 560 * expandedScale)
         let frame = NSRect(x: visible.midX - size.width / 2,
                            y: visible.maxY - size.height,
                            width: size.width,
@@ -297,9 +328,10 @@ final class DynamicIslandService: ObservableObject {
         let nextDuration = snapshot?.duration ?? 0
         let nextVolume = AppVolumeMixer.systemOutputVolumeLevel() ?? outputVolume
         if isPlaying != nextPlaying { isPlaying = nextPlaying }
-        if elapsedTime != nextElapsed { elapsedTime = nextElapsed }
+        if Date() >= seekPendingUntil, elapsedTime != nextElapsed { elapsedTime = nextElapsed }
         if duration != nextDuration { duration = nextDuration }
         if outputVolume != nextVolume { outputVolume = nextVolume }
+        refreshPlaybackModes()
         show()
     }
 
@@ -375,8 +407,8 @@ final class DynamicIslandService: ObservableObject {
 
     func togglePlayback() {
         if nowPlaying == nil { launchAndPlayMusic() }
-        else if nowPlaying?.appBundleIdentifier == "com.apple.Music" { runMusicCommand("playpause") }
-        else { Self.sendMediaKey(16) }
+        else if let player = scriptedPlayer { runPlayerCommand("playpause", player: player) }
+        else if !mediaCommands.send(2) { Self.sendMediaKey(16) }
     }
 
     private func launchAndPlayMusic() {
@@ -411,46 +443,86 @@ final class DynamicIslandService: ObservableObject {
     }
 
     func seek(to value: Double) {
-        elapsedTime = value
-        guard nowPlaying?.appBundleIdentifier == "com.apple.Music" else { return }
-        runMusicCommand("set player position to \(value)")
+        guard canSeek, value.isFinite else { return }
+        let position = min(max(value, 0), duration)
+        elapsedTime = position
+        seekPendingUntil = Date().addingTimeInterval(1.5)
+        if let player = scriptedPlayer { runPlayerCommand("set player position to \(position)", player: player) }
+        else { mediaCommands.seek(to: position) }
+    }
+
+    func skipTrack(forward: Bool) {
+        if let player = scriptedPlayer { runPlayerCommand(forward ? "next track" : "previous track", player: player) }
+        else if !mediaCommands.send(forward ? 4 : 5) { Self.sendMediaKey(forward ? 19 : 20) }
     }
 
     func setVolume(_ value: Double) {
-        outputVolume = value
-        _ = AppVolumeMixer.setSystemOutputVolume(value)
+        guard value.isFinite else { return }
+        outputVolume = min(max(value, 0), 1)
+        _ = AppVolumeMixer.setSystemOutputVolume(outputVolume)
     }
 
     func toggleMusicShuffle() {
-        runMusicCommand("set shuffle enabled to not shuffle enabled")
+        guard let player = scriptedPlayer else { return }
+        runPlayerCommand(player == "Music" ? "set shuffle enabled to not shuffle enabled" : "set shuffling to not shuffling", player: player)
     }
 
     func cycleMusicRepeat() {
+        guard let player = scriptedPlayer else { return }
+        let command = player == "Spotify" ? "set repeating to not repeating" : """
+        if song repeat is off then
+            set song repeat to all
+        else if song repeat is all then
+            set song repeat to one
+        else
+            set song repeat to off
+        end if
+        """
+        runPlayerCommand(command, player: player)
+    }
+
+    private func runPlayerCommand(_ command: String, player: String) {
         playerQueryQueue.async { [weak self] in
-            let script = """
-            tell application "Music"
-                if song repeat is off then
-                    set song repeat to all
-                else if song repeat is all then
-                    set song repeat to one
-                else
-                    set song repeat to off
-                end if
-            end tell
-            """
-            _ = AppleScriptRunner.runDetailed(script)
+            _ = AppleScriptRunner.runDetailed("tell application \"\(player)\"\n\(command)\nend tell")
             DispatchQueue.main.async { self?.refresh() }
         }
     }
 
+    private func refreshPlaybackModes() {
+        guard let player = scriptedPlayer else {
+            if musicShuffle { musicShuffle = false }
+            if musicRepeat != "off" { musicRepeat = "off" }
+            return
+        }
+        guard !modesQueryInFlight else { return }
+        modesQueryInFlight = true
+        playerQueryQueue.async { [weak self] in
+            let expression = player == "Music"
+                ? "(shuffle enabled as text) & \"|\" & (song repeat as text)"
+                : "(shuffling as text) & \"|\" & (repeating as text)"
+            let result = AppleScriptRunner.runDetailed("tell application \"\(player)\" to return \(expression)")
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.modesQueryInFlight = false
+                guard self.scriptedPlayer == player, result.ok else { return }
+                let fields = result.output.components(separatedBy: "|")
+                self.musicShuffle = fields.first == "true"
+                let mode = fields.last ?? "off"
+                self.musicRepeat = mode == "true" ? "all" : (mode == "false" ? "off" : mode)
+            }
+        }
+    }
+
     func openMusic() {
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Music") {
+        let identifier = nowPlaying?.appBundleIdentifier ?? "com.apple.Music"
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
             NSWorkspace.shared.openApplication(at: url, configuration: .init())
         }
     }
 
     func activateTimeReminder() {
         guard !presentationSuspended else { pendingTimeAttention = true; return }
+        dismissedByOutsideClick = false
         timeReminderActivationID = UUID()
         show()
         if !expanded { setExpanded(true) }
@@ -458,6 +530,7 @@ final class DynamicIslandService: ObservableObject {
 
     func activateCodex(duration: TimeInterval = 5) {
         guard !presentationSuspended else { pendingCodexAttention = true; return }
+        dismissedByOutsideClick = false
         codexActivationID = UUID()
         codexAttentionDeadline = Date().addingTimeInterval(duration)
         show()
@@ -474,8 +547,14 @@ final class DynamicIslandService: ObservableObject {
         expandedCanvas = value
     }
 
+    func setMusicVolumePopoverPresented(_ presented: Bool) {
+        isMusicVolumePopoverPresented = presented
+        if !presented { updateHoverState() }
+    }
+
     func setExpanded(_ value: Bool) {
         if value {
+            dismissedByOutsideClick = false
             collapseWorkItem?.cancel()
             collapseWorkItem = nil
             guard !expanded else { return }
@@ -489,7 +568,7 @@ final class DynamicIslandService: ObservableObject {
             self.transition(toExpanded: false)
         }
         collapseWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32, execute: work)
     }
 
     private func transition(toExpanded value: Bool) {
@@ -501,18 +580,19 @@ final class DynamicIslandService: ObservableObject {
             expanded = value
             showsExpandedContent = value
         }
+        if !value { CodexIslandService.shared.showAllSessions() }
         show()
     }
 
     private func updateHoverState() {
         updateActiveDisplayFromMouseClick()
         guard let window, window.isVisible else { return }
-        if window.isKeyWindow { return }
+        if window.isKeyWindow || isMusicVolumePopoverPresented { return }
         if case .completed = TimeReminderService.shared.presentation {
             if !expanded { activateTimeReminder() }
             return
         }
-        if musicLaunchInProgress {
+        if musicLaunchInProgress, !dismissedByOutsideClick {
             if !expanded { setExpanded(true) }
             return
         }
@@ -546,7 +626,7 @@ final class DynamicIslandService: ObservableObject {
         let isDown = CGEventSource.buttonState(.combinedSessionState, button: .left)
         defer { primaryButtonWasDown = isDown }
         guard isDown, !primaryButtonWasDown else { return }
-        activateDisplay(at: NSEvent.mouseLocation)
+        handlePointerClick(at: NSEvent.mouseLocation)
     }
 
     private func activateDisplay(at point: CGPoint) {
@@ -558,18 +638,28 @@ final class DynamicIslandService: ObservableObject {
     }
 
     private func handlePointerClick(at point: CGPoint) {
+        // The backing window is larger than the visible panel. Hit-test the
+        // displayed island before potentially moving it to another screen.
+        if expanded, let window {
+            let size = expandedSize
+            let visibleFrame = NSRect(x: window.frame.midX - size.width / 2,
+                                      y: window.frame.maxY - size.height,
+                                      width: size.width, height: size.height)
+            if !visibleFrame.contains(point) {
+                dismissedByOutsideClick = true
+                codexAttentionDeadline = nil
+                collapseWorkItem?.cancel()
+                collapseWorkItem = nil
+                transition(toExpanded: false)
+            }
+        }
         if TimeReminderService.shared.isCompletionPresented {
             TimeReminderService.shared.dismissCompletion()
         }
         activateDisplay(at: point)
     }
 
-    private func runMusicCommand(_ command: String) {
-        playerQueryQueue.async {
-            _ = AppleScriptRunner.runDetailed("tell application \"Music\" to \(command)")
-            DispatchQueue.main.async { [weak self] in self?.refresh() }
-        }
-    }
+
 }
 
 struct CodexActivityIndicator: View {
@@ -632,33 +722,19 @@ struct CodexActivityIndicator: View {
 
 private struct DynamicIslandView: View {
     private enum IslandTab: Equatable { case codex, music, time, memo }
-    private enum TimerMode { case countdown, focus, rest }
     @ObservedObject private var island = DynamicIslandService.shared
     @ObservedObject private var reminders = TimeReminderService.shared
     @ObservedObject private var codex = CodexIslandService.shared
-    @ObservedObject private var islandMemos = IslandMemoService.shared
     @State private var selectedTab: IslandTab = .codex
-    @State private var quickMinutes = 25
-    @State private var memoText = ""
-    @State private var memoPage = 0
-    @State private var timerMode: TimerMode = .focus
     @State private var selectedCalendarDate = Date()
-    @FocusState private var memoFocused: Bool
+    @State private var showingTimerCalendar = false
+    @State private var approvalDetailsID: String?
     var body: some View {
         Group {
-            if island.showsExpandedContent, selectedTab == .time {
-                Group {
-                    if let reminder = reminders.presentation { reminderContent(reminder) }
-                    else { timeSetupContent }
-                }
-                    .transition(.opacity)
-            } else if island.showsExpandedContent, selectedTab == .music {
-                expandedContent
-                    .transition(.opacity)
-            } else if island.showsExpandedContent, selectedTab == .memo {
-                memoContent.transition(.opacity)
-            } else if island.showsExpandedContent {
-                codexContent
+            if island.showsExpandedContent {
+                expandedPanel
+                    // Only opacity participates in opening. The contents already
+                    // have their final geometry, independent of the shell below.
                     .transition(.opacity)
             } else if island.isIdleCompact {
                 Color.clear
@@ -674,29 +750,26 @@ private struct DynamicIslandView: View {
         // the shell's smooth, interruptible transition.
         .animation(.easeOut(duration: island.showsExpandedContent ? 0.18 : 0.10),
                    value: island.showsExpandedContent)
-        .frame(width: island.expanded ? 780 : island.compactWidth,
-               height: island.expanded ? 310 : island.compactHeight)
+        .frame(width: island.expanded ? island.expandedSize.width : island.compactWidth,
+               height: island.expanded ? island.expandedSize.height : island.compactHeight,
+               alignment: .top)
         .background(Color.black, in: UnevenRoundedRectangle(topLeadingRadius: 0,
-                                                            bottomLeadingRadius: 8,
-                                                            bottomTrailingRadius: 8,
+                                                            bottomLeadingRadius: 18,
+                                                            bottomTrailingRadius: 18,
                                                             topTrailingRadius: 0,
                                                             style: .continuous))
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 0,
-                                         bottomLeadingRadius: 8,
-                                         bottomTrailingRadius: 8,
+                                         bottomLeadingRadius: 18,
+                                         bottomTrailingRadius: 18,
                                          topTrailingRadius: 0,
                                          style: .continuous))
-        .overlay(alignment: .topTrailing) {
-            if island.showsExpandedContent {
-                modeSwitcher.transition(.opacity.animation(.easeOut(duration: 0.10)))
-            }
-        }
+        .animation(.smooth(duration: 0.28), value: island.expandedCanvasSize)
         .animation(.easeInOut(duration: 0.16), value: selectedTab)
-        .onAppear { ensureSelectedTabIsVisible() }
+        .onAppear { ensureSelectedTabIsVisible(); island.setExpandedCanvas(canvas(for: selectedTab)) }
         .onChange(of: visibleTabsSignature) { _, _ in ensureSelectedTabIsVisible() }
         .onChange(of: reminders.presentation) { oldValue, newValue in
             if oldValue == nil, newValue != nil, island.showTimerTab { selectedTab = .time }
-            if newValue == nil, island.showAIHookTab { selectedTab = .codex }
+            // Keep the timer composer visible after cancelling or finishing.
         }
         .onChange(of: island.timeReminderActivationID) { _, _ in
             if island.showTimerTab { selectedTab = .time }
@@ -706,23 +779,39 @@ private struct DynamicIslandView: View {
         }
         .onChange(of: selectedTab) { _, value in
             island.setCodexTabActive(value == .codex)
-            island.setExpandedCanvas(value == .time ? "time" : "codex")
+            island.setExpandedCanvas(canvas(for: value))
         }
-        .scaleEffect(island.expanded ? island.expandedScale : 1, anchor: .top)
-        .frame(width: island.expanded ? island.expandedSize.width : island.compactWidth,
-               height: island.expanded ? island.expandedSize.height : island.compactHeight,
-               alignment: .top)
         // The hosting window retains the expanded canvas when collapsed.
         // Fill it only AFTER sizing the island, so AppKit cannot stretch the
         // root's compact frame or anchor it at the window's leading edge.
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
+    private var expandedPanel: some View {
+        Group {
+            switch selectedTab {
+            case .time:
+                if let reminder = reminders.presentation, isTimerAlert(reminder) { reminderContent(reminder) }
+                else { timeSetupContent }
+            case .music: expandedContent
+            case .memo: memoContent
+            case .codex: codexContent
+            }
+        }
+        .frame(width: island.expandedCanvasSize.width, height: island.expandedCanvasSize.height)
+        .overlay(alignment: .topTrailing) { modeSwitcher }
+        .scaleEffect(island.expandedScale, anchor: .top)
+        .frame(width: island.expandedSize.width, height: island.expandedSize.height, alignment: .top)
+        // Do not inherit the shell's resize animation into trailing-aligned
+        // toolbars, spacers, or the built-in display's scale transform.
+        .transaction { $0.animation = nil }
+    }
+
     private var modeSwitcher: some View {
         HStack(spacing: 2) {
             Spacer()
             if island.showAIHookTab {
-                Button { selectedTab = .codex } label: {
+                Button { codex.showAllSessions(); selectedTab = .codex } label: {
                     Label("AI Hook", systemImage: "terminal.fill").labelStyle(.iconOnly)
                         .foregroundStyle(.white)
                         .font(.system(size: 11)).frame(width: 25, height: 22).background(selectedTab == .codex ? Color.white.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 5))
@@ -773,86 +862,29 @@ private struct DynamicIslandView: View {
         else if island.showMemoTab { selectedTab = .memo }
     }
 
-    private var timeSetupContent: some View {
-        HStack(alignment: .top, spacing: 12) {
-            focusTimerCard
-                .frame(width: 365)
-            calendarCard
-        }
-        .frame(maxHeight: .infinity)
-        .padding(.horizontal, 14).padding(.top, 34).padding(.bottom, 12)
+    private func canvas(for tab: IslandTab) -> String {
+        switch tab { case .codex: "codex"; case .music: "music"; case .time: "time"; case .memo: "memo" }
     }
 
-    private var focusTimerCard: some View {
-        VStack(spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("专注当下").font(.system(size: 17, weight: .bold))
-                    Text("更好的自己，从专注开始").font(.system(size: 9)).foregroundStyle(.white.opacity(0.5))
+    private func isTimerAlert(_ reminder: IslandTimePresentation) -> Bool {
+        switch reminder { case .countdown, .focus: false; default: true }
+    }
+
+    private var timeSetupContent: some View {
+        IslandTimerPanel(running: reminders.runningTimer, start: { title, seconds in
+            if title == "专注" { reminders.startFocus(minutes: seconds / 60) }
+            else { reminders.startCountdown(title: title, seconds: seconds) }
+        }, pause: { reminders.toggleCountdownPause() }, cancel: { reminders.stopTimer() })
+        .overlay(alignment: .topLeading) {
+            if reminders.calendarEnabled {
+                Button { showingTimerCalendar.toggle() } label: {
+                    Label("日程", systemImage: "calendar").font(.system(size: 10)).padding(10)
                 }
-                Spacer()
-                Label(timerMode == .rest ? "放松片刻" : "保持专注 · 高效生活", systemImage: "leaf.fill")
-                    .font(.system(size: 9)).foregroundStyle(.orange)
-                    .padding(.horizontal, 10).frame(height: 25)
-                    .background(.white.opacity(0.06), in: Capsule())
+                .popover(isPresented: $showingTimerCalendar) {
+                    calendarCard.padding(14).frame(width: 360, height: 280).background(.black)
+                }
             }
-            HStack(spacing: 20) {
-                Button { quickMinutes = max(1, quickMinutes - 1) } label: {
-                    Image(systemName: "minus")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
-                        .frame(width: 30, height: 30)
-                        .background(.white.opacity(0.07), in: Circle())
-                }
-                .accessibilityLabel("减少一分钟")
-                ZStack {
-                    Circle().stroke(.white.opacity(0.10), lineWidth: 9)
-                    Circle().trim(from: 0, to: min(Double(quickMinutes) / 60, 1))
-                        .stroke(.orange, style: StrokeStyle(lineWidth: 9, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    VStack(spacing: 4) {
-                        Text(String(format: "%02d:00", quickMinutes))
-                            .font(.system(size: 30, weight: .semibold, design: .rounded)).monospacedDigit()
-                        Text(timerMode == .rest ? "休息时间" : "专注进行中")
-                            .font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.55))
-                    }
-                }
-                .frame(width: 112, height: 112)
-                .contentShape(Circle())
-                .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                    .onChanged { updateMinutes(from: $0.location, size: 112) })
-                .accessibilityLabel("拖动调整倒计时分钟")
-                .accessibilityValue("\(quickMinutes) 分钟")
-                Button { quickMinutes = min(240, quickMinutes + 1) } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
-                        .frame(width: 30, height: 30)
-                        .background(.white.opacity(0.07), in: Circle())
-                }
-                .accessibilityLabel("增加一分钟")
-            }
-            .frame(maxWidth: .infinity)
-            HStack(spacing: 6) {
-                timerModeButton(.focus, title: "专注", symbol: "scope")
-                timerModeButton(.rest, title: "休息", symbol: "cup.and.saucer.fill")
-            Button { startSelectedTimer() } label: {
-                Label("开始", systemImage: "play.fill")
-                    .font(.system(size: 12, weight: .semibold)).frame(maxWidth: .infinity).frame(height: 32)
-            }.buttonStyle(.plain).background(.orange, in: Capsule())
-                .accessibilityLabel(timerMode == .rest ? "开始休息" : "开始专注")
-            }
-            HStack {
-                Image(systemName: "quote.opening")
-                Text("专注不是排除干扰，而是选择重要的事。")
-                Spacer()
-                Image(systemName: "quote.closing")
-            }.font(.system(size: 9)).foregroundStyle(.white.opacity(0.42))
         }
-        .padding(10)
-        .frame(maxHeight: .infinity)
-        .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.08)))
     }
 
     private var calendarCard: some View {
@@ -930,38 +962,6 @@ private struct DynamicIslandView: View {
 
     private func shiftSelectedDate(days: Int) {
         selectedCalendarDate = Calendar.current.date(byAdding: .day, value: days, to: selectedCalendarDate) ?? selectedCalendarDate
-    }
-
-    private func startSelectedTimer() {
-        if timerMode == .focus { reminders.startFocus(minutes: quickMinutes) }
-        else if timerMode == .rest { reminders.startCountdown(title: "休息", minutes: quickMinutes) }
-        else { reminders.startCountdown(title: "倒计时", minutes: quickMinutes) }
-    }
-
-    private func timerModeButton(_ mode: TimerMode, title: String, symbol: String) -> some View {
-        let selected = timerMode == mode
-        return Button {
-            timerMode = mode
-            if mode == .rest { quickMinutes = 10 }
-            if mode == .focus, quickMinutes == 10 { quickMinutes = 25 }
-        } label: {
-            Label(title, systemImage: symbol)
-                .font(.system(size: 10.5, weight: .semibold))
-                .frame(maxWidth: .infinity, minHeight: 24)
-                .foregroundStyle(selected ? Color.white : Color.white.opacity(0.45))
-                .background(selected ? Color.orange.opacity(0.9) : .clear, in: Capsule())
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private func updateMinutes(from location: CGPoint, size: CGFloat) {
-        let center = CGPoint(x: size / 2, y: size / 2)
-        let angle = atan2(location.x - center.x, center.y - location.y)
-        let normalized = angle < 0 ? angle + 2 * .pi : angle
-        let minute = Int((normalized / (2 * .pi) * 60).rounded())
-        quickMinutes = minute == 0 ? 60 : min(max(minute, 1), 60)
     }
 
     private func calendarEventRow(_ event: IslandCalendarEvent) -> some View {
@@ -1205,138 +1205,7 @@ private struct DynamicIslandView: View {
     }
 
     private var memoContent: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 8) {
-                Image(systemName: "list.bullet.rectangle.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.black)
-                    .frame(width: 25, height: 25)
-                    .background(.yellow, in: RoundedRectangle(cornerRadius: 6))
-                Text("临时备忘").font(.system(size: 14, weight: .semibold))
-                Spacer()
-                Text("\(islandMemos.memos.count) 条")
-                    .font(.system(size: 9.5, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .padding(.horizontal, 8).frame(height: 20)
-                    .background(.white.opacity(0.07), in: Capsule())
-            }
-            HStack(spacing: 8) {
-                TextField("记录一条临时备忘…", text: $memoText)
-                    .focused($memoFocused)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11.5))
-                    .padding(.horizontal, 10).frame(height: 29)
-                    .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(.white.opacity(0.07)))
-                    .onSubmit { addMemo() }
-                Button { addMemo() } label: {
-                    Image(systemName: "plus").font(.system(size: 12, weight: .bold)).frame(width: 29, height: 29)
-                }
-                .buttonStyle(.plain).foregroundStyle(.black)
-                .background(.yellow, in: RoundedRectangle(cornerRadius: 7))
-                .disabled(memoText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            memoTable
-        }.padding(.horizontal, 24).padding(.top, 29).padding(.bottom, 8)
-    }
-
-    private var memoTable: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("状态").frame(width: 40)
-                Text("内容"); Spacer()
-                Text("时间").frame(width: 56)
-                Text("操作").frame(width: 58)
-            }
-            .font(.system(size: 8.5, weight: .medium))
-            .foregroundStyle(.white.opacity(0.38))
-            .frame(height: 17)
-            .background(.white.opacity(0.025))
-            if islandMemos.memos.isEmpty {
-                VStack(spacing: 6) {
-                    Image(systemName: "tray").foregroundStyle(.yellow.opacity(0.7))
-                    Text("还没有临时备忘").font(.system(size: 11)).foregroundStyle(.white.opacity(0.4))
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ForEach(memoPageItems) { memo in memoRow(memo) }
-                Spacer(minLength: 0)
-            }
-            Divider().overlay(.white.opacity(0.06))
-            HStack {
-                Text("已完成 \(islandMemos.completedCount) 条")
-                Spacer()
-                if memoPageCount > 1 {
-                    HStack(spacing: 4) {
-                        Button { memoPage = max(0, memoPage - 1) } label: {
-                            Image(systemName: "chevron.left").frame(width: 18, height: 18)
-                        }
-                        .disabled(memoPage == 0)
-                        Text("\(memoPage + 1)/\(memoPageCount)")
-                            .monospacedDigit().frame(minWidth: 25)
-                        Button { memoPage = min(memoPageCount - 1, memoPage + 1) } label: {
-                            Image(systemName: "chevron.right").frame(width: 18, height: 18)
-                        }
-                        .disabled(memoPage >= memoPageCount - 1)
-                    }
-                    .foregroundStyle(.white.opacity(0.62))
-                }
-                Button("清除已完成") { islandMemos.clearCompleted() }.disabled(islandMemos.completedCount == 0)
-                Button("全部删除") { islandMemos.deleteAll() }.foregroundStyle(.red.opacity(0.8))
-            }.font(.system(size: 9)).foregroundStyle(.white.opacity(0.45)).frame(height: 21)
-        }
-        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.white.opacity(0.08)))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .onChange(of: islandMemos.memos.count) { _, _ in
-            memoPage = min(memoPage, max(0, memoPageCount - 1))
-        }
-    }
-
-    private var memoPageCount: Int {
-        max(1, Int(ceil(Double(islandMemos.orderedMemos.count) / 3.0)))
-    }
-
-    private var memoPageItems: [IslandMemo] {
-        let memos = islandMemos.orderedMemos
-        let start = min(memoPage * 3, memos.count)
-        let end = min(start + 3, memos.count)
-        return Array(memos[start..<end])
-    }
-
-    private func memoRow(_ memo: IslandMemo) -> some View {
-        HStack(spacing: 7) {
-            Button { islandMemos.toggleCompleted(memo.id) } label: {
-                Image(systemName: memo.completed ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(memo.completed ? .green : .white.opacity(0.45)).frame(width: 40)
-            }
-            Text(memo.text).font(.system(size: 10.5, weight: .medium)).lineLimit(1)
-                .strikethrough(memo.completed).foregroundStyle(.white.opacity(memo.completed ? 0.38 : 0.88))
-            Spacer(minLength: 5)
-            Text(memoAge(memo.createdAt)).font(.system(size: 9)).foregroundStyle(.white.opacity(0.38)).frame(width: 56)
-            HStack(spacing: 9) {
-                Button { islandMemos.togglePinned(memo.id) } label: {
-                    Image(systemName: memo.pinned ? "pin.fill" : "pin").foregroundStyle(memo.pinned ? .yellow : .white.opacity(0.42))
-                }
-                Button { islandMemos.delete(memo.id) } label: {
-                    Image(systemName: "trash").foregroundStyle(.white.opacity(0.42))
-                }
-            }.frame(width: 58)
-        }
-        .frame(height: 31)
-        .background(memo.pinned ? Color.yellow.opacity(0.035) : .clear)
-        .overlay(alignment: .bottom) { Divider().overlay(.white.opacity(0.055)) }
-    }
-
-    private func addMemo() {
-        if islandMemos.add(memoText) { memoText = "" }
-    }
-
-    private func memoAge(_ date: Date) -> String {
-        let seconds = Date().timeIntervalSince(date)
-        if seconds < 60 { return "刚刚" }
-        if Calendar.current.isDateInToday(date) { return date.formatted(date: .omitted, time: .shortened) }
-        if Calendar.current.isDateInYesterday(date) { return "昨天" }
-        return date.formatted(.dateTime.month().day())
+        IslandMemoPanel(service: IslandMemoService.shared)
     }
 
     private func completionContent(title: String, message: String) -> some View {
@@ -1392,146 +1261,150 @@ private struct DynamicIslandView: View {
     }
 
     private var codexContent: some View {
-        let fontSize = codex.contentFontSize
-        let ordered = codex.sessions.sorted { lhs, rhs in
-            let rank: (CodexIslandSession.Status) -> Int = {
-                switch $0 { case .waiting: 0; case .running: 1; case .failed: 2; case .completed: 3 }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 7) {
+                Circle().fill(codex.waitingCount > 0 ? .orange : .blue).frame(width: 6, height: 6)
+                Text("AI 会话").font(.system(size: 11, weight: .semibold))
+                Text(codexCompactSummary).font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                Spacer()
             }
-            if rank(lhs.status) != rank(rhs.status) { return rank(lhs.status) < rank(rhs.status) }
-            return lhs.updatedAt > rhs.updatedAt
-        }
-        return VStack(spacing: 0) {
-            if codex.enabled, !ordered.isEmpty {
-                ForEach(Array(ordered.prefix(3).enumerated()), id: \.element.id) { offset, session in
-                    codexSessionRow(session, fontSize: fontSize)
-                    if offset == 0, ordered.count > 1 {
-                        Divider().overlay(.white.opacity(0.08)).padding(.leading, 44)
-                    }
+            .padding(.horizontal, 18).frame(height: 30)
+            if codex.enabled, codex.hookHealth != .ready {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text(codex.hookHealth.message).lineLimit(2)
+                    Spacer(minLength: 0)
+                    Button("检查") { codex.checkHookHealth() }
                 }
-                if ordered.count == 4, let session = ordered.dropFirst(3).first {
-                    compactCodexSessionRow(session, fontSize: fontSize)
-                } else if ordered.count > 4 {
-                    Button { codex.openCodex() } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "ellipsis")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.5))
-                                .frame(width: 34)
-                            Text("还有 \(ordered.count - 3) 个会话")
-                                .font(.custom("Departure Mono", size: max(9, fontSize - 1)).weight(.semibold))
-                                .foregroundStyle(.white.opacity(0.62))
+                .font(.system(size: 11)).foregroundStyle(.orange)
+                .padding(.horizontal, 18).padding(.vertical, 8)
+            }
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    if codex.displayedSessions.isEmpty && !codex.recentSessionsExpanded {
+                        HStack(spacing: 12) {
+                            CodexActivityIndicator(status: nil).frame(width: 34)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(codex.enabled ? (codex.panelPlan.allCompleted ? "一切已完成" : "一切就绪") : "Codex 集成未启用")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text(codex.enabled ? (codex.panelPlan.allCompleted ? "最近 \(codex.panelPlan.recent.count) 个会话" : "任务开始后，会在这里显示进度") : "在灵动岛设置中启用 AI Hook")
+                                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.5))
+                            }
                             Spacer()
-                            Text("打开 Codex")
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundStyle(.blue.opacity(0.95))
+                        }.padding(14).frame(height: 100)
+                    } else {
+                        ForEach(codex.displayedSessions) { session in
+                            codexSessionRow(session, fontSize: codex.contentFontSize)
                         }
                     }
-                    .frame(height: 36)
-                }
-            } else {
-                HStack(spacing: 10) {
-                    CodexActivityIndicator(status: nil)
-                        .frame(width: 34)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(codex.enabled ? "Codex" : "Codex 集成未启用")
-                            .font(.custom("Departure Mono", size: fontSize).weight(.semibold))
-                            .lineLimit(1)
-                        Text(codex.enabled ? "暂无运行中的任务" : "可在灵动岛设置中启用 Codex Hooks")
-                            .font(.custom("Departure Mono", size: max(9, fontSize - 2)))
-                            .foregroundStyle(.white.opacity(0.58))
-                            .lineLimit(1)
+                    if codex.recentSessionsExpanded {
+                        ForEach(codex.panelPlan.recent) { session in
+                            codexSessionRow(session, fontSize: codex.contentFontSize)
+                        }
                     }
-                    Spacer(minLength: 8)
-                    Button { codex.openCodex() } label: {
-                        Text("打开 Codex")
-                            .font(.system(size: 9, weight: .medium))
-                            .padding(.horizontal, 6).padding(.vertical, 3)
-                            .background(.blue.opacity(0.22), in: RoundedRectangle(cornerRadius: 4))
-                            .foregroundStyle(.blue.opacity(0.95))
+                    if let error = codex.lastError {
+                        Text(error).font(.system(size: 11)).foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                     }
-                }
-                .frame(height: 51)
+                }.padding(.horizontal, 10)
             }
-        }
-        .padding(.horizontal, 18).padding(.top, 32).padding(.bottom, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            if !codex.panelPlan.recent.isEmpty {
+                Button { codex.recentSessionsExpanded.toggle() } label: {
+                    HStack {
+                        Image(systemName: codex.recentSessionsExpanded ? "chevron.down" : "chevron.right")
+                        Text("最近完成 · \(codex.panelPlan.recent.count) 个会话")
+                        Spacer()
+                    }.font(.system(size: 10)).foregroundStyle(.white.opacity(0.55))
+                        .padding(.horizontal, 18).frame(height: 30)
+                }
+            }
+            HStack {
+                if codex.panelPlan.focused {
+                    Button("查看全部（\(codex.sessions.count)）") { codex.showAllSessions() }
+                        .font(.system(size: 10)).foregroundStyle(.blue)
+                } else {
+                    Text(codex.displayedSessions.count > 3 ? "滚动查看更多 · 点击会话返回任务" : "点击会话返回任务")
+                        .font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
+                }
+                Spacer()
+                Button { codex.openCodex() } label: {
+                    Label("打开 Codex", systemImage: "arrow.up.right")
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.75))
+                }
+            }.padding(.horizontal, 18).frame(height: 26)
+        }.padding(.top, 28).padding(.bottom, 6)
     }
 
     private func codexSessionRow(_ session: CodexIslandSession, fontSize: Double) -> some View {
-        HStack(spacing: 10) {
-                CodexActivityIndicator(status: session.status)
-                    .frame(width: 34)
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 5) {
-                        if codex.showProjectName {
-                            Text(session.project).font(.custom("Departure Mono", size: max(9, fontSize - 2)).weight(.semibold)).foregroundStyle(.white.opacity(0.55))
-                            Text("·").foregroundStyle(.white.opacity(0.3))
+        VStack(alignment: .leading, spacing: 8) {
+            Button { codex.openCodex(session) } label: {
+                HStack(spacing: 10) {
+                    CodexActivityIndicator(status: session.status).frame(width: 28)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 6) {
+                            if codex.showProjectName {
+                                Text(session.project).lineLimit(1)
+                                Text("·")
+                            }
+                            Text("Codex")
+                        }.font(.system(size: 10)).foregroundStyle(.white.opacity(0.45))
+                        Text(session.title).font(.system(size: fontSize, weight: .semibold))
+                            .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                        if codex.showActivityDetail, session.status != .waiting {
+                            Text(session.detail).font(.system(size: max(10, fontSize - 1)))
+                                .foregroundStyle(.white.opacity(0.55)).lineLimit(1)
                         }
-                        Text(session.title).font(.custom("Departure Mono", size: fontSize).weight(.semibold)).lineLimit(1)
                     }
-                    if codex.showActivityDetail {
-                        Text(session.detail).font(.custom("Departure Mono", size: max(9, fontSize - 2))).foregroundStyle(.white.opacity(0.58)).lineLimit(1)
+                    Spacer(minLength: 0)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Label(codexStatus(session.status), systemImage: codexSymbol(session.status))
+                            .font(.system(size: 10, weight: .medium)).foregroundStyle(codexColor(session.status))
+                        Text(relativeAge(session.updatedAt)).font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.35))
                     }
-                }
-                Spacer(minLength: 8)
-                if session.status == .waiting {
-                    Button("允许") { codex.respondToApproval(for: session, allow: true) }
-                        .buttonStyle(.borderedProminent).tint(.orange)
-                    Button("拒绝") { codex.respondToApproval(for: session, allow: false) }
-                        .buttonStyle(.bordered)
-                } else {
-                    codexSessionTrailing(session)
-                }
+                }.contentShape(Rectangle())
             }
-        .contentShape(Rectangle())
-        .onTapGesture { if session.status != .waiting { codex.openCodex(session) } }
-        .frame(height: 51)
-        .background(session.status == .completed ? Color.white.opacity(0.055) : .clear,
-                    in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-    }
-
-    private func compactCodexSessionRow(_ session: CodexIslandSession, fontSize: Double) -> some View {
-        Button { codex.openCodex(session) } label: {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(codexColor(session.status).opacity(0.5))
-                    .frame(width: 7, height: 7)
-                    .frame(width: 34)
-                if codex.showProjectName {
-                    Text(session.project)
-                        .font(.custom("Departure Mono", size: max(9, fontSize - 2)).weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.55))
-                    Text("·").foregroundStyle(.white.opacity(0.3))
-                }
-                Text(session.title)
-                    .font(.custom("Departure Mono", size: max(9, fontSize - 1)).weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.72))
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                codexSessionTrailing(session)
-            }
-        }
-        .frame(height: 36)
-    }
-
-    private func codexSessionTrailing(_ session: CodexIslandSession) -> some View {
-        Group {
             if session.status == .waiting {
-                Text("打开审批").font(.system(size: 10, weight: .semibold))
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(.orange.opacity(0.9), in: RoundedRectangle(cornerRadius: 5))
-            } else {
-                Text("Codex").font(.system(size: 9, weight: .medium))
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(.blue.opacity(0.22), in: RoundedRectangle(cornerRadius: 4))
-                    .foregroundStyle(.blue.opacity(0.95))
+                Text(session.detail).font(.system(size: max(10, fontSize - 1), design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.7)).lineLimit(2)
+                HStack(spacing: 8) {
+                    if let request = codex.approval(for: session) {
+                    if let feedback = codex.approvalFeedback[request.id] {
+                        Label(feedback, systemImage: "checkmark.circle")
+                            .font(.system(size: 11)).foregroundStyle(.orange)
+                    } else {
+                        Button("查看完整操作") { approvalDetailsID = request.id }
+                            .popover(isPresented: Binding(get: { approvalDetailsID == request.id }, set: { if !$0 { approvalDetailsID = nil } })) {
+                                ScrollView {
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        Text("Codex 请求执行的操作").font(.headline)
+                                        Text(request.operation).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                                        Text("只批准本次请求；此面板不会改变 Codex 的权限策略。")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                                }.frame(width: 520, height: 320)
+                            }
+                        Spacer()
+                        Button("拒绝") { codex.respondToApproval(for: session, requestID: request.id, allow: false) }
+                            .buttonStyle(.bordered)
+                        Button("允许") { codex.respondToApproval(for: session, requestID: request.id, allow: true) }
+                            .buttonStyle(.borderedProminent).tint(.orange)
+                    }
+                    } else {
+                        Text("需要你的回答").font(.system(size: 10)).foregroundStyle(.orange)
+                        Spacer()
+                        Button("返回 Codex") { codex.openCodex(session) }.buttonStyle(.borderedProminent).tint(.orange)
+                    }
+                }.controlSize(.small)
             }
-            Text(relativeAge(session.updatedAt))
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.45))
-                .frame(width: 34, alignment: .trailing)
-            Circle().fill(codexColor(session.status)).frame(width: 6, height: 6)
         }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .frame(height: IslandSessionPresentation.rowHeight(session) - 4)
+        .background(codexColor(session.status).opacity(session.status == .waiting ? 0.08 : 0.0),
+                    in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11)
+            .strokeBorder(codexColor(session.status).opacity(session.status == .waiting ? 0.16 : 0.0)))
+        .padding(.vertical, 2)
     }
 
     private func codexColor(_ status: CodexIslandSession.Status) -> Color {
@@ -1552,96 +1425,19 @@ private struct DynamicIslandView: View {
     }
 
     private var expandedContent: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 26) {
-            if let track = island.nowPlaying {
-                artwork(for: track)
-                    .scaleEffect(1.8)
-                    .frame(width: 155, height: 128)
-                    .background(alignment: .trailing) {
-                        ZStack {
-                            Circle().fill(Color(white: 0.055))
-                            ForEach(0..<5) { index in
-                                Circle().stroke(.white.opacity(0.07), lineWidth: 1)
-                                    .padding(CGFloat(index * 6 + 5))
-                            }
-                            Circle().fill(.pink.opacity(0.45)).frame(width: 28, height: 28)
-                        }.frame(width: 124, height: 124).offset(x: 30)
-                    }
-                VStack(alignment: .leading, spacing: 7) {
-                    Label(island.isPlaying ? "NOW PLAYING" : "已暂停", systemImage: "waveform")
-                        .font(.system(size: 9, weight: .medium)).foregroundStyle(.pink)
-                    Text(track.title ?? "正在播放")
-                        .font(.system(size: 26, weight: .semibold)).foregroundStyle(.white).lineLimit(1)
-                    Text([track.artist, track.album].compactMap { value in
-                        guard let value, !value.isEmpty else { return nil }
-                        return value
-                    }.joined(separator: " · "))
-                        .font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.62)).lineLimit(1)
-                }
-            } else {
-                Rectangle()
-                    .fill(LinearGradient(colors: [.purple, .pink, .orange], startPoint: .topLeading, endPoint: .bottomTrailing))
-                    .frame(width: 96, height: 96)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(Image(systemName: "music.note").font(.title2).foregroundStyle(.white))
-                VStack(alignment: .leading, spacing: 5) {
-                    Label("音乐随时待命", systemImage: "waveform").font(.system(size: 10)).foregroundStyle(.orange)
-                    Text("Apple Music").font(.system(size: 22, weight: .semibold))
-                    Text(island.musicLaunchInProgress ? "正在打开 Apple Music…" : "点击播放以打开音乐并继续播放")
-                        .font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.62)).lineLimit(1)
-                }
-            }
-            Spacer()
-            HStack(spacing: 12) {
-                if island.nowPlaying != nil {
-                    Button(action: { DynamicIslandService.sendMediaKey(20) }) { Image(systemName: "backward.fill") }
-                }
-                Button(action: { island.togglePlayback() }) {
-                    Group {
-                    if island.musicLaunchInProgress {
-                        ProgressView().controlSize(.small).tint(.white)
-                    } else {
-                        Image(systemName: island.isPlaying ? "pause.fill" : "play.fill")
-                    }
-                    }
-                    .frame(width: 58, height: 58)
-                    .background(LinearGradient(colors: [.pink, .orange], startPoint: .topLeading, endPoint: .bottomTrailing), in: Circle())
-                }
-                if island.nowPlaying != nil {
-                    Button(action: { DynamicIslandService.sendMediaKey(19) }) { Image(systemName: "forward.fill") }
-                }
-            }
-            .font(.system(size: 17, weight: .semibold))
-            }
-            .frame(height: 128)
-            if island.duration > 0 {
-                VStack(spacing: 7) {
-                    HStack {
-                        Label("播放进度", systemImage: "timeline.selection")
-                        Spacer()
-                        Text("剩余 \(time(max(island.duration - island.elapsedTime, 0)))")
-                    }
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.46))
-                    HStack(spacing: 9) {
-                        Text(time(island.elapsedTime)).monospacedDigit()
-                    ContrastSlider(value: Binding(get: { island.elapsedTime }, set: { island.seek(to: $0) }),
-                                   range: 0...max(island.duration, 1))
-                        Text(time(island.duration)).monospacedDigit()
-                    }
-                    .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.84))
-                }
-                .padding(.horizontal, 13).padding(.vertical, 9)
-                .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.065)))
-            }
-            HStack {
-                Label("好音乐，总能让生活多一点色彩。", systemImage: "music.note")
-                Spacer()
-            }.font(.system(size: 9)).foregroundStyle(.white.opacity(0.35))
-        }
-        .padding(.horizontal, 28).padding(.top, 34).padding(.bottom, 13)
+        IslandMusicPanel(title: island.nowPlaying?.title ?? "正在播放",
+                         artist: island.nowPlaying?.artist ?? "未知艺人",
+                         artwork: island.nowPlaying?.artworkData.flatMap { NSImage(data: $0) },
+                         source: island.musicSourceName, hasTrack: island.nowPlaying != nil,
+                         playing: island.isPlaying, launching: island.musicLaunchInProgress,
+                         elapsed: island.elapsedTime, duration: island.duration, canSeek: island.canSeek,
+                         shuffle: island.musicShuffle, repeatMode: island.musicRepeat,
+                         supportsPlaybackModes: island.scriptedPlayer != nil, volume: island.outputVolume,
+                         playPause: { island.togglePlayback() }, previous: { island.skipTrack(forward: false) },
+                         next: { island.skipTrack(forward: true) }, seek: { island.seek(to: $0) },
+                         setVolume: { island.setVolume($0) }, toggleShuffle: { island.toggleMusicShuffle() },
+                         cycleRepeat: { island.cycleMusicRepeat() }, openPlayer: { island.openMusic() },
+                         setVolumePopoverPresented: { island.setMusicVolumePopoverPresented($0) })
     }
 
     private func time(_ seconds: Double) -> String {
@@ -1649,56 +1445,6 @@ private struct DynamicIslandView: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
-    @ViewBuilder
-    private func artwork(for track: RadialNowPlayingSnapshot) -> some View {
-        if let data = track.artworkData, let image = NSImage(data: data) {
-            Image(nsImage: image).resizable().scaledToFill()
-                .frame(width: 68, height: 68).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        } else {
-            Rectangle()
-                .fill(LinearGradient(colors: [.purple, .pink, .orange],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
-                .frame(width: 68, height: 68)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay(Image(systemName: "music.note").font(.title2).foregroundStyle(.white))
-        }
-    }
-}
-
-private struct ContrastSlider: View {
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-
-    var body: some View {
-        GeometryReader { proxy in
-            let width = max(proxy.size.width, 1)
-            let progress = min(max((value - range.lowerBound) /
-                                    max(range.upperBound - range.lowerBound, 0.0001), 0), 1)
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.22)).frame(height: 6)
-                Capsule()
-                    .fill(LinearGradient(colors: [Color(red: 0.98, green: 0.18, blue: 0.52),
-                                                  Color(red: 1.0, green: 0.48, blue: 0.22)],
-                                         startPoint: .leading, endPoint: .trailing))
-                    .frame(width: max(6, width * progress), height: 6)
-                Circle().fill(Color.white)
-                    .overlay(Circle().stroke(Color.black.opacity(0.35), lineWidth: 1))
-                    .frame(width: 14, height: 14)
-                    .offset(x: min(max(width * progress - 7, 0), max(width - 14, 0)))
-            }
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0).onChanged { gesture in
-                let fraction = min(max(gesture.location.x / width, 0), 1)
-                value = range.lowerBound + fraction * (range.upperBound - range.lowerBound)
-            })
-        }
-        .frame(height: 16)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("滑块")
-        .accessibilityValue(String(format: "%.0f%%", min(max((value - range.lowerBound) /
-            max(range.upperBound - range.lowerBound, 0.0001), 0), 1) * 100))
-    }
 }
 
 extension DynamicIslandService {
