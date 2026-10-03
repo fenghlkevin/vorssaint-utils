@@ -3,6 +3,10 @@
 
 import AppKit
 
+if CommandLine.arguments.contains("--hosts-helper-check") || CommandLine.arguments.contains("--hosts-helper-repair") {
+    HostsHelperClient.diagnoseAndExit(repair: CommandLine.arguments.contains("--hosts-helper-repair"))
+}
+
 if CommandLine.arguments.contains("--battery-install-prepare") {
     BatteryRegistrationRepair.installPhaseAndExit(prepare: true)
 }

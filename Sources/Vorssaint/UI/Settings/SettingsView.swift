@@ -402,6 +402,7 @@ struct SettingsView: View {
         case .clipboard: ClipboardSettings()
         case .quickTools: QuickToolsSettings()
         case .networkInfo: NetworkInfoSettings()
+        case .hosts: HostsSettings()
         case .networkProxy: ProxySettings()
         case .translation: TranslationSettings()
         case .screenshot: ScreenCaptureSettings()

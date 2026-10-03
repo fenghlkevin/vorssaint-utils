@@ -714,6 +714,7 @@ extension AppFeature {
         case .cameraPreview: return FeatureStrings.cameraPreview(L10n.shared.language).pageTitle
         case .radialMenu: return FeatureStrings.radialMenu(L10n.shared.language).pageTitle
         case .scratchpad: return FeatureStrings.scratchpad(L10n.shared.language).pageTitle
+        case .hosts: return "Hosts 管理"
         case .networkProxy: return "网络代理"
         case .networkInfo: return NetworkInfoStrings(language: L10n.shared.language).title
         case .translation: return TranslationStrings.current[.title]
@@ -785,6 +786,7 @@ extension AppFeature {
         case .cameraPreview: return FeatureStrings.cameraPreview(L10n.shared.language).hubDescription
         case .radialMenu: return FeatureStrings.radialMenu(L10n.shared.language).hubDescription
         case .scratchpad: return FeatureStrings.scratchpad(L10n.shared.language).hubDescription
+        case .hosts: return "本地 Hosts 配置组合、快速切换与备份恢复"
         case .networkProxy: return "本地配置、Mihomo 策略组与系统代理"
         case .networkInfo: return NetworkInfoStrings(language: L10n.shared.language).summary
         case .translation: return TranslationStrings.current[.caption]

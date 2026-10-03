@@ -67,6 +67,7 @@ struct MenuPanelView: View {
     @ObservedObject private var panelFocus = MenuPanelFocus.shared
     @ObservedObject private var features = FeatureRuntime.shared
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("panelShowHosts") private var showHosts = true
     @AppStorage(DefaultsKey.panelShowNetworkProxy) private var showNetworkProxy = true
     @AppStorage(DefaultsKey.panelShowNetworkInfo) private var showNetworkInfo = true
     @AppStorage("panelShowLiveSubtitles") private var showLiveSubtitles = true
@@ -286,6 +287,7 @@ struct MenuPanelView: View {
         case .keepAwake: return 400
         case .awayLock: return 280
         case .brightness: return 140
+        case .hosts: return 400
         case .networkProxy: return 450
         case .networkInfo: return 460
         case .mixer: return 250
@@ -335,6 +337,7 @@ struct MenuPanelView: View {
         case .keepAwake: KeepAwakeCard(collapsible: collapsible)
         case .awayLock: if showAwayLock { AwayLockPanelCard(collapsible: collapsible) }
         case .brightness: if showBrightness { BrightnessSection(collapsible: collapsible) }
+        case .hosts: if showHosts { PanelHostsView() }
         case .networkProxy: if showNetworkProxy { PanelProxyView() }
         case .networkInfo: if showNetworkInfo { NetworkInfoView(service: .shared) }
         case .mixer: if showMixer { MixerSection(collapsible: collapsible) }
@@ -363,6 +366,7 @@ struct MenuPanelView: View {
         // it is switched on in Settings, not from an empty panel screen.
         case .brightness: return showBrightness && brightnessEnabled
             && !(showKeepAwake && AppFeature.keepAwake.isAvailable)
+        case .hosts: return showHosts
         case .networkProxy: return showNetworkProxy
         case .networkInfo: return showNetworkInfo
         case .mixer: return showMixer
@@ -478,6 +482,7 @@ struct MenuPanelView: View {
         case .brightness: return AppFeature.brightness.settingsDestination
         case .mixer: return AppFeature.mixer.settingsDestination
         case .networkInfo: return AppFeature.networkInfo.settingsDestination
+        case .hosts: return AppFeature.hosts.settingsDestination
         case .networkProxy: return AppFeature.networkProxy.settingsDestination
         case .liveSubtitles: return AppFeature.liveSubtitles.settingsDestination
         case .fanControl: return AppFeature.fanControl.settingsDestination

@@ -226,6 +226,7 @@ enum SettingsDirectory {
                                       keywords: ["force quit", "process", "cpu", "memory", "kill"]),
             ]),
             (categories.utilities, [
+                SettingsDirectoryItem(page: .hosts, title: "Hosts 管理", icon: "server.rack", keywords: ["hosts", "域名", "本地映射", "SwitchHosts", "备份"]),
                 SettingsDirectoryItem(page: .networkProxy, title: "网络代理", icon: "network", keywords: ["Mihomo", "Stash", "Clash", "代理", "proxy"]),
                 SettingsDirectoryItem(page: .networkInfo,
                                       title: NetworkInfoStrings(language: language).title,

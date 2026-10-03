@@ -81,7 +81,7 @@ final class TunnelController {
         }
         timer.resume(); self.timer = timer
     }
-    private func status(success: Bool = true) -> ProxyTunnelReply { .init(success: success, active: lease.active, interface: lease.identity?.name, routeCount: lease.routeCount, address4: lease.identity?.ipv4, address6: lease.identity?.ipv6, message: issue) }
+    private func status(success: Bool = true) -> ProxyTunnelReply { .init(success: success, active: lease.active, helperCodeHash: ProxyTunnelIdentifiers.runningCodeHash, interface: lease.identity?.name, routeCount: lease.routeCount, address4: lease.identity?.ipv4, address6: lease.identity?.ipv6, message: issue) }
     func prepare(id: UUID, data: Data, reply: @escaping (FileHandle?, Data) -> Void) {
         queue.async {
             do {
@@ -132,6 +132,7 @@ final class SystemProxyController {
                 if let enabled { try self.session.set(enabled, port: port, owner: id, now: ProcessInfo.processInfo.systemUptime) }
                 else { try self.session.heartbeat(id, now: ProcessInfo.processInfo.systemUptime) }
             } catch { result.success = false; result.message = error.localizedDescription }
+            result.helperCodeHash = ProxyTunnelIdentifiers.runningCodeHash
             result.systemProxy = self.session.active
             if result.message.isEmpty { result.message = self.session.issue }
             reply(result.encoded)
@@ -140,9 +141,33 @@ final class SystemProxyController {
     func disconnected(_ id: UUID) { queue.async { try? self.session.stop(id) } }
     func restoreForShutdown() throws { try queue.sync { if let id = session.owner { try session.stop(id) } } }
 }
+final class HostsController {
+    let queue = DispatchQueue(label: "com.vorssaint.hosts-write")
+    func apply(_ data: Data, reply: @escaping (Data) -> Void) {
+        queue.async {
+            var result = HostsWriteReply()
+            do {
+                guard data.count <= HostsSupport.limit * 4 else { throw HostsFailure(message: "Hosts 请求过大。") }
+                let request = try JSONDecoder().decode(HostsWriteRequest.self, from: data)
+                result.content = try HostsSystemWriter.apply(request, backupDirectory: "/private/var/db/" + ProxyTunnelIdentifiers.helperID + "-hosts")
+                result.success = true
+                // Cache refresh uses fixed executables and arguments only.
+                for (path, args) in [("/usr/bin/dscacheutil", ["-flushcache"]), ("/usr/bin/killall", ["-HUP", "mDNSResponder"])] {
+                    let process = Process(); process.executableURL = URL(fileURLWithPath: path); process.arguments = args
+                    process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
+                    do { try process.run(); process.waitUntilExit(); if process.terminationStatus != 0 { result.message = "Hosts 已写入，但 DNS 缓存刷新失败。" } }
+                    catch { result.message = "Hosts 已写入，但 DNS 缓存刷新失败。" }
+                }
+            } catch { result.message = error.localizedDescription }
+            reply((try? JSONEncoder().encode(result)) ?? Data())
+        }
+    }
+}
 final class TunnelSession: NSObject, ProxyTunnelXPCProtocol {
+    let hosts: HostsController
     let id = UUID(); let controller: TunnelController; let system: SystemProxyController
-    init(_ controller: TunnelController, system: SystemProxyController) { self.controller = controller; self.system = system }
+    init(_ controller: TunnelController, system: SystemProxyController, hosts: HostsController) { self.controller = controller; self.system = system; self.hosts = hosts }
+    func applyHosts(_ request: Data, withReply reply: @escaping (Data) -> Void) { hosts.apply(request, reply: reply) }
     func systemProxy(_ enabled: Bool, port: Int, withReply reply: @escaping (Data) -> Void) { system.request(id, enabled: enabled, port: port, reply: reply) }
     func systemHeartbeat(withReply reply: @escaping (Data) -> Void) { system.request(id, enabled: nil, reply: reply) }
     func prepare(_ plan: Data, withReply reply: @escaping (FileHandle?, Data) -> Void) { controller.prepare(id: id, data: plan, reply: reply) }
@@ -151,13 +176,14 @@ final class TunnelSession: NSObject, ProxyTunnelXPCProtocol {
     func stop(withReply reply: @escaping (Data) -> Void) { controller.command("stop", id: id, reply: reply) }
 }
 final class TunnelDelegate: NSObject, NSXPCListenerDelegate {
+    let hosts = HostsController()
     let controller = TunnelController()
     let system = SystemProxyController()
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
         var consoleUID: uid_t = 0
         _ = SCDynamicStoreCopyConsoleUser(nil, &consoleUID, nil)
         guard consoleUID != 0, connection.effectiveUserIdentifier == consoleUID else { return false }
-        let session = TunnelSession(controller, system: system)
+        let session = TunnelSession(controller, system: system, hosts: hosts)
         connection.exportedInterface = ProxyTunnelIdentifiers.interface(); connection.exportedObject = session
         connection.invalidationHandler = { [weak controller, weak system] in controller?.disconnected(session.id); system?.disconnected(session.id) }
         connection.interruptionHandler = { [weak controller, weak system] in controller?.disconnected(session.id); system?.disconnected(session.id) }

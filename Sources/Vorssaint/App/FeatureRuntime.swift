@@ -243,6 +243,11 @@ final class FeatureRuntime: ObservableObject {
                 }
             }
         },
+        .hosts: {
+            Task { @MainActor in
+                if !AppFeature.hosts.isAvailable { HostsWindowController.shared.close() }
+            }
+        },
         .networkProxy: {
             Task { @MainActor in
                 ProxyShortcutController.shared.sync()

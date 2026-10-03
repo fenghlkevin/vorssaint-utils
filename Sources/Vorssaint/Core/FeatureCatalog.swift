@@ -28,7 +28,7 @@ enum AppFeature: String, CaseIterable {
     // Tools
     case quickLauncher, quickToggles, colorPicker, screenOCR, cleaningMode, mediaTools,
          cleaner, uninstaller, homebrew, appUpdates, screenshot, cameraPreview, radialMenu, scratchpad,
-         commandBar, screenRecorder, killProcess, translation, liveSubtitles, networkInfo, networkProxy
+         commandBar, screenRecorder, killProcess, translation, liveSubtitles, networkInfo, networkProxy, hosts
     // App management
     case menuBarIcons
     // System monitor, one entry per metric family (temperatures live with
@@ -75,7 +75,7 @@ extension AppFeature {
             return boolFor(DefaultsKey.windowLayoutShortcutsEnabled)
                 || boolFor(DefaultsKey.windowGestureEnabled)
                 || boolFor(DefaultsKey.windowEdgeSnapEnabled)
-        case .screenOCR, .cleaningMode, .screenshot, .commandBar, .screenRecorder, .translation, .liveSubtitles, .networkInfo, .networkProxy:
+        case .screenOCR, .cleaningMode, .screenshot, .commandBar, .screenRecorder, .translation, .liveSubtitles, .networkInfo, .networkProxy, .hosts:
             return false
         default:
             return true
@@ -103,7 +103,7 @@ extension AppFeature {
             return .energyDisplay
         case .quickLauncher, .quickToggles, .colorPicker, .screenOCR, .cleaningMode, .mediaTools,
              .cleaner, .uninstaller, .homebrew, .appUpdates, .screenshot, .cameraPreview, .radialMenu,
-             .scratchpad, .commandBar, .screenRecorder, .killProcess, .translation, .networkInfo, .networkProxy:
+             .scratchpad, .commandBar, .screenRecorder, .killProcess, .translation, .networkInfo, .networkProxy, .hosts:
             return .tools
         case .menuBarIcons, .awayLock:
             return .appManagement
@@ -170,6 +170,7 @@ extension AppFeature {
         case .radialMenu: return "circle.grid.cross"
         case .scratchpad: return "note.text"
         case .networkInfo: return "globe"
+        case .hosts: return "server.rack"
         case .networkProxy: return "arrow.triangle.branch"
         case .translation: return "character.bubble"
         case .commandBar: return "command"
@@ -242,7 +243,7 @@ extension AppFeature {
         case .windowLayout, .diskImageInstaller, .mixer, .micMute, .keepAwake,
              .quickLauncher, .quickToggles, .colorPicker, .screenOCR, .cleaningMode, .mediaTools,
              .cleaner, .uninstaller, .homebrew, .appUpdates, .screenshot, .cameraPreview, .scratchpad,
-             .commandBar, .screenRecorder, .killProcess, .translation, .networkInfo, .networkProxy,
+             .commandBar, .screenRecorder, .killProcess, .translation, .networkInfo, .networkProxy, .hosts,
              .monitorCPU, .monitorGPU, .monitorMemory, .monitorNetwork, .monitorDisk, .monitorPower,
              .fanControl:
             return []
@@ -291,7 +292,7 @@ extension AppFeature {
         case .dynamicIsland, .clipboardHistory, .shelf, .urlCleaner,
              .soundOutputSwitcher, .musicBlock,
              .extraBrightness, .bluetoothSleep, .quickLauncher, .colorPicker, .micMute, .mediaTools,
-             .scratchpad, .monitorGPU, .monitorNetwork, .fanControl, .killProcess, .menuBarIcons, .networkInfo, .networkProxy:
+             .scratchpad, .monitorGPU, .monitorNetwork, .fanControl, .killProcess, .menuBarIcons, .networkInfo, .networkProxy, .hosts:
             return []
         }
     }
@@ -320,7 +321,7 @@ extension AppFeature {
         Dictionary(uniqueKeysWithValues: allCases.map {
              ($0.availabilityKey,
              $0 != .focusFollowsMouse && $0 != .fanControl && $0 != .diskImageInstaller
-                && $0 != .killProcess && $0 != .menuBarIcons && $0 != .awayLock && $0 != .translation && $0 != .liveSubtitles)
+                && $0 != .killProcess && $0 != .menuBarIcons && $0 != .awayLock && $0 != .translation && $0 != .liveSubtitles && $0 != .hosts)
         })
     }
 

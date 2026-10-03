@@ -551,6 +551,7 @@ if (( TEST )); then
     fi
     bash Tools/test-command-bar.sh || test_status=1
     bash Tools/test-proxy.sh || test_status=1
+    bash Tools/test-hosts.sh || test_status=1
     exit $test_status
 fi
 
@@ -601,7 +602,7 @@ fi
 swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" -I Sources/ProxyYAML/include build/proxy-yaml/libProxyYAML.a Sources/Vorssaint/Services/Proxy/{ProxyWire,ProxySystemProxy,ProxySystemClient,ProxyTunnelClient,ProxyTunnelXPC,ProxyTunnelPolicy,ProxySupport,ProxyStorage,ProxyCore}.swift Sources/ProxyGuardian/main.swift -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o -o build/VorssaintProxyGuardian
 
 echo "▸ Compiling protected TUN helper…"
-swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o Sources/Vorssaint/Services/Proxy/ProxyTunnelPolicy.swift Sources/Vorssaint/Services/Proxy/ProxyTunnelLease.swift Sources/Vorssaint/Services/Proxy/ProxyTunnelXPC.swift Sources/Vorssaint/Services/Proxy/ProxySystemProxy.swift Sources/ProxyTunnelHelper/main.swift -o build/VorssaintProxyTunnelHelper
+swiftc -O -target "$TARGET" -sdk "$SDK" "${SDK_COMPAT_FLAGS[@]}" "${BUILD_VARIANT_FLAGS[@]}" -I Sources/ProxyTunnelBridge/include build/ProxyTunnelBridge.o Sources/Vorssaint/Services/Proxy/ProxyTunnelPolicy.swift Sources/Vorssaint/Services/Proxy/ProxyTunnelLease.swift Sources/Vorssaint/Services/Proxy/ProxyTunnelXPC.swift Sources/Vorssaint/Services/Proxy/ProxySystemProxy.swift Sources/Vorssaint/Services/Hosts/HostsSupport.swift Sources/Vorssaint/Services/Hosts/HostsSystemWriter.swift Sources/ProxyTunnelHelper/main.swift -o build/VorssaintProxyTunnelHelper
 build/VorssaintProxyTunnelHelper --selftest
 
 echo "▸ Compiling protected fan helper…"

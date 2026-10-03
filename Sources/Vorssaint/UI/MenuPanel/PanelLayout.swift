@@ -11,7 +11,7 @@ protocol PanelOrderItem: RawRepresentable, CaseIterable, Hashable where RawValue
 /// renaming a case would orphan a user's stored layout — keep them stable.
 enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
     case keepAwake, awayLock, brightness, mixer, system, network, disk, power, fanControl, utilities, controls,
-         inputSourceAutomation, toggles, networkInfo, networkProxy, liveSubtitles
+         inputSourceAutomation, toggles, networkInfo, networkProxy, hosts, liveSubtitles
 
     var id: String { rawValue }
 
@@ -22,6 +22,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
         case .keepAwake: return "电源与显示器"
         case .awayLock: return AwayLockStrings.current.title
         case .brightness: return FeatureStrings.brightness(L10n.shared.language).pageTitle
+        case .hosts: return "Hosts 管理"
         case .networkProxy: return "网络代理"
         case .networkInfo: return NetworkInfoStrings(language: L10n.shared.language).title
         case .mixer: return s.mixerSection
@@ -44,6 +45,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
         case .keepAwake: return "display.2"
         case .awayLock: return "lock.laptopcomputer"
         case .brightness: return "display.2"
+        case .hosts: return "server.rack"
         case .networkProxy: return "arrow.triangle.branch"
         case .networkInfo: return "globe"
         case .mixer: return "slider.horizontal.3"
@@ -68,6 +70,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
         case .keepAwake: return DefaultsKey.panelShowKeepAwake
         case .awayLock: return DefaultsKey.panelShowAwayLock
         case .brightness: return DefaultsKey.panelShowBrightness
+        case .hosts: return "panelShowHosts"
         case .networkProxy: return DefaultsKey.panelShowNetworkProxy
         case .networkInfo: return DefaultsKey.panelShowNetworkInfo
         case .mixer: return DefaultsKey.monitorShowMixer
@@ -96,6 +99,7 @@ enum PanelSectionID: String, CaseIterable, Identifiable, Hashable {
         case .keepAwake: return [.keepAwake]
         case .awayLock: return [.awayLock]
         case .brightness: return [.brightness]
+        case .hosts: return [.hosts]
         case .networkProxy: return [.networkProxy]
         case .networkInfo: return [.networkInfo]
         case .mixer: return [.mixer]
