@@ -88,3 +88,22 @@ the app's other floating window; panel contents were verified through live AX.
 When rebuilding the fixture, explicitly pass `-target arm64-apple-macosx14.0`:
 the installed Swift toolchain otherwise defaults to macOS 28, which prevents
 LaunchServices from opening the test bundle on this machine.
+
+### 2026-10-04 delayed status-item refresh
+
+While native hiding is active, check the visible menu-bar layout every two
+seconds and update the assertion only when its allowlist changes. Preserve
+previously hidden application owners because their items are absent from the
+collapsed AX tree. A running application that creates its icon later is now
+classified by its current side of the divider without a manual reveal cycle.
+Keep temporarily missing right-side system controls allowed to reappear, unless
+they are explicitly read on the left. Expansion, disabling and shutdown stop
+the refresh timer; a fresh collapse uses the fully revealed layout again.
+
+Regression tests cover delayed left icons, existing hidden membership, new
+right icons, owners spanning both sides, missing system controls and fresh
+layout classification. On macOS 27.0.1, a temporary app launched without an
+icon before Vorssaint and created its status item 15 seconds later. MenuBarAgent
+AX inspection confirmed it was hidden without clicking the divider, restored
+on reveal, and hidden again on collapse. Vorssaint, its divider, Wi-Fi, clock
+and Control Center remained available. The temporary test app was then quit.

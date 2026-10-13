@@ -32,6 +32,8 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
     private var requestedCollapse = false
     private var nativeApplier: MenuBarClientCoreVisibilityApplier?
     private var nativeIsCollapsed = false
+    private var nativeVisibilitySnapshot: MenuBarVisibilitySnapshot?
+    private var nativeRefreshTimer: Timer?
     private let shelf = MenuBarShelfController()
     private var shelfIcons: [MenuBarShelfIcon] = []
     private var shelfSnapshotValid = false
@@ -287,7 +289,7 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
 
     @objc private func dividerClicked() {
         if NSApp.currentEvent?.type == .rightMouseUp {
-            if !isCollapsed { setCollapsed(true) }
+            setCollapsed(true)
         } else {
             toggle()
         }
@@ -312,7 +314,7 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
 
     /// Queue transitions so disabling/uninstalling while activation is pending
     /// always releases the assertion afterwards. Stale completions never change UI.
-    private func requestNativeCollapse(_ collapsed: Bool) {
+    private func requestNativeCollapse(_ collapsed: Bool, snapshot: MenuBarVisibilitySnapshot? = nil) {
         transitionRevision += 1
         let revision = transitionRevision
         requestedCollapse = collapsed
@@ -320,6 +322,8 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
         operationError = nil
         autoCollapseTimer?.invalidate()
         autoCollapseTimer = nil
+        nativeRefreshTimer?.invalidate()
+        nativeRefreshTimer = nil
         let previous = nativeTransition
         nativeTransition = Task { @MainActor [weak self] in
             await previous?.value
@@ -330,30 +334,32 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
             }
             guard let applier = self.nativeApplier else { return }
             do {
-                if collapsed && !self.nativeIsCollapsed {
+                if collapsed {
                     try applier.validateAvailability()
                     self.refreshPlacement()
                     guard self.placementIsSafe else {
                         throw MenuBarIconHidingError.invalidMarkerPosition
                     }
                     let source = self.shelfSource()
-                    let resolver = AXMenuBarVisibleItemResolver(
-                        markerScreenX: { self.screenFrame(of: self.dividerItem)?.midX },
-                        mainItemScreenX: { self.screenFrame(of: self.mainStatusItem)?.midX },
-                        ownBundleIdentifier: { Bundle.main.bundleIdentifier },
-                        source: source)
-                    let allowed = try resolver.itemsToKeepVisible()
-                    // Snapshot while visible. A failed preview must not break hiding.
-                    let targets = try? source.shelfTargets(hiddenBy: allowed,
-                        markerX: self.screenFrame(of: self.dividerItem)?.midX ?? .nan)
-                    self.shelfSnapshotValid = targets != nil
-                    self.shelfIcons = self.makeShelfIcons(targets ?? [])
+                    let updated = try snapshot ?? self.visibleItemResolver(source: source)
+                        .visibilitySnapshot(preserving: self.nativeIsCollapsed ? self.nativeVisibilitySnapshot : nil)
+                    if !self.nativeIsCollapsed {
+                        // Snapshot while visible. A failed preview must not break hiding.
+                        let targets = try? source.shelfTargets(hiddenBy: updated.allowedItems,
+                            markerX: self.screenFrame(of: self.dividerItem)?.midX ?? .nan)
+                        self.shelfSnapshotValid = targets != nil
+                        self.shelfIcons = self.makeShelfIcons(targets ?? [])
+                    } else if updated != self.nativeVisibilitySnapshot {
+                        self.shelfSnapshotValid = false
+                    }
                     guard revision == self.transitionRevision else { return }
-                    try await applier.applyCollapse(allowing: allowed)
+                    try await applier.applyCollapse(allowing: updated.allowedItems)
                     self.nativeIsCollapsed = true
+                    self.nativeVisibilitySnapshot = updated
                 } else if !collapsed {
                     await applier.applyExpansion()
                     self.nativeIsCollapsed = false
+                    self.nativeVisibilitySnapshot = nil
                 }
                 guard revision == self.transitionRevision else { return }
                 self.isCollapsed = collapsed
@@ -362,6 +368,7 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
             } catch {
                 await applier.applyExpansion()
                 self.nativeIsCollapsed = false
+                self.nativeVisibilitySnapshot = nil
                 guard revision == self.transitionRevision else { return }
                 self.isCollapsed = false
                 self.defaults.set(false, forKey: DefaultsKey.menuBarIconsCollapsed)
@@ -372,8 +379,52 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
             self.isTransitioning = false
             self.applyAppearance()
             // A failure requires explicit retry; do not repeatedly prompt for AX.
-            if self.operationError == nil { self.scheduleAutoCollapse() }
+            if self.operationError == nil {
+                self.scheduleAutoCollapse()
+                self.scheduleNativeRefresh()
+            }
         }
+    }
+
+    @MainActor private func scheduleNativeRefresh() {
+        nativeRefreshTimer?.invalidate()
+        nativeRefreshTimer = nil
+        guard isEnabled, nativeIsCollapsed, !isTransitioning, dividerItem != nil else { return }
+        // Applications can create a status item long after their launch event,
+        // or toggle it without launching again. Check only while collapsed and
+        // replace the native assertion only when its allowlist actually changes.
+        let timer = Timer(timeInterval: 2, target: self,
+            selector: #selector(refreshNativeVisibility), userInfo: nil, repeats: true)
+        timer.tolerance = 0.5
+        RunLoop.main.add(timer, forMode: .common)
+        nativeRefreshTimer = timer
+    }
+
+    @objc @MainActor private func refreshNativeVisibility() {
+        // Accessibility queries cross process boundaries and can stall input.
+        // Keep the last allowlist while the interactive capture owns the screen;
+        // the repeating timer catches up after the capture session finishes.
+        guard !ScreenshotSelectionController.isSessionOnScreen else { return }
+        guard isEnabled, AppFeature.menuBarIcons.isAvailable, nativeIsCollapsed,
+              !isTransitioning, !shelfInteractionActive, AXIsProcessTrusted(),
+              let previous = nativeVisibilitySnapshot,
+              MenuBarIconCollapserSupport.hasSafePlacement(
+                mainFrame: screenFrame(of: mainStatusItem), dividerFrame: screenFrame(of: dividerItem)),
+              let updated = try? visibleItemResolver(source: shelfSource())
+                .visibilitySnapshot(preserving: previous) else { return }
+        guard updated.allowedItems != previous.allowedItems else {
+            nativeVisibilitySnapshot = updated
+            return
+        }
+        requestNativeCollapse(true, snapshot: updated)
+    }
+
+    @MainActor private func visibleItemResolver(source: SystemAXMenuBarSource) -> AXMenuBarVisibleItemResolver {
+        AXMenuBarVisibleItemResolver(
+            markerScreenX: { self.screenFrame(of: self.dividerItem)?.midX },
+            mainItemScreenX: { self.screenFrame(of: self.mainStatusItem)?.midX },
+            ownBundleIdentifier: { Bundle.main.bundleIdentifier },
+            source: source)
     }
 
     @MainActor func shutdown() {
@@ -384,7 +435,11 @@ final class MenuBarIconCollapser: NSObject, ObservableObject {
         transitionRevision += 1
         startupCollapseWork?.cancel()
         autoCollapseTimer?.invalidate()
+        nativeRefreshTimer?.invalidate()
+        nativeRefreshTimer = nil
         nativeApplier?.invalidateSynchronously()
+        nativeIsCollapsed = false
+        nativeVisibilitySnapshot = nil
     }
 
     func setRevealMode(_ mode: MenuBarRevealMode) {

@@ -82,7 +82,8 @@ struct IslandCodexIntegrationTests {
         let plain = try IslandPhonePushPayload.request(config: config, secrets: secrets, content: content)
         precondition(plain.httpMethod == "POST" && plain.url!.absoluteString == "https://api.day.app/push")
         precondition(!plain.url!.absoluteString.contains(secrets.deviceKey))
-        precondition((try JSONDecoder().decode([String: String].self, from: plain.httpBody!))["isArchive"] == "1")
+        let plainFields = try JSONDecoder().decode([String: String].self, from: plain.httpBody!)
+        precondition(plainFields["isArchive"] == "1")
         config.encrypted = true
         let request = try IslandPhonePushPayload.request(config: config, secrets: secrets, content: content)
         let envelope = try JSONDecoder().decode([String: String].self, from: request.httpBody!)

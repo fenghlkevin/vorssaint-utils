@@ -117,7 +117,10 @@ final class ProxyService: ObservableObject {
         if !enabled { Task { _ = await stopAndWait() }; return }
         guard !startupAttempted else { return }; startupAttempted = true
         run {
-            if try await self.attachIfRunning() { return }
+            if try await self.attachIfRunning() {
+                if self.preferences.autoStart { await self.measureStartupDelays() }
+                return
+            }
             if self.preferences.autoStart { await self.startAutomatically() }
             else if FileManager.default.fileExists(atPath: self.store.root.appendingPathComponent("system-proxy.plist").path) {
                 try await self.guardian.launch(executable: self.guardianExecutable, root: self.store.root)
@@ -164,7 +167,9 @@ final class ProxyService: ObservableObject {
         let live = try await client.request(["configs"])
         preferences.mode = live["mode"] as? String ?? preferences.mode
         api = client; activeWork = URL(fileURLWithPath: path).deletingLastPathComponent()
-        groups = ordered(try await client.groups()); state = .running; error = nil
+        var liveGroups = ordered(try await client.groups())
+        if preferences.mode == "global" { liveGroups = try await routeGlobalThroughPrimary(client, groups: liveGroups) }
+        groups = liveGroups; state = .running; error = nil
         statusDetail = "已接管后台代理 · 退出 Vorssaint 后继续运行"
         telemetry.start(api: client, source: config, proxyPort: preferences.mixedPort)
         monitor()
@@ -266,7 +271,7 @@ final class ProxyService: ObservableObject {
     private func startAutomatically() async {
         for attempt in 0..<7 {
             guard !Task.isCancelled, featureEnabled, preferences.autoStart else { return }
-            let failure = await startWithRecovery()
+            let failure = await startWithRecovery(measureStartup: true)
             guard let failure, state == .stopped, !Task.isCancelled,
                   Self.isTransientStartupFailure(failure), attempt < 6 else { return }
             let seconds = min(5 * (attempt + 1), 30)
@@ -278,6 +283,7 @@ final class ProxyService: ObservableObject {
     }
     static func isTransientStartupFailure(_ error: Error) -> Bool {
         if error is CancellationError { return false }
+        if error is ProxyNetworkUnavailable { return true }
         let value = error as NSError
         if value.domain == NSURLErrorDomain {
             return [NSURLErrorTimedOut, NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost,
@@ -287,12 +293,13 @@ final class ProxyService: ObservableObject {
         if value.domain == NSCocoaErrorDomain {
             return [NSXPCConnectionInterrupted, NSXPCConnectionInvalid].contains(value.code)
         }
-        return ["没有可用的物理网络服务", "网络设置同时被其他程序修改", "网络助手请求超时"]
+        // XPC and guardian replies preserve the message, but not the original error type.
+        return ["网络暂时不可用", "没有可用的物理网络服务", "网络设置同时被其他程序修改", "网络助手请求超时"]
             .contains { error.localizedDescription.contains($0) }
     }
     @discardableResult
-    private func startWithRecovery() async -> Error? {
-        do { try await startCore(); return nil }
+    private func startWithRecovery(measureStartup: Bool = false) async -> Error? {
+        do { try await startCore(measureStartup: measureStartup); return nil }
         catch {
             let message = error is CancellationError ? "启动已取消。" : error.localizedDescription
             telemetry.addLog(level: "error", message: "代理启动失败：\(message)")
@@ -303,9 +310,12 @@ final class ProxyService: ObservableObject {
             return startupError
         }
     }
-    private func startCore(workOverride: URL? = nil) async throws {
+    private func startCore(workOverride: URL? = nil, measureStartup: Bool = false) async throws {
         guard let id = selectedID, let inspection else { throw ProxyFailure.message("请先导入配置。") }
-        if workOverride == nil, try await attachIfRunning() { return }
+        if workOverride == nil, try await attachIfRunning() {
+            if measureStartup { await measureStartupDelays() }
+            return
+        }
         let startupAt = Date()
         telemetry.addLog(level: "info", message: "开始启动核心：mixed-port=\(preferences.mixedPort)，mode=\(preferences.mode)，TUN=\(preferences.tunnelSettings.enabled)")
         state = .starting; statusDetail = "正在校验核心与配置…"
@@ -364,6 +374,15 @@ final class ProxyService: ObservableObject {
             telemetry.addLog(level: "info", message: "恢复策略组选择：\(name) → \(member)")
         }
         liveGroups = try await client.groups()
+        if preferences.mode == "global" {
+            liveGroups = try await routeGlobalThroughPrimary(client, groups: ordered(liveGroups))
+        }
+        if measureStartup {
+            groups = ordered(liveGroups)
+            statusDetail = "正在测试节点延迟…"
+            await measureStartupDelays()
+            try Task.checkCancellation()
+        }
         if let tunnelInterface {
             let configuration = try await client.request(["configs"])
             guard let tun = configuration["tun"] as? [String: Any], tun["enable"] as? Bool == true,
@@ -445,11 +464,30 @@ final class ProxyService: ObservableObject {
         if state != .running { var updated = preferences; updated.mode = mode; savePreferences(updated); return }
         run {
             guard let api = self.api else { return }
+            if mode == "global" {
+                self.groups = try await self.routeGlobalThroughPrimary(api, groups: self.groups)
+            }
             _ = try await api.request(["configs"], method: "PATCH", body: ["mode": mode])
             let actual = try await api.request(["configs"])
             guard actual["mode"] as? String == mode else { throw ProxyFailure.message("出站模式回读不一致。") }
             self.preferences.mode = mode; try self.store.save(self.preferences)
         }
+    }
+    /// GLOBAL is a core routing switch; the profile's main group remains the user's selector.
+    private func routeGlobalThroughPrimary(_ api: ProxyAPI, groups: [ProxyGroup]) async throws -> [ProxyGroup] {
+        guard let primary = ProxyGroup.primary(in: groups),
+              let global = groups.first(where: { $0.name == "GLOBAL" }),
+              global.members.contains(primary.name) else {
+            throw ProxyFailure.message("当前配置没有可用于全局模式的主代理组。")
+        }
+        if global.selected != primary.name {
+            _ = try await api.request(["proxies", "GLOBAL"], method: "PUT", body: ["name": primary.name])
+        }
+        let actual = try await api.groups()
+        guard actual.contains(where: { $0.name == "GLOBAL" && $0.selected == primary.name }) else {
+            throw ProxyFailure.message("全局代理策略回读失败。")
+        }
+        return ordered(actual)
     }
     func setLAN(_ enabled: Bool) {
         if state != .running { var updated = preferences; updated.allowLAN = enabled; savePreferences(updated); return }
@@ -479,31 +517,45 @@ final class ProxyService: ObservableObject {
     }
     func test(_ names: [String]) {
         guard state == .running, let api, testingNodes.isEmpty else { return }
+        delayTask = Task { [weak self] in await self?.measureDelays(names, api: api) }
+    }
+
+    private func measureStartupDelays() async {
+        guard let api else { return }
+        var group = ProxyGroup.primary(in: groups)
+        var visited = Set<String>()
+        while let current = group, visited.insert(current.name).inserted,
+              let next = groups.first(where: { $0.name == current.selected }), !visited.contains(next.name) {
+            group = next
+        }
+        guard let group else { return }
+        await measureDelays([group.selected] + group.members, api: api)
+    }
+
+    private func measureDelays(_ names: [String], api: ProxyAPI) async {
         var seen = Set<String>()
         let targets = Array(names.filter { !["REJECT", "REJECT-DROP"].contains($0) && seen.insert($0).inserted }.prefix(50))
         guard !targets.isEmpty else { return }
         let generation = UUID(); delayGeneration = generation
         testingNodes = Set(targets); activeTestingNodes = []
         delayTestTotal = targets.count; delayTestCompleted = 0
-        delayTask = Task { [weak self] in
-            await ProxyDelayBatch.run(targets, operation: { name in
-                let result = try? await api.request(["proxies", name, "delay"], query: [.init(name: "timeout", value: "5000"), .init(name: "url", value: "https://www.gstatic.com/generate_204")])
-                return result?["delay"] as? Int ?? -1
-            }, started: { [weak self] name in
-                guard let self, self.delayGeneration == generation, self.state == .running else { return }
-                self.activeTestingNodes.insert(name)
-            }, completed: { [weak self] name, delay, elapsed in
-                guard let self, !Task.isCancelled, self.delayGeneration == generation, self.state == .running else { return }
-                self.delays[name] = delay > 0 ? delay : -1
-                self.delayDates[name] = Date()
-                self.activeTestingNodes.remove(name)
-                self.testingNodes.remove(name)
-                self.delayTestCompleted += 1
-                self.telemetry.addLog(level: delay > 0 ? "info" : "error", message: "节点测速 \(name)：\(delay > 0 ? "\(delay) ms" : "超时或失败")，请求耗时 \(elapsed) ms")
-            })
-            guard let self, self.delayGeneration == generation else { return }
-            self.testingNodes.removeAll(); self.activeTestingNodes.removeAll(); self.delayTask = nil
-        }
+        await ProxyDelayBatch.run(targets, operation: { name in
+            let result = try? await api.request(["proxies", name, "delay"], query: [.init(name: "timeout", value: "5000"), .init(name: "url", value: "https://www.gstatic.com/generate_204")])
+            return result?["delay"] as? Int ?? -1
+        }, started: { [weak self] name in
+            guard let self, self.delayGeneration == generation, (self.state == .running || self.state == .starting) else { return }
+            self.activeTestingNodes.insert(name)
+        }, completed: { [weak self] name, delay, elapsed in
+            guard let self, !Task.isCancelled, self.delayGeneration == generation, (self.state == .running || self.state == .starting) else { return }
+            self.delays[name] = delay > 0 ? delay : -1
+            self.delayDates[name] = Date()
+            self.activeTestingNodes.remove(name)
+            self.testingNodes.remove(name)
+            self.delayTestCompleted += 1
+            self.telemetry.addLog(level: delay > 0 ? "info" : "error", message: "节点测速 \(name)：\(delay > 0 ? "\(delay) ms" : "超时或失败")，请求耗时 \(elapsed) ms")
+        })
+        guard self.delayGeneration == generation else { return }
+        self.testingNodes.removeAll(); self.activeTestingNodes.removeAll(); self.delayTask = nil
     }
 
     private func monitor() {

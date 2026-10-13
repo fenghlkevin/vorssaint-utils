@@ -6,6 +6,7 @@ import Foundation
 struct CommandBarDeveloperTests {
     static func main() throws {
         if CommandLine.arguments.contains("--listener") { try listener(); return }
+        systemSettingsPinyinTests()
         try textTests()
         try largeJSONTests()
         builtinPreferencesTests()
@@ -13,6 +14,43 @@ struct CommandBarDeveloperTests {
         try portTests()
         if CommandLine.arguments.contains("--integration") { try integrationTest() }
         print("Command bar developer and port tests passed")
+    }
+
+    static func systemSettingsPinyinTests() {
+        let keywords = CommandBarSystemSettingsSupport.searchableKeywords(
+            title: "允许应用程序录制你的屏幕",
+            keywords: "隐私与安全性 屏幕录制, screen recording 完全磁盘访问权限")
+        for query in ["pingmuluzhi", "pmlz", "wanquancipanfangwenquanxian", "wqcpfwqx",
+                      "yin si yu an quan xing", "屏幕录制", "screen recording"] {
+            precondition(CommandBarSearch.matches(title: "允许应用程序录制你的屏幕",
+                                                   keywords: keywords, query: query), query)
+        }
+        for app in ["音频MIDI设置", "资源监视器", "字符映射表"] {
+            let appKeywords = CommandBarSearch.applicationKeywords(title: app, diskName: "", alternateNames: [])
+            precondition(!CommandBarSearch.matches(title: app, keywords: appKeywords, query: "yinsi"), app)
+        }
+        let appKeywords = CommandBarSearch.applicationKeywords(title: "云笔记", diskName: "", alternateNames: [])
+        precondition(CommandBarSearch.matches(title: "云笔记", keywords: appKeywords, query: "yun bi ji"))
+        precondition(CommandBarSearch.matches(title: "云笔记", keywords: appKeywords, query: "ybj"))
+        precondition(!CommandBarSearch.matches(title: "云笔记", keywords: appKeywords, query: "ynbji"))
+        precondition(CommandBarSearch.matches(title: "brightness", query: "brght"))
+        let parent = CommandBarSystemSettingsSupport.rankingTitle("隐私与安全")
+        let child = CommandBarSystemSettingsSupport.rankingTitle("允许应用程序访问联系人")
+        let childKeywords = CommandBarSystemSettingsSupport.searchableKeywords(
+            title: "允许应用程序访问联系人", keywords: "隐私与安全 隐私")
+        for query in ["yinsi", "ys", "隐私"] {
+            let candidates = [
+                CommandBarCandidate(index: 0, title: child, keywords: childKeywords),
+                CommandBarCandidate(index: 1, title: parent),
+                CommandBarCandidate(index: 2, title: "音频MIDI设置",
+                                    keywords: CommandBarSearch.pinyinKeywords("音频MIDI设置")),
+            ]
+            precondition(CommandBarSearch.rankedIndexes(candidates: candidates, matching: query).first == 1,
+                         "Privacy title must lead its children and unrelated apps: " + query)
+        }
+        let refresh = CommandBarSystemSettingsSupport.searchableKeywords(title: "刷新率", keywords: "Hz")
+        precondition(CommandBarSearch.matches(title: "刷新率", keywords: refresh, query: "shuaxinlv"))
+        precondition(CommandBarSearch.matches(title: "刷新率", keywords: refresh, query: "sxl"))
     }
 
     static func expectError<E: Error & Equatable>(_ expected: E, _ body: () throws -> Void) {
@@ -243,4 +281,9 @@ struct CommandBarDeveloperTests {
         FileHandle.standardOutput.write(Data("\(UInt16(bigEndian: address.sin_port))\n".utf8))
         Thread.sleep(forTimeInterval: 30)
     }
+}
+
+// Language cases needed by the standalone system-settings helper.
+enum AppLanguage {
+    case enUS, ptBR, tr, ru, es, de, fr, it, ja, ko, zhHans, zhTW, zhHK
 }

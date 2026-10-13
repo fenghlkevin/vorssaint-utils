@@ -16,6 +16,13 @@ struct AXMenuBarItemRecord: Hashable, Sendable {
     var systemItemIdentifier: Int?
 }
 
+/// Hidden items disappear from MenuBarAgent's tree. Keep their owners across
+/// refreshes so they are not mistaken for running applications without icons.
+struct MenuBarVisibilitySnapshot: Equatable, Sendable {
+    var allowedItems: MenuBarVisibleItems
+    var hiddenBundleIdentifiers: Set<String>
+}
+
 struct AXMenuBarItemTreeNode: Equatable, Sendable {
     var role: String
     var frame: CGRect?
@@ -126,6 +133,10 @@ final class AXMenuBarVisibleItemResolver: MenuBarVisibleItemResolving {
     }
 
     func itemsToKeepVisible() throws -> MenuBarVisibleItems {
+        try visibilitySnapshot().allowedItems
+    }
+
+    func visibilitySnapshot(preserving previous: MenuBarVisibilitySnapshot? = nil) throws -> MenuBarVisibilitySnapshot {
         guard let markerX = markerScreenX(), markerX.isFinite else {
             throw MenuBarIconHidingError.invalidMarkerPosition
         }
@@ -146,6 +157,7 @@ final class AXMenuBarVisibleItemResolver: MenuBarVisibleItemResolving {
         var leftBundleIdentifiers = Set<String>()
         var rightBundleIdentifiers = Set<String>()
         var systemItemIdentifiers = Set<Int>()
+        var leftSystemItemIdentifiers = Set<Int>()
 
         for item in items where item.midX.isFinite {
             if let bundleIdentifier = item.bundleIdentifier, bundleIdentifier.isEmpty == false {
@@ -155,24 +167,35 @@ final class AXMenuBarVisibleItemResolver: MenuBarVisibleItemResolving {
                     rightBundleIdentifiers.insert(bundleIdentifier)
                 }
             }
-            if item.midX >= markerX,
-               let systemItemIdentifier = item.systemItemIdentifier,
+            if let systemItemIdentifier = item.systemItemIdentifier,
                MBSystemItemIdentifier(rawValue: systemItemIdentifier) != nil {
-                systemItemIdentifiers.insert(systemItemIdentifier)
+                if item.midX < markerX {
+                    leftSystemItemIdentifiers.insert(systemItemIdentifier)
+                } else {
+                    systemItemIdentifiers.insert(systemItemIdentifier)
+                }
             }
         }
 
-        let leftOnlyBundleIdentifiers = leftBundleIdentifiers
+        let hiddenBundleIdentifiers = leftBundleIdentifiers
+            .union(previous?.hiddenBundleIdentifiers ?? [])
             .subtracting(rightBundleIdentifiers)
             .subtracting(ownBundleIdentifiers)
         let allowedBundleIdentifiers = runningBundles
-            .subtracting(leftOnlyBundleIdentifiers)
+            .subtracting(hiddenBundleIdentifiers)
             .union(rightBundleIdentifiers)
             .union(ownBundleIdentifiers)
+        // A right-side system control may temporarily leave the AX tree when
+        // disabled. Keep it eligible to reappear unless it is read on the left.
+        let allowedSystemItemIdentifiers = systemItemIdentifiers
+            .union(previous?.allowedItems.allowedSystemItemIdentifiers ?? [])
+            .subtracting(leftSystemItemIdentifiers.subtracting(systemItemIdentifiers))
 
-        return MenuBarVisibleItems(
-            allowedBundleIdentifiers: allowedBundleIdentifiers.sorted(),
-            allowedSystemItemIdentifiers: systemItemIdentifiers.sorted()
+        return MenuBarVisibilitySnapshot(
+            allowedItems: MenuBarVisibleItems(
+                allowedBundleIdentifiers: allowedBundleIdentifiers.sorted(),
+                allowedSystemItemIdentifiers: allowedSystemItemIdentifiers.sorted()),
+            hiddenBundleIdentifiers: hiddenBundleIdentifiers
         )
     }
 }

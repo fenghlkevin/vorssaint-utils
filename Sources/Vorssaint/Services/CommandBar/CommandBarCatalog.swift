@@ -869,13 +869,14 @@ enum CommandBarCatalog {
                                    bar: CommandBarFeatureStrings) -> [CommandBarEntry] {
         panes.map { pane in
             CommandBarEntry(
-                id: "macsettings.\(pane.bundleID)",
+                id: "macsettings.\(pane.bundleID)" + (pane.section.map { ".\($0).\(pane.name)" } ?? ""),
                 title: pane.name,
-                subtitle: bar.sourceMacSettings,
+                subtitle: [bar.sourceMacSettings, pane.parentName].compactMap { $0 }.joined(separator: " · "),
                 keywords: pane.keywords,
                 icon: .symbol("gearshape.2"),
+                matchTitle: CommandBarSystemSettingsSupport.rankingTitle(pane.name),
                 run: { _ in
-                    guard let url = CommandBarSystemSettings.url(for: pane.bundleID) else {
+                    guard let url = CommandBarSystemSettings.url(for: pane.bundleID, section: pane.section) else {
                         NSSound.beep()
                         return
                     }

@@ -144,15 +144,31 @@ struct NetworkInfoTests {
         precondition(service.state(.domestic) == cached)
         precondition(service.history.count == 1)
         precondition(!service.state(.international).isLoading) // Failure backoff.
+        let path = NetworkInfoPathSnapshot(status: "satisfied", interfaces: ["en0"], gateways: ["192.168.1.1"], addresses: [])
+        service.receivePathSnapshot(path) // Establish the monitor's initial baseline.
+        service.receivePathSnapshot(path) // A duplicate callback after refresh must not stale it.
+        precondition(service.state(.domestic) == cached)
+        precondition(!service.state(.domestic).networkChanged)
         service.refresh(force: true)
-        service.networkDidChange() // Supersede both in-flight requests.
-        precondition(NetworkInfoRoute.allCases.allSatisfy { service.state($0).isStale && !service.state($0).isLoading })
-        service.refresh()
+        service.receivePathSnapshot(path) // Duplicate callbacks must not cancel a running refresh.
+        precondition(service.state(.domestic).isLoading && !service.state(.domestic).networkChanged)
+        for await states in service.$states.values {
+            if states.count == 2 && states.values.allSatisfy({ !$0.isLoading }) { break }
+        }
+        service.receivePathSnapshot(path)
+        precondition(!service.state(.domestic).isStale && !service.state(.domestic).networkChanged)
+        service.refresh(force: true)
+        service.receivePathSnapshot(NetworkInfoPathSnapshot(status: "satisfied", interfaces: ["en1"], gateways: [], addresses: []))
+        precondition(NetworkInfoRoute.allCases.allSatisfy { service.state($0).isLoading && !service.state($0).networkChanged })
+        // The interrupted refresh restarts without a second manual refresh.
         for await states in service.$states.values {
             if states.count == 2 && states.values.allSatisfy({ !$0.isLoading }) { break }
         }
         precondition(!service.state(.domestic).isStale)
         precondition(service.state(.domestic).result?.details?.asn == 15169)
+        precondition(service.history.count == 3)
+        service.networkDidChange() // Idle changes still wait for an explicit refresh.
+        precondition(NetworkInfoRoute.allCases.allSatisfy { service.state($0).networkChanged && !service.state($0).isLoading })
         service.refresh(force: true)
         service.stop()
         precondition(service.states.isEmpty)

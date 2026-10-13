@@ -1330,6 +1330,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let settings = NSMenuItem(title: strings.menuSettings, action: #selector(menuOpenSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
+#if VORSSAINT_DEVELOPMENT
+        // A clickable entry lets UI profiling exercise the real capture flow
+        // even when injected keys do not reach Carbon's global hotkey handler.
+        let captureTest = NSMenuItem(title: "测试截图…", action: #selector(menuTestScreenshot), keyEquivalent: "")
+        captureTest.target = self
+        appMenu.addItem(captureTest)
+#endif
         appMenu.addItem(.separator())
 
         appMenu.addItem(NSMenuItem(title: strings.menuHide,
@@ -1380,6 +1387,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     // MARK: - Windows
+
+#if VORSSAINT_DEVELOPMENT
+    @objc private func menuTestScreenshot() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            ScreenshotService.shared.capture()
+        }
+    }
+#endif
 
     func openSettingsWindow() {
         // Application-defined popovers do not dismiss when Settings opens.

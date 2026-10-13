@@ -90,7 +90,7 @@ struct ProxyWorkspaceView: View {
         ScrollView {
             VStack(spacing: 14) {
                 if service.groups.isEmpty { Text("导入配置后显示策略组").padding(40) }
-                ForEach(service.groups) { group in
+                ForEach(service.groups.filter { $0.name != "GLOBAL" }) { group in
                     GroupBox {
                         HStack {
                             Text(group.name).font(.headline)

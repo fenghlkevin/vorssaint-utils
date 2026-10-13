@@ -5,6 +5,13 @@ import Combine
 import Foundation
 import Network
 
+struct NetworkInfoPathSnapshot: Equatable {
+    let status: String
+    let interfaces: [String]
+    let gateways: [String]
+    let addresses: [NetworkInfoLocalAddress]
+}
+
 @MainActor
 final class NetworkInfoService: ObservableObject {
     static let shared = NetworkInfoService()
@@ -27,7 +34,7 @@ final class NetworkInfoService: ObservableObject {
     private var tasks: [NetworkInfoRoute: Task<Void, Never>] = [:]
     private var generation = 0
     private var monitor: NWPathMonitor?
-    private var hasInitialPath = false
+    private var lastPathSnapshot: NetworkInfoPathSnapshot?
     private var monitorID = UUID()
 
     init(client: NetworkInfoClient = NetworkInfoClient(), monitorsPathChanges: Bool = true,
@@ -65,6 +72,7 @@ final class NetworkInfoService: ObservableObject {
             let serial = generation
             states[route, default: NetworkInfoState()].isLoading = true
             states[route, default: NetworkInfoState()].failure = nil
+            states[route, default: NetworkInfoState()].networkChanged = false
             tasks[route] = Task { [weak self] in
                 guard let self else { return }
                 defer { if generation == serial { tasks[route] = nil } }
@@ -153,7 +161,7 @@ final class NetworkInfoService: ObservableObject {
         monitorID = UUID()
         monitor?.cancel()
         monitor = nil
-        hasInitialPath = false
+        lastPathSnapshot = nil
         states.removeAll()
     }
 
@@ -161,19 +169,32 @@ final class NetworkInfoService: ObservableObject {
         guard monitorsPathChanges, monitor == nil else { return }
         let next = NWPathMonitor()
         let currentMonitorID = monitorID
-        // Ignore the initial snapshot; subsequent changes invalidate in-flight work and cache.
-        next.pathUpdateHandler = { [weak self] _ in
+        // NWPathMonitor also emits updates when routing has not changed.
+        // Compare the actual path and interface addresses before invalidating results.
+        next.pathUpdateHandler = { [weak self] path in
             Task { @MainActor [weak self] in
                 guard let self, monitorID == currentMonitorID else { return }
-                guard hasInitialPath else { hasInitialPath = true; return }
-                networkDidChange()
+                let addresses = (try? readLocalAddresses()) ?? lastPathSnapshot?.addresses ?? []
+                receivePathSnapshot(NetworkInfoPathSnapshot(
+                    status: String(describing: path.status),
+                    interfaces: path.availableInterfaces.map(\.name).sorted(),
+                    gateways: path.gateways.map { String(describing: $0) }.sorted(),
+                    addresses: addresses.sorted { ($0.interface, $0.ip) < ($1.interface, $1.ip) }))
             }
         }
         next.start(queue: DispatchQueue(label: "com.vorssaint.network-info-path", qos: .utility))
         monitor = next
     }
 
+    func receivePathSnapshot(_ snapshot: NetworkInfoPathSnapshot) {
+        let previous = lastPathSnapshot
+        lastPathSnapshot = snapshot
+        guard let previous, previous != snapshot else { return }
+        networkDidChange()
+    }
+
     func networkDidChange() {
+        let wasRefreshing = !tasks.isEmpty
         pendingHistory.removeAll()
         generation += 1
         tasks.values.forEach { $0.cancel() }
@@ -184,5 +205,8 @@ final class NetworkInfoService: ObservableObject {
             states[route]?.isLoading = false
             states[route]?.attemptedAt = nil
         }
+        // A path update can arrive during the first manual query. Resume that
+        // query on the new path instead of requiring another button press.
+        if wasRefreshing { refresh(force: true) }
     }
 }

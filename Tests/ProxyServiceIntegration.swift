@@ -2,6 +2,17 @@
 import Foundation
 import Darwin
 @main struct ProxyServiceIntegration {
+    static func proxyRequest() async throws -> Int32 {
+        try await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+            process.arguments = ["--head", "--fail", "--proxy", "http://127.0.0.1:27890", "--noproxy", "", "--max-time", "3", "http://127.0.0.1:27181/"]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try process.run(); process.waitUntilExit()
+            return process.terminationStatus
+        }.value
+    }
     @MainActor static func wait(_ service: ProxyService) async throws {
         let deadline = Date().addingTimeInterval(30)
         while service.busy && Date() < deadline { try await Task.sleep(nanoseconds: 100_000_000) }
@@ -9,6 +20,9 @@ import Darwin
     }
     @MainActor static func main() async throws {
         precondition(ProxyService.isTransientStartupFailure(ProxyFailure.message("没有可用的物理网络服务，系统代理未开启。")))
+        precondition(ProxyService.isTransientStartupFailure(ProxyNetworkUnavailable()))
+        precondition(ProxyService.isTransientStartupFailure(ProxyFailure.message(ProxyNetworkUnavailable().localizedDescription)),
+                     "network unavailability must remain retryable after XPC/guardian serialization")
         precondition(ProxyService.isTransientStartupFailure(URLError(.notConnectedToInternet)))
         precondition(!ProxyService.isTransientStartupFailure(ProxyFailure.message("请先授权网络助手")))
         precondition(!ProxyService.isTransientStartupFailure(ProxyFailure.message("端口 7890 已被占用")))
@@ -45,8 +59,32 @@ import Darwin
         service.removeTunnelHelper(); try await wait(service)
         precondition(service.error == nil, "repeated removal must be idempotent")
         print("Missing-helper startup and repeated removal passed")
-        service.start(); try await wait(service)
+        service.setAutoStart(true)
+        service.sync(enabled: true); try await wait(service)
         precondition(service.state == .running, service.error ?? "start failed")
+        precondition(service.delayDates["DIRECT"] != nil && service.delays["DIRECT"] != nil, "automatic startup did not measure displayed members")
+        precondition(service.testingNodes.isEmpty && service.delayTestCompleted == 1, "startup delay batch did not finish")
+        let primaryBefore = ProxyGroup.primary(in: service.groups)
+        service.setMode("global"); try await wait(service)
+        precondition(service.error == nil && service.preferences.mode == "global", service.error ?? "global switch failed")
+        precondition(service.groups.first { $0.name == "GLOBAL" }?.selected == "Proxy", "global must follow primary group")
+        precondition(ProxyGroup.primary(in: service.groups) == primaryBefore, "mode switch changed node choices")
+        service.choose(group: "Proxy", member: "REJECT"); try await wait(service)
+        precondition(service.groups.first { $0.name == "GLOBAL" }?.selected == "Proxy", "global lost primary group routing")
+        let globalRequest = try await proxyRequest()
+        precondition(globalRequest != 0, "global mode incorrectly used MATCH,DIRECT")
+        let globalStopped = await service.stopAndWait()
+        precondition(globalStopped, "global stop failed")
+        service.start(); try await wait(service)
+        precondition(service.error == nil && service.preferences.mode == "global" &&
+                     service.groups.first { $0.name == "GLOBAL" }?.selected == "Proxy" &&
+                     ProxyGroup.primary(in: service.groups)?.selected == "REJECT", "global startup lost routing or selection")
+        service.setMode("rule"); try await wait(service)
+        precondition(ProxyGroup.primary(in: service.groups)?.selected == "REJECT", "rule did not retain global selection")
+        let ruleRequest = try await proxyRequest()
+        precondition(ruleRequest == 0, "rule mode failed to use MATCH,DIRECT")
+        service.choose(group: "Proxy", member: "DIRECT"); try await wait(service)
+        print("Global mode follows the same primary group and preserves selections across mode switches")
         let runningNeedsConfirmation = try await service.needsQuitConfirmation()
         precondition(runningNeedsConfirmation, "running core must prompt even without system proxy")
         let wasRunningBeforeTunnel = try await service.needsQuitConfirmation()

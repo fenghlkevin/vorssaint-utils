@@ -56,6 +56,110 @@ import ApplicationServices
         do { _ = try unsafe.itemsToKeepVisible(); fatalError("must reject unsafe marker") }
         catch { precondition(error as? MenuBarIconHidingError == .invalidMarkerPosition) }
 
+        let changingSource = TestSource()
+        var changingRunningBundles: Set<String> = [
+            "own", "left", "right", "both", "lateLeft", "lateRight", "noIcon"
+        ]
+        changingSource.records = [
+            .init(midX: -700, bundleIdentifier: "left", systemItemIdentifier: nil),
+            .init(midX: -650, bundleIdentifier: "both", systemItemIdentifier: nil),
+            .init(midX: -450, bundleIdentifier: "own", systemItemIdentifier: nil),
+            .init(midX: -420, bundleIdentifier: "right", systemItemIdentifier: nil)
+        ]
+        let changingResolver = AXMenuBarVisibleItemResolver(
+            markerScreenX: { -500 }, mainItemScreenX: { -450 },
+            runningBundleIdentifiers: { changingRunningBundles },
+            ownBundleIdentifier: { "own" }, source: changingSource)
+        let initialSnapshot = try changingResolver.visibilitySnapshot()
+        precondition(initialSnapshot.hiddenBundleIdentifiers == ["both", "left"])
+        precondition(initialSnapshot.allowedItems.allowedBundleIdentifiers == [
+            "lateLeft", "lateRight", "noIcon", "own", "right"
+        ])
+
+        // Previously hidden items disappear from AX while delayed status items
+        // become readable. Their absence must not allow them to reappear.
+        changingRunningBundles.insert("newRight")
+        changingSource.records = [
+            .init(midX: -620, bundleIdentifier: "lateLeft", systemItemIdentifier: nil),
+            .init(midX: -580, bundleIdentifier: "both", systemItemIdentifier: nil),
+            .init(midX: -490, bundleIdentifier: "both", systemItemIdentifier: nil),
+            .init(midX: -450, bundleIdentifier: "own", systemItemIdentifier: nil),
+            .init(midX: -420, bundleIdentifier: "right", systemItemIdentifier: nil),
+            .init(midX: -390, bundleIdentifier: "lateRight", systemItemIdentifier: nil),
+            .init(midX: -360, bundleIdentifier: "noIcon", systemItemIdentifier: nil),
+            .init(midX: -330, bundleIdentifier: "newRight", systemItemIdentifier: nil)
+        ]
+        let updatedSnapshot = try changingResolver.visibilitySnapshot(preserving: initialSnapshot)
+        precondition(updatedSnapshot.hiddenBundleIdentifiers == ["lateLeft", "left"],
+            "a delayed left icon must hide while an absent hidden icon stays hidden")
+        precondition(updatedSnapshot.allowedItems.allowedBundleIdentifiers == [
+            "both", "lateRight", "newRight", "noIcon", "own", "right"
+        ], "new right icons and an app spanning both sections must remain visible")
+
+        changingSource.records.removeAll { $0.midX < -500 }
+        let maintainedSnapshot = try changingResolver.visibilitySnapshot(preserving: updatedSnapshot)
+        precondition(maintainedSnapshot.hiddenBundleIdentifiers == updatedSnapshot.hiddenBundleIdentifiers)
+        precondition(maintainedSnapshot.allowedItems == updatedSnapshot.allowedItems,
+            "repeated refreshes must preserve hidden apps missing from AX")
+
+        // Expansion restores the full layout; a fresh snapshot must honor the
+        // current side of the divider instead of carrying old hidden membership.
+        changingSource.records = [
+            .init(midX: -620, bundleIdentifier: "both", systemItemIdentifier: nil),
+            .init(midX: -490, bundleIdentifier: "left", systemItemIdentifier: nil),
+            .init(midX: -470, bundleIdentifier: "lateLeft", systemItemIdentifier: nil),
+            .init(midX: -450, bundleIdentifier: "own", systemItemIdentifier: nil),
+            .init(midX: -420, bundleIdentifier: "right", systemItemIdentifier: nil),
+            .init(midX: -390, bundleIdentifier: "lateRight", systemItemIdentifier: nil),
+            .init(midX: -360, bundleIdentifier: "noIcon", systemItemIdentifier: nil),
+            .init(midX: -330, bundleIdentifier: "newRight", systemItemIdentifier: nil)
+        ]
+        let freshSnapshot = try changingResolver.visibilitySnapshot()
+        precondition(freshSnapshot.hiddenBundleIdentifiers == ["both"])
+        precondition(freshSnapshot.allowedItems.allowedBundleIdentifiers == [
+            "lateLeft", "lateRight", "left", "newRight", "noIcon", "own", "right"
+        ])
+        print("PASS: delayed icons, persistent hidden membership, new right icons, same-app protection and fresh layout classification")
+
+        let changingSystemSource = TestSource()
+        let changingSystemResolver = AXMenuBarVisibleItemResolver(
+            markerScreenX: { -500 }, mainItemScreenX: { -450 },
+            runningBundleIdentifiers: { ["own"] },
+            ownBundleIdentifier: { "own" }, source: changingSystemSource)
+        changingSystemSource.records = [
+            .init(midX: -600, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.volume.rawValue),
+            .init(midX: -490, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.volume.rawValue),
+            .init(midX: -450, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.battery.rawValue),
+            .init(midX: -420, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.wifi.rawValue)
+        ]
+        let initialSystemSnapshot = try changingSystemResolver.visibilitySnapshot()
+        precondition(initialSystemSnapshot.allowedItems.allowedSystemItemIdentifiers == [0, 5, 6])
+        changingSystemSource.records = []
+        let missingSystemSnapshot = try changingSystemResolver.visibilitySnapshot(preserving: initialSystemSnapshot)
+        precondition(missingSystemSnapshot.allowedItems.allowedSystemItemIdentifiers == [0, 5, 6],
+            "temporarily missing right system items must remain allowed to reappear")
+
+        changingSystemSource.records = [
+            .init(midX: -620, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.battery.rawValue),
+            .init(midX: -600, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.volume.rawValue),
+            .init(midX: -490, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.volume.rawValue),
+            .init(midX: -450, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.wifi.rawValue),
+            .init(midX: -420, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.clock.rawValue)
+        ]
+        let movedSystemSnapshot = try changingSystemResolver.visibilitySnapshot(preserving: missingSystemSnapshot)
+        precondition(movedSystemSnapshot.allowedItems.allowedSystemItemIdentifiers == [2, 5, 6],
+            "a left-only system item must hide while right and two-sided system items stay visible")
+
+        changingSystemSource.records = [
+            .init(midX: -620, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.volume.rawValue),
+            .init(midX: -600, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.wifi.rawValue),
+            .init(midX: -450, bundleIdentifier: nil, systemItemIdentifier: MBSystemItemIdentifier.bluetooth.rawValue)
+        ]
+        let freshSystemSnapshot = try changingSystemResolver.visibilitySnapshot()
+        precondition(freshSystemSnapshot.allowedItems.allowedSystemItemIdentifiers == [1],
+            "a fresh expanded layout must discard prior right system item membership")
+        print("PASS: missing right system items, system item movement, two-sided protection and fresh system classification")
+
         let bridge = TestBridge()
         let native = MenuBarClientCoreVisibilityApplier(bridge: bridge)
         var legacyRequests: [Bool] = []

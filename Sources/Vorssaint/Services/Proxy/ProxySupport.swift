@@ -46,6 +46,11 @@ struct ProxyGroup: Identifiable, Equatable {
     let name: String
     var members: [String]
     var selected: String
+
+    static func primary(in groups: [ProxyGroup]) -> ProxyGroup? {
+        groups.first { $0.name == "Proxy" }
+            ?? groups.first { $0.name != "GLOBAL" }
+    }
 }
 struct ProxyInspection {
     let source: [String: Any]

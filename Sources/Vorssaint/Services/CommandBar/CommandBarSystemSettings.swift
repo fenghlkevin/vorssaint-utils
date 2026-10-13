@@ -19,6 +19,8 @@ enum CommandBarSystemSettings {
         let name: String
         /// The words this pane answers to, in the app's language.
         let keywords: String
+        var section: String? = nil
+        var parentName: String? = nil
     }
 
     /// Where macOS keeps them. A pane that lives anywhere else is not a pane
@@ -54,8 +56,12 @@ enum CommandBarSystemSettings {
 
     /// The address that opens one pane. It is the same scheme the app already
     /// uses to send people to a specific privacy or notifications page.
-    static func url(for bundleID: String) -> URL? {
-        URL(string: "x-apple.systempreferences:\(bundleID)")
+    static func url(for bundleID: String, section: String? = nil) -> URL? {
+        var components = URLComponents()
+        components.scheme = "x-apple.systempreferences"
+        components.path = bundleID
+        components.percentEncodedQuery = section?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+        return components.url
     }
 
     private static func scan(language: AppLanguage) -> [Pane] {
@@ -82,32 +88,52 @@ enum CommandBarSystemSettings {
                 displayName: info["CFBundleDisplayName"] as? String,
                 bundleName: info["CFBundleName"] as? String,
                 fileName: url.lastPathComponent)
-            var keywords = searchTerms(in: url, folder: folder)
-            if keywords.isEmpty,
-               let legacy = CommandBarSystemSettingsSupport.legacyPaneName(info: info) {
-                keywords = searchTerms(in: legacyPanesRoot.appendingPathComponent(legacy),
-                                       folder: folder)
+            var indexes = searchIndexes(in: url, folder: folder)
+            if let legacy = CommandBarSystemSettingsSupport.legacyPaneName(info: info) {
+                indexes += searchIndexes(in: legacyPanesRoot.appendingPathComponent(legacy), folder: folder)
             }
-            panes.append(Pane(bundleID: bundleID, name: name, keywords: keywords))
+            let keywords = indexes.map {
+                CommandBarSystemSettingsSupport.keywords(fromSearchTerms: $0)
+            }.joined(separator: " ")
+            panes.append(Pane(bundleID: bundleID, name: name,
+                              keywords: CommandBarSystemSettingsSupport.searchableKeywords(
+                                title: name, keywords: keywords)))
+            var seenDetails = Set<String>()
+            for index in indexes {
+                for detail in CommandBarSystemSettingsSupport.details(fromSearchTerms: index) {
+                    guard detail.title != name,
+                          seenDetails.insert(detail.section + "\n" + detail.title).inserted else { continue }
+                    panes.append(Pane(bundleID: bundleID, name: detail.title,
+                                      keywords: CommandBarSystemSettingsSupport.searchableKeywords(
+                                        title: detail.title, keywords: name + " " + detail.keywords),
+                                      section: detail.section, parentName: name))
+                }
+            }
         }
         return panes.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     /// The translated index Apple ships beside a pane, in the app's language,
     /// falling back to English. A pane without one simply answers to its name.
-    private static func searchTerms(in bundle: URL, folder: String) -> String {
+    private static func searchIndexes(in bundle: URL, folder: String) -> [[String: Any]] {
         let resources = bundle.appendingPathComponent("Contents/Resources", isDirectory: true)
-        for candidate in [folder, "en"] {
+        // Include the Mac's preferred language even when the app uses English.
+        let preferred = Bundle.preferredLocalizations(
+            from: Bundle(url: bundle)?.localizations ?? [],
+            forPreferences: Locale.preferredLanguages)
+        var seenFolders = Set<String>()
+        var indexes: [[String: Any]] = []
+        for candidate in [folder] + preferred + ["en"] where seenFolders.insert(candidate).inserted {
             let directory = resources.appendingPathComponent("\(candidate).lproj", isDirectory: true)
             guard let files = try? FileManager.default.contentsOfDirectory(
                 at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
             else { continue }
-            for file in files where file.pathExtension == "searchTerms" {
+            for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+                where file.pathExtension == "searchTerms" {
                 guard let terms = NSDictionary(contentsOf: file) as? [String: Any] else { continue }
-                let words = CommandBarSystemSettingsSupport.keywords(fromSearchTerms: terms)
-                if !words.isEmpty { return words }
+                indexes.append(terms)
             }
         }
-        return ""
+        return indexes
     }
 }

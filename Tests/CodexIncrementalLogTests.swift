@@ -57,13 +57,20 @@ struct CodexIncrementalLogTests {
         try large.write(to: file, options: .atomic)
         let tail = try reader.read(file)
         precondition(tail.reset && tail.objects.count == 1 && tail.objects[0]["event"] as? String == "latest")
+        var gate = CodexCompletionGate()
+        let now = Date()
+        precondition(!gate.accept(id: "a", completed: true, now: now))
+        precondition(gate.accept(id: "a", completed: false, now: now.addingTimeInterval(1)))
+        precondition(!gate.accept(id: "a", completed: true, now: now.addingTimeInterval(2)))
+        precondition(!gate.accept(id: "a", completed: true, now: now.addingTimeInterval(4)))
+        precondition(gate.accept(id: "a", completed: true, now: now.addingTimeInterval(5)))
         precondition(CodexLogLifecycleState.event(in: ["payload": ["type": "task_started"]]) == .running)
         for name in ["task_complete", "turn_complete", "turn_completed", "turn_aborted"] {
             precondition(CodexLogLifecycleState.event(in: ["payload": ["type": name]]) == .completed)
         }
-        precondition(CodexLogLifecycleState.event(in: ["type": "response_item", "payload": ["type": "message", "role": "assistant", "phase": "final_answer"]]) == .completed)
+        precondition(CodexLogLifecycleState.event(in: ["type": "response_item", "payload": ["type": "message", "role": "assistant", "phase": "final_answer"]]) == nil)
         precondition(CodexLogLifecycleState.event(in: ["type": "response_item", "payload": ["type": "message", "role": "assistant", "phase": "commentary"]]) == nil)
-        precondition(CodexLogLifecycleState.event(in: ["type": "event_msg", "payload": ["type": "item_completed", "item": ["type": "AgentMessage", "phase": "final_answer"]]]) == .completed)
+        precondition(CodexLogLifecycleState.event(in: ["type": "event_msg", "payload": ["type": "item_completed", "item": ["type": "AgentMessage", "phase": "final_answer"]]]) == nil)
         print("Codex incremental JSONL tests passed (unchanged, append, split UTF-8, malformed line, truncation, replacement, tail bootstrap).")
     }
 }

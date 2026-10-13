@@ -62,20 +62,12 @@ enum CodexLogLifecycleState: String {
             || payloadType == "turn_aborted" {
             return .completed
         }
-        // The desktop app renders the final answer before its trailing
-        // task_complete event is flushed. Treat that final answer as the
-        // end of the current turn so the island changes immediately.
-        if type == "event_msg", payloadType == "item_completed",
-           let item = payload?["item"] as? [String: Any],
-           item["type"] as? String == "AgentMessage",
-           item["phase"] as? String == "final_answer" {
-            return .completed
+        // Assistant items can finish while the enclosing turn continues.
+        // Only the enclosing task/turn lifecycle is authoritative.
+        if type == "response_item", ["function_call", "custom_tool_call"].contains(payloadType) {
+            return .running
         }
-        if type == "response_item", payloadType == "message",
-           payload?["role"] as? String == "assistant",
-           payload?["phase"] as? String == "final_answer" {
-            return .completed
-        }
+        if type == "event_msg", payloadType == "user_message" { return .running }
         return nil
     }
 }
@@ -94,5 +86,16 @@ enum CodexTaskActivity {
             }
             return false
         }
+    }
+}
+
+/// Hold completion briefly so an automatic continuation cancels it before UI/alerts change.
+struct CodexCompletionGate {
+    private var candidates: [String: Date] = [:]
+    mutating func accept(id: String, completed: Bool, now: Date) -> Bool {
+        guard completed else { candidates[id] = nil; return true }
+        if let since = candidates[id] { return now.timeIntervalSince(since) >= 3 }
+        candidates[id] = now
+        return false
     }
 }

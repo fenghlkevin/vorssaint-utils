@@ -9,8 +9,7 @@ struct PanelProxyView: View {
 
     // Follow the selected group chain instead of assuming a profile has a group named “manual”.
     private var currentGroup: ProxyGroup? {
-        var group = service.groups.first { $0.name == (service.preferences.mode == "global" ? "GLOBAL" : "Proxy") }
-            ?? service.groups.first
+        var group = ProxyGroup.primary(in: service.groups)
         var visited = Set<String>()
         while let current = group, visited.insert(current.name).inserted,
               let next = service.groups.first(where: { $0.name == current.selected }),

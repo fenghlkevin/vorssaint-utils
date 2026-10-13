@@ -32,7 +32,7 @@ struct IslandSessionPresentationTests {
         precondition(focus.focused && focus.primary.map(\.id) == ["old"] && focus.recent.isEmpty)
         let done = IslandSessionPanelPlan(sessions: mixed.filter { $0.status == .completed }, focusedID: nil, now: now)
         precondition(done.allCompleted && done.primary.map(\.id) == ["fresh"] && done.recent.map(\.id) == ["old"])
-        precondition(done.height(maximum: 560, recentExpanded: false) == 220)
+        precondition(done.height(maximum: 560, recentExpanded: false) == 196)
         let overflow = IslandSessionPanelPlan(sessions: many, focusedID: nil, now: now)
         precondition(overflow.primary.count == 30)
         precondition(overflow.height(maximum: 560, recentExpanded: false) == 318)

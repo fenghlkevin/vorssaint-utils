@@ -76,6 +76,7 @@ final class DynamicIslandService: ObservableObject {
     private var localClickMonitor: Any?
     private var refreshTimer: Timer?
     private var hoverTimer: Timer?
+    private var lastMediaRefresh = Date.distantPast
     @Published private(set) var presentationSuspended = false
     private var screenSleeping = false
     private var sessionLocked = false
@@ -300,6 +301,12 @@ final class DynamicIslandService: ObservableObject {
     private func refresh() {
         guard enabled, !presentationSuspended else { return }
         CodexIslandService.shared.refresh()
+        // Keep attention/log updates responsive without querying MediaRemote and
+        // Music every second when the compact island has no playback to show.
+        let mediaInterval: TimeInterval = expanded || isPlaying || musicLaunchInProgress ? 1 : 5
+        let now = Date()
+        guard now.timeIntervalSince(lastMediaRefresh) >= mediaInterval else { return }
+        lastMediaRefresh = now
         RadialNowPlayingService.shared.refresh { [weak self] state in
             guard let self else { return }
             switch state {
@@ -667,8 +674,10 @@ struct CodexActivityIndicator: View {
     let status: CodexIslandSession.Status?
 
     var body: some View {
-        if status == .running {
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: island.presentationSuspended)) { timeline in
+        if status == .running, !island.presentationSuspended {
+            // A small status glyph does not need a display-link animation. A
+            // periodic schedule avoids continuously driving the hosting view.
+            TimelineView(.periodic(from: .now, by: 0.1)) { timeline in
                 pulseIndicator(phase: timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.25) / 1.25)
             }
         } else {

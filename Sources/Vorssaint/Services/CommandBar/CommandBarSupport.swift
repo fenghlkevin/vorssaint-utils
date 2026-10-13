@@ -178,6 +178,11 @@ enum CommandBarSearch {
         let romanized = NSMutableString(string: title)
         guard CFStringTransform(romanized, nil, kCFStringTransformMandarinLatin, false),
               romanized as String != title else { return "" }
+        let umlautVowels: Set<Unicode.Scalar> = ["ü", "ǖ", "ǘ", "ǚ", "ǜ"]
+        let composed = (romanized as String).precomposedStringWithCanonicalMapping
+        romanized.setString(String(String.UnicodeScalarView(composed.unicodeScalars.map {
+            umlautVowels.contains($0) ? Unicode.Scalar("v") : $0
+        })))
         CFStringTransform(romanized, nil, kCFStringTransformStripDiacritics, false)
         let syllables = (romanized as String)
             .split { !$0.isLetter && !$0.isNumber }
@@ -188,6 +193,12 @@ enum CommandBarSearch {
         return joined == initials ? joined : joined + " " + initials
     }
 
+    // Mark generated spellings so the scorer never applies typo/subsequence
+    // matching to them. The marker is internal and never displayed in a row.
+    static func indexedPinyinKeywords(_ title: String) -> String {
+        pinyinKeywords(title).split(separator: " ").map { "\u{E000}" + $0 }.joined(separator: " ")
+    }
+
     static func applicationKeywords(title: String,
                                     diskName: String,
                                     alternateNames: [String]) -> String {
@@ -195,7 +206,7 @@ enum CommandBarSearch {
         if !diskName.isEmpty, normalized(diskName) != normalized(title) {
             names.append(diskName)
         }
-        let pinyin = pinyinKeywords(title)
+        let pinyin = indexedPinyinKeywords(title)
         if !pinyin.isEmpty { names.append(pinyin) }
         return names.joined(separator: " ")
     }
@@ -240,29 +251,36 @@ enum CommandBarSearch {
                       normalizedKeywords: String,
                       normalizedQuery: String) -> Int? {
         guard !normalizedQuery.isEmpty else { return nil }
-        let haystack = normalizedKeywords.isEmpty
-            ? normalizedTitle
-            : normalizedTitle + " " + normalizedKeywords
+        func splitIndex(_ value: String) -> (plain: String, pinyin: [String]) {
+            let tokens = value.split(separator: " ")
+            return (tokens.filter { $0.first != "\u{E000}" }.joined(separator: " "),
+                    tokens.filter { $0.first == "\u{E000}" }.map { String($0.dropFirst()) })
+        }
+        let title = splitIndex(normalizedTitle)
+        let keywords = splitIndex(normalizedKeywords)
+        let haystack = title.plain + " " + keywords.plain
         let words = haystack.split(separator: " ").map(String.init)
-
-        var score = 0
+        var literalScore: Int? = 0
         for token in normalizedQuery.split(separator: " ").map(String.init) {
             guard let tokenScore = bestTokenScore(token, in: words, haystack: haystack) else {
-                return nil
+                literalScore = nil
+                break
             }
-            score += tokenScore
+            literalScore? += tokenScore
         }
-
-        if normalizedTitle == normalizedQuery {
-            score += 1200
-        } else if normalizedTitle.hasPrefix(normalizedQuery) {
-            score += 900
-        } else if normalizedTitle.contains(normalizedQuery) {
-            score += 700
-        } else if !normalizedKeywords.isEmpty, normalizedKeywords.contains(normalizedQuery) {
-            score += 350
+        if literalScore != nil {
+            if title.plain == normalizedQuery { literalScore? += 1200 }
+            else if title.plain.hasPrefix(normalizedQuery) { literalScore? += 900 }
+            else if title.plain.contains(normalizedQuery) { literalScore? += 700 }
+            else if keywords.plain.contains(normalizedQuery) { literalScore? += 350 }
         }
-        return score
+        let compactQuery = normalizedQuery.replacingOccurrences(of: " ", with: "")
+        var pinyinScore: Int?
+        if title.pinyin.contains(compactQuery) { pinyinScore = 1340 }
+        else if title.pinyin.contains(where: { $0.hasPrefix(compactQuery) }) { pinyinScore = 980 }
+        else if keywords.pinyin.contains(compactQuery) { pinyinScore = 490 }
+        else if keywords.pinyin.contains(where: { $0.hasPrefix(compactQuery) }) { pinyinScore = 430 }
+        return [literalScore, pinyinScore].compactMap { $0 }.max()
     }
 
     /// Indexes of the matching candidates, best first; ties keep the caller's

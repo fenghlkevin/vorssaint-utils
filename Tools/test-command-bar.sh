@@ -6,6 +6,7 @@ test_dir=$(mktemp -d "${TMPDIR:-/tmp}/vorssaint-command-bar-tests.XXXXXX")
 trap 'rm -rf "$test_dir"' EXIT
 swiftc -Onone -target arm64-apple-macosx14.0 -module-cache-path "$test_dir/modules" \
     Sources/Vorssaint/Services/CommandBar/CommandBarSupport.swift \
+    Sources/Vorssaint/Services/CommandBar/CommandBarSystemSettingsSupport.swift \
     Sources/Vorssaint/Services/CommandBar/CommandBarPreferences.swift \
     Sources/Vorssaint/Services/CommandBar/CommandBarJSONDocument.swift \
     Sources/Vorssaint/Services/CommandBar/CommandBarDeveloperSupport.swift \

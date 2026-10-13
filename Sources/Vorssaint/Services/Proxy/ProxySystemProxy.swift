@@ -13,6 +13,10 @@ struct ProxyNetworkError: LocalizedError {
     let message: String
     var errorDescription: String? { message }
 }
+/// A network transition is retryable; it does not relinquish an existing lease.
+struct ProxyNetworkUnavailable: LocalizedError {
+    var errorDescription: String? { "网络暂时不可用，连接恢复后将自动恢复系统代理。" }
+}
 /// A field-level write-ahead journal; foreign changes are never overwritten on restoration.
 final class ProxySystemLease {
     let store: ProxyNetworkStore
@@ -70,7 +74,7 @@ final class ProxySystemLease {
         ownedService = nil
     }
     func enable(port: Int) throws {
-        guard let service = try store.activeService() else { throw ProxyNetworkError(message: "没有可用的物理网络服务，系统代理未开启。") }
+        guard let service = try store.activeService() else { throw ProxyNetworkUnavailable() }
         if ownedService == service {
             let current = try store.read(service)
             guard Self.desired(port: port).allSatisfy({ Self.equal(current[$0.key], $0.value) }) else {
@@ -186,7 +190,12 @@ final class ProxySystemSession {
         do {
             if stopping || now - lastPulse > 15 { try stop(owner); issue = "应用心跳中断，系统代理已恢复。" }
             else {
-                do { try lease.enable(port: port) }
+                do { try lease.enable(port: port); issue = "" }
+                catch is ProxyNetworkUnavailable {
+                    // Keep the journal, owner and heartbeat while Wi-Fi/IP is transitioning.
+                    // The next tick retries migration; explicit stop and expiry still restore.
+                    issue = ProxyNetworkUnavailable().localizedDescription
+                }
                 catch { let reason = error.localizedDescription; try stop(owner); issue = reason }
             }
         } catch { issue = error.localizedDescription }

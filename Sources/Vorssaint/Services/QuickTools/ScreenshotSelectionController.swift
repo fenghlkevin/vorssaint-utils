@@ -594,7 +594,8 @@ final class ScreenshotSelectionController {
                 scale: panel.pixelScale,
                 anchorRect: ScreenshotSupport.cocoaRect(
                     fromFlippedView: frame,
-                    screenFrame: panel.screenFrame))))
+                    screenFrame: panel.screenFrame),
+                delivery: .copy)))
         }
     }
 
@@ -988,6 +989,9 @@ private final class ScreenshotOverlayPanel: NSPanel {
         // layer configured before the view joins a window can lose its
         // contents, and the chrome's dim must paint over the image anyway.
         let container = NSView(frame: CGRect(origin: .zero, size: screen.frame.size))
+        // Cache the still separately from the frequently changing selection
+        // chrome, so pointer updates do not redraw a full-resolution image.
+        container.wantsLayer = true
         if let frozenImage {
             let displayedRect = editingSourceRect.map {
                 CGRect(x: $0.minX, y: container.bounds.height - $0.maxY,
@@ -1138,6 +1142,8 @@ private final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         host.passesThrough = screenCaptureOptions == nil
         guideHost = host
         super.init(frame: frame)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
         let tracking = NSTrackingArea(rect: .zero,
                                       options: [.activeAlways, .mouseMoved, .mouseEnteredAndExited,
                                                 .inVisibleRect],
@@ -1284,20 +1290,32 @@ private final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         let height: CGFloat = screenCaptureOptions != nil
             ? 146
             : 72
-        guideHost.frame = CGRect(x: bounds.midX - width / 2,
+        let guideFrame = CGRect(x: bounds.midX - width / 2,
                                  y: bounds.maxY - height - 32,
                                  width: width,
                                  height: height)
+        if guideHost.frame != guideFrame { guideHost.frame = guideFrame }
+        positionInlineToolbar()
+    }
+
+    private func positionInlineToolbar() {
         let toolbarWidth = min(1_180, max(520, bounds.width - 24))
         let toolbarHeight: CGFloat = InlineCaptureToolbar.contentHeight(hasSettings: editorState.hasSettings) + 8
         var toolbarY = selection.maxY + 10
         if toolbarY + toolbarHeight > bounds.maxY - 8 {
             toolbarY = selection.minY - toolbarHeight - 10
         }
-        inlineToolbar.frame = CGRect(x: min(max(selection.midX - toolbarWidth / 2, 8),
+        let toolbarFrame = CGRect(x: min(max(selection.midX - toolbarWidth / 2, 8),
                                              bounds.maxX - toolbarWidth - 8),
                                      y: max(8, toolbarY), width: toolbarWidth,
                                      height: toolbarHeight)
+        if inlineToolbar.frame.size != toolbarFrame.size {
+            inlineToolbar.setFrameSize(toolbarFrame.size)
+        }
+        if inlineToolbar.frame.origin != toolbarFrame.origin {
+            // Moving the toolbar does not change its SwiftUI content geometry.
+            inlineToolbar.setFrameOrigin(toolbarFrame.origin)
+        }
     }
 
     func refreshPointerState() {
@@ -1346,15 +1364,43 @@ private final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     // MARK: Mouse
 
     override func mouseMoved(with event: NSEvent) {
+        let previousPoint = hoverPoint
+        let previousWindow = hoveredWindow
         hoverPoint = convert(event.locationInWindow, from: nil)
-        if inlineEditing, editorState.isPendingNoteAnchor {
-            editorState.previewPendingNote(to: hoverPoint)
-            needsDisplay = true
+        if inlineEditing {
+            if editorState.isPendingNoteAnchor {
+                editorState.previewPendingNote(to: hoverPoint)
+                needsDisplay = true
+            }
+            return
         }
         hoveredWindow = controller?.acceptsWindowClick == true
             ? ScreenshotSupport.window(at: hoverPoint, in: windows)
             : nil
-        needsDisplay = true
+        if previousWindow?.windowID != hoveredWindow?.windowID {
+            if let previousWindow { setNeedsDisplay(previousWindow.frame.insetBy(dx: -4, dy: -4)) }
+            if let hoveredWindow { setNeedsDisplay(hoveredWindow.frame.insetBy(dx: -4, dy: -4)) }
+        }
+        invalidatePointerChrome(at: previousPoint)
+        invalidatePointerChrome(at: hoverPoint)
+    }
+
+    /// Only the crosshair, coordinate badge and loupe follow an idle pointer.
+    /// Keep the veil and frozen background cached outside these dirty regions.
+    private func invalidatePointerChrome(at point: CGPoint) {
+        setNeedsDisplay(CGRect(x: bounds.minX, y: point.y - 2,
+                               width: bounds.width, height: 4))
+        setNeedsDisplay(CGRect(x: point.x - 2, y: bounds.minY,
+                               width: 4, height: bounds.height))
+        setNeedsDisplay(CGRect(x: point.x - 110, y: point.y - 16,
+                               width: 220, height: 64).intersection(bounds))
+        // The badge clamps to the display edge independently of the pointer.
+        if point.x < 110 || point.x > bounds.maxX - 110 {
+            setNeedsDisplay(CGRect(x: point.x < 110 ? 0 : bounds.maxX - 220,
+                                   y: max(0, min(point.y, bounds.maxY - 64)),
+                                   width: 220, height: 64))
+        }
+        setNeedsDisplay(captureLoupeFrame(near: point, size: 70).insetBy(dx: -3, dy: -3))
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -1389,6 +1435,12 @@ private final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             if event.clickCount >= 2,
                let mark = editorState.editableSpecialMark(at: point) {
                 beginInlineTextEditing(mark)
+                return
+            }
+            if event.clickCount >= 2, !editorState.hasActiveTool,
+               selection.contains(point),
+               ScreenshotSupport.handle(at: point, rect: selection, tolerance: 9) == nil {
+                confirmInlineSelection(delivery: .copy)
                 return
             }
             if let handle = ScreenshotSupport.handle(at: point, rect: selection, tolerance: 9) {
@@ -1426,15 +1478,18 @@ private final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 let delta = CGPoint(x: point.x - lastDragPoint.x, y: point.y - lastDragPoint.y)
                 selection = ScreenshotSupport.movedRect(origin, by: delta, within: bounds)
             }
-            needsLayout = true
+            if resizeOrigin != nil || moveOrigin != nil { positionInlineToolbar() }
             needsDisplay = true
             return
         }
         guard let controller, let origin = dragOrigin else { return }
+        let previousPoint = lastDragPoint
+        let previousSelection = selection
         hoverPoint = point
         if controller.isPickingColor {
             lastDragPoint = point
-            needsDisplay = true
+            invalidatePointerChrome(at: previousPoint)
+            invalidatePointerChrome(at: point)
             return
         }
         if controller.spaceIsDown, selection.width > 0 {
@@ -1452,7 +1507,12 @@ private final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         selection = ScreenshotSupport.clamp(selection, to: bounds)
         lastDragPoint = point
-        needsDisplay = true
+        // Redraw the changed cutout and its size badge, leaving the rest of
+        // the display's veil cached while dragging or panning the region.
+        setNeedsDisplay(previousSelection.insetBy(dx: -120, dy: -40).intersection(bounds))
+        setNeedsDisplay(selection.insetBy(dx: -120, dy: -40).intersection(bounds))
+        invalidatePointerChrome(at: previousPoint)
+        invalidatePointerChrome(at: point)
     }
 
     override func mouseUp(with event: NSEvent) {

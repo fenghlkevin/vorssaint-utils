@@ -3,7 +3,7 @@ import Foundation
 import ProxyYAML
 
 final class MemoryNetwork: ProxyNetworkStore {
-    var active = "wifi"
+    var active: String? = "wifi"
     var values: [String: [String: Any]] = ["wifi": ["HTTPEnable": 0, "ExceptionsList": ["*.local"]], "ethernet": [:]]
     var fail = false
     func activeService() throws -> String? { active }
@@ -114,20 +114,41 @@ final class MemoryNetwork: ProxyNetworkStore {
         do { try session.set(false, port: 0, owner: stranger, now: 2); fatalError("foreign session accepted") } catch {}
         try session.stop(stranger)
         check(session.active, "foreign disconnect does not restore owner")
-        sessionNetwork.active = "ethernet"
+        sessionNetwork.active = nil
         session.tick(now: 3)
+        check(session.active && session.owner == owner, "network gap retains proxy session")
+        check(sessionLease.ownedService == "wifi" && !sessionLease.records.isEmpty, "network gap retains restoration journal")
+        check(!session.issue.isEmpty, "network gap reports waiting state")
+        sessionNetwork.active = "wifi"
+        session.tick(now: 4)
+        check(session.active && session.issue.isEmpty, "same network resumes without manual enable")
+        sessionNetwork.active = nil
+        session.tick(now: 5)
+        sessionNetwork.active = "ethernet"
+        session.tick(now: 6)
         check(sessionLease.ownedService == "ethernet", "helper migrates physical service")
+        check(sessionNetwork.values["wifi"]?["HTTPEnable"] as? Int == 0, "resumed migration restores previous service")
+        check(sessionNetwork.values["ethernet"]?["HTTPPort"] as? Int == 7890 && session.issue.isEmpty, "new network resumes proxy automatically")
         try session.heartbeat(owner, now: 10)
         session.tick(now: 24)
         check(session.active, "heartbeat extends lease")
+        sessionNetwork.active = nil
         session.tick(now: 26)
         check(!session.active && sessionNetwork.values["ethernet"]?["HTTPProxy"] == nil, "expired heartbeat restores")
+        sessionNetwork.active = "ethernet"
         try session.set(true, port: 7890, owner: owner, now: 30)
         sessionNetwork.fail = true
         do { try session.stop(owner); fatalError("restore failure ignored") } catch {}
         sessionNetwork.fail = false
         session.tick(now: 31)
         check(!session.active, "failed stop retries restoration instead of re-enabling")
+        try session.set(true, port: 7890, owner: owner, now: 32)
+        sessionNetwork.active = nil
+        session.tick(now: 33)
+        try session.stop(owner)
+        sessionNetwork.active = "ethernet"
+        session.tick(now: 34)
+        check(!session.active && sessionLease.records.isEmpty, "explicit stop during outage prevents automatic resume")
         try session.set(true, port: 7890, owner: owner, now: 40)
         sessionNetwork.values["ethernet"]?["HTTPProxy"] = "foreign.invalid"
         session.tick(now: 41)

@@ -18514,6 +18514,20 @@ struct MetricsTests {
             "Main": ["localizableStrings": longPaneTerms],
         ]).contains("term45"),
                "important terms beyond the old forty-word cutoff remain searchable")
+        let settingDetails = CommandBarSystemSettingsSupport.details(fromSearchTerms: [
+            "Privacy_AllFiles": ["localizableStrings": [
+                ["title": "允许应用程序访问所有用户文件", "index": "完全磁盘访问权限, full disk access"],
+                ["title": "允许应用程序访问所有用户文件", "index": "duplicate"],
+                ["title": "  ", "index": "invalid"],
+            ]],
+            "Malformed": "ignored",
+        ])
+        expect(settingDetails.count == 1
+                && settingDetails[0].section == "Privacy_AllFiles"
+                && CommandBarSearch.matches(title: settingDetails[0].title,
+                                            keywords: settingDetails[0].keywords,
+                                            query: "完全磁盘访问权限"),
+               "detailed settings preserve their section and searchable aliases without duplicate rows")
         expect(Set(AppLanguage.allCases.map(CommandBarSystemSettingsSupport.resourceFolder)).count
                 == AppLanguage.allCases.count,
                "each language reads its own words, so no two share a folder")

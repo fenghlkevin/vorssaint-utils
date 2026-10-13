@@ -79,6 +79,63 @@ enum CommandBarSystemSettingsSupport {
         return words.joined(separator: " ")
     }
 
+    struct Detail: Equatable {
+        let section: String
+        let title: String
+        let keywords: String
+    }
+
+    /// Keep each indexed control searchable and visible as its own result.
+    static func details(fromSearchTerms terms: [String: Any]) -> [Detail] {
+        var result: [Detail] = []
+        var seen = Set<String>()
+        for section in terms.keys.sorted() {
+            guard let group = terms[section] as? [String: Any],
+                  let entries = group["localizableStrings"] as? [[String: Any]] else { continue }
+            for entry in entries {
+                let title = (entry["title"] as? String ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !title.isEmpty, seen.insert(section + "\n" + title).inserted else { continue }
+                result.append(Detail(section: section, title: title,
+                                     keywords: (entry["index"] as? String ?? "") + " " + aliases(for: section)))
+            }
+        }
+        return result
+    }
+
+    /// Apple's index sometimes omits the short label shown in the privacy list.
+    private static func aliases(for section: String) -> String {
+        switch section {
+        case "Privacy_ScreenCapture": return "屏幕录制 屏幕与系统音频录制 螢幕錄製 screen recording"
+        case "Privacy_AllFiles": return "完全磁盘访问权限 完整磁碟存取權 full disk access"
+        case "Privacy_Accessibility": return "辅助功能 輔助使用 accessibility"
+        case "Privacy_ListenEvent": return "输入监控 輸入監控 input monitoring"
+        default: return ""
+        }
+    }
+
+    /// Generate once while loading the catalog, never on each keystroke.
+    /// Romanize aliases separately so their initials remain independently searchable.
+    static func searchableKeywords(title: String, keywords: String) -> String {
+        var seen = Set<String>()
+        let phrases = [title] + keywords.split {
+            $0.isWhitespace || $0 == "," || $0 == "，"
+        }.map(String.init)
+        let pinyin = phrases.compactMap { phrase -> String? in
+            guard seen.insert(phrase).inserted else { return nil }
+            let value = CommandBarSearch.indexedPinyinKeywords(phrase)
+            return value.isEmpty ? nil : value
+        }
+        return ([keywords] + pinyin).joined(separator: " ")
+    }
+
+    /// A title's romanization has the same relevance as its visible spelling,
+    /// rather than competing with the broad synonyms of every child setting.
+    static func rankingTitle(_ title: String) -> String {
+        let pinyin = CommandBarSearch.indexedPinyinKeywords(title)
+        return pinyin.isEmpty ? title : title + " " + pinyin
+    }
+
     /// The old preference pane a Settings pane grew out of, when it says so.
     /// Several panes keep their translated index words only in that older
     /// bundle, and it is named right there in the newer one.

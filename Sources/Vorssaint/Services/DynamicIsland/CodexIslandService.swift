@@ -39,6 +39,7 @@ final class CodexIslandService: ObservableObject {
     @Published var pathFilters: String { didSet { UserDefaults.standard.set(pathFilters, forKey: "dynamicIsland.codexPathFilters") } }
     @Published var promptFilters: String { didSet { UserDefaults.standard.set(promptFilters, forKey: "dynamicIsland.codexPromptFilters") } }
 
+    private var completionGate = CodexCompletionGate()
     private var firstRefresh = true
     private var hookDirectories: [String: String] = [:]
     private var hookTargets: [String: (app: String?, tty: String?)] = [:]
@@ -192,6 +193,7 @@ final class CodexIslandService: ObservableObject {
                 let retained = self.sessions.filter {
                     $0.updatedAt >= self.monitoringStartedAt
                         && Date().timeIntervalSince($0.updatedAt) <= 6 * 60 * 60
+                        && !CodexIslandLogReader.isFiltered(cwd: self.hookDirectories[$0.id] ?? "", prompt: $0.title, filters: filters)
                 }
                 if self.sessions != retained { self.sessions = retained }
                 if let attentionSessionID, !self.firstRefresh {
@@ -210,6 +212,8 @@ final class CodexIslandService: ObservableObject {
     private func mergeSessionLogs(_ logs: [CodexIslandSession]) {
         var updated = sessions
         for log in logs {
+            let confirmed = completionGate.accept(id: log.id, completed: log.status == .completed, now: Date())
+            if !firstRefresh, !confirmed { continue }
             if let index = updated.firstIndex(where: { $0.id == log.id }) {
                 let previous = updated[index]
                 // Hooks applied after the scan began retain their authority.
@@ -243,6 +247,13 @@ final class CodexIslandService: ObservableObject {
     }
 
     private func apply(_ event: CodexHookEvent) -> Bool {
+        // Stop hooks may precede automatic continuation. Let the enclosing
+        // JSONL task/turn completion and stabilization gate decide completion.
+        if ["Stop", "SessionEnd"].contains(event.event) { return false }
+        if event.event == "PostToolUse", sessions.first(where: { $0.id == event.sessionID })?.status == .completed { return false }
+        if event.event == "UserPromptSubmit" || event.event == "PermissionRequest" {
+            _ = completionGate.accept(id: event.sessionID, completed: false, now: Date())
+        }
         // Parent session IDs are used for sub-agent hooks. Never mark the parent complete.
         if event.event.hasPrefix("Subagent") {
             if showSubagents, let index = sessions.firstIndex(where: { $0.id == event.sessionID }) {
@@ -257,6 +268,9 @@ final class CodexIslandService: ObservableObject {
         }
         if let cwd = event.cwd { hookDirectories[event.sessionID] = cwd }
         if let app = event.terminalApp { hookTargets[event.sessionID] = (app, event.terminalTTY) }
+        let filters = CodexIslandLogReader.Filters(builtIn: builtInFiltersEnabled, paths: pathFilters, prompts: promptFilters)
+        let title = event.title.isEmpty ? (sessions.first { $0.id == event.sessionID }?.title ?? "") : event.title
+        guard !CodexIslandLogReader.isFiltered(cwd: hookDirectories[event.sessionID] ?? "", prompt: title, filters: filters) else { return false }
         // Keep navigation metadata, but do not create tasks for CLI startup/shutdown.
         if event.event == "SessionStart" { return false }
         if ["SessionEnd", "Stop", "Interrupt"].contains(event.event),
@@ -774,7 +788,9 @@ private final class CodexIslandLogReader {
     static func isFiltered(cwd: String, prompt: String, filters: Filters) -> Bool {
         if filters.builtIn {
             let knownPaths = ["/.codex/memories", "/chronicle/screen_recording", "/.claude-mem"]
-            let knownPrompts = ["## Memory Writing Agent", "# Overview Generate 0 to 3 hyperpersonalized suggestions", "Using the supplied git context below, generate", "What topic or area is the user exploring?"]
+            // Titles extracted from logs are limited to 52 characters, so
+            // match the stable prefix of Codex's background suggestion request.
+            let knownPrompts = ["## Memory Writing Agent", "# Overview Generate 0 to 3 hyperpersonalized suggestions", "Using the supplied git context below, generate", "What topic or area is the user exploring?", "This is an app-generated request for a suggested"]
             if knownPaths.contains(where: cwd.contains) || knownPrompts.contains(where: prompt.hasPrefix) { return true }
         }
         let paths = filters.paths.split(whereSeparator: { $0 == "\n" || $0 == "," }).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
