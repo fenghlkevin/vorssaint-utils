@@ -18,12 +18,6 @@ struct NetworkSection: View {
     @AppStorage(DefaultsKey.monitorNetTest) private var netTest = true
     @AppStorage(DefaultsKey.panelNetworkOrder) private var networkOrderRaw = ""
     @State private var draggingBlock: Block?
-    @State private var appRows: [ProcessUsage] = []
-    @State private var appRowsLoading = false
-    @State private var lastAppRefresh = Date.distantPast
-    @State private var appRefreshSerial = 0
-    @State private var networkMonitoringActive = false
-    private let appLimit = 6
 
     var body: some View {
         PanelSection(.network, title: l10n.s.networkSection, collapsible: collapsible,
@@ -47,32 +41,6 @@ struct NetworkSection: View {
                 }
             }
             .panelCard()
-        }
-        .onAppear {
-            if netApps {
-                startNetworkMonitoringIfNeeded()
-            }
-            refreshAppRows(force: true, delay: 0.2)
-        }
-        .onReceive(monitor.$snapshot) { _ in
-            refreshAppRows(force: false, delay: 0.2)
-        }
-        .onChange(of: netApps) { _, visible in
-            if visible {
-                startNetworkMonitoringIfNeeded()
-                refreshAppRows(force: true, delay: 0.2)
-            } else {
-                appRefreshSerial &+= 1
-                appRows = []
-                appRowsLoading = false
-                stopNetworkMonitoringIfNeeded()
-            }
-        }
-        .onDisappear {
-            appRefreshSerial &+= 1
-            appRows = []
-            appRowsLoading = false
-            stopNetworkMonitoringIfNeeded()
         }
     }
 
@@ -135,26 +103,10 @@ struct NetworkSection: View {
                                isVisible: $netApps)
         } else {
             VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(l10n.s.networkApps)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                    Spacer(minLength: 0)
-                    if editing {
-                        PanelInlineHideButton(isVisible: $netApps)
-                    }
+                if editing {
+                    HStack { Spacer(); PanelInlineHideButton(isVisible: $netApps) }
                 }
-                if appRows.isEmpty {
-                    Text(appRowsLoading ? l10n.s.breakdownMeasuring : l10n.s.networkAppsIdle)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.tertiary)
-                } else {
-                    ForEach(appRows) { row in
-                        ProcessUsageRow(row: row,
-                                        value: networkValue(row),
-                                        iconSize: 14)
-                    }
-                }
+                AppTrafficView()
             }
         }
     }
@@ -304,62 +256,4 @@ struct NetworkSection: View {
         value >= 100 ? String(format: "%.0f", value) : String(format: "%.1f", value)
     }
 
-    private func startNetworkMonitoringIfNeeded() {
-        guard !networkMonitoringActive else { return }
-        networkMonitoringActive = true
-        ProcessUsageService.shared.startNetworkMonitoring()
-    }
-
-    private func stopNetworkMonitoringIfNeeded() {
-        guard networkMonitoringActive else { return }
-        networkMonitoringActive = false
-        ProcessUsageService.shared.stopNetworkMonitoring()
-    }
-
-    private func refreshAppRows(force: Bool, delay: TimeInterval = 0) {
-        guard netApps else { return }
-        if force {
-            if let cached = ProcessUsageService.shared.cachedTop(.network, limit: appLimit) {
-                appRows = cached
-                appRowsLoading = false
-            } else {
-                appRows = []
-                appRowsLoading = true
-            }
-        }
-        guard force || Date().timeIntervalSince(lastAppRefresh) > 2 else { return }
-        lastAppRefresh = Date()
-
-        appRefreshSerial &+= 1
-        let serial = appRefreshSerial
-        let run = {
-            guard self.appRefreshSerial == serial, self.netApps else { return }
-            self.appRowsLoading = self.appRows.isEmpty
-            DispatchQueue.global(qos: .utility).async {
-                let rows = ProcessUsageService.shared.top(.network, limit: appLimit)
-                let isWarmingUp = ProcessUsageService.shared.networkMonitoringIsWarmingUp
-                DispatchQueue.main.async {
-                    guard self.appRefreshSerial == serial, self.netApps else { return }
-                    self.appRowsLoading = rows.isEmpty && isWarmingUp
-                    if !rows.isEmpty || self.appRows.isEmpty {
-                        self.appRows = rows
-                    }
-                    if rows.isEmpty && isWarmingUp {
-                        self.refreshAppRows(force: true, delay: 1.0)
-                    }
-                }
-            }
-        }
-        if delay > 0 {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: run)
-        } else {
-            run()
-        }
-    }
-
-    private func networkValue(_ row: ProcessUsage) -> String {
-        let down = row.networkDownBytesPerSec ?? 0
-        let up = row.networkUpBytesPerSec ?? 0
-        return "↓\(MetricFormat.bytesPerSecCompact(down)) ↑\(MetricFormat.bytesPerSecCompact(up))"
-    }
 }

@@ -66,8 +66,12 @@ import ServiceManagement
     }
     func stop() async throws {
         pulse?.cancel(); pulse = nil
-        guard connection != nil else { return }
-        do { _ = try await request(false) }
+        // Reconnect when necessary: losing XPC is not proof that the helper
+        // has restored the lease. Never let the guardian kill the core early.
+        do {
+            let result = try await request(false)
+            guard result.systemProxy == false else { throw ProxyFailure.message("系统代理尚未恢复，请重试停止代理。") }
+        }
         catch { connection?.invalidate(); throw error }
     }
 }

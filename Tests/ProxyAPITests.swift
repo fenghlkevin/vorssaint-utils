@@ -2,11 +2,13 @@
 import Foundation
 final class ProxyStubProtocol: URLProtocol {
     static var observed: URLRequest?
+    static var healthResponse: [String: Any]?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         Self.observed = request
-        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 204, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: Self.healthResponse == nil ? 204 : 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        if let value = Self.healthResponse { client?.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: value)) }
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
@@ -28,6 +30,20 @@ final class ProxyStubProtocol: URLProtocol {
               request.value(forHTTPHeaderField: "Authorization") == "Bearer fixture-token",
               request.httpMethod == "PUT" else { fatalError("API segment encoding/auth regression") }
         print("Proxy API path encoding and authentication passed")
+        for invalid in [["Status": 2], ["Status": 0, "Answer": []]] as [[String: Any]] {
+            ProxyStubProtocol.healthResponse = invalid
+            do { try await api.validateTakeover(dnsEnabled: true, proxyGroup: nil); fatalError("broken DNS allowed takeover") }
+            catch { precondition(error.localizedDescription.contains("DNS")) }
+        }
+        ProxyStubProtocol.healthResponse = ["Status": 0, "Answer": [["type": 1, "data": "93.184.215.14"]]]
+        try await api.validateTakeover(dnsEnabled: true, proxyGroup: nil)
+        ProxyStubProtocol.healthResponse = [:]
+        do { try await api.validateTakeover(dnsEnabled: false, proxyGroup: "Proxy"); fatalError("failed node allowed takeover") }
+        catch { precondition(error.localizedDescription.contains("策略组")) }
+        ProxyStubProtocol.healthResponse = ["delay": 123]
+        try await api.validateTakeover(dnsEnabled: false, proxyGroup: "Proxy")
+        ProxyStubProtocol.healthResponse = nil
+        print("DNS and outbound takeover guards reject failed/empty replies and accept healthy paths")
         let probe = DelayBatchProbe()
         await ProxyDelayBatch.run(["slow", "b", "c", "d", "e", "f"], operation: { name in
             try? await Task.sleep(nanoseconds: name == "slow" ? 200_000_000 : 10_000_000)

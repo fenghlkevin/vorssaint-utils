@@ -149,7 +149,6 @@ struct MetricDetailView: View {
     @State private var processRowsLoading = false
     @State private var lastProcessRefresh = Date.distantPast
     @State private var refreshSerial = 0
-    @State private var networkMonitoringActive = false
     private let processLimit = 15
 
     var body: some View {
@@ -159,22 +158,16 @@ struct MetricDetailView: View {
             if kind == .network {
                 speedTestCard
             }
-            if kind.processKind != nil {
+            if kind == .network {
+                AppTrafficView().panelCard()
+            } else if kind.processKind != nil {
                 processCard
             }
         }
         .onAppear {
-            if kind == .network {
-                startNetworkMonitoringIfNeeded()
-            }
             refreshProcessRows(force: true, delay: 0.2)
         }
         .onChange(of: kind) { oldKind, newKind in
-            if oldKind == .network, newKind != .network {
-                stopNetworkMonitoringIfNeeded()
-            } else if oldKind != .network, newKind == .network {
-                startNetworkMonitoringIfNeeded()
-            }
             refreshProcessRows(force: true, delay: 0.2)
         }
         .onReceive(monitor.$snapshot) { _ in refreshProcessRows(force: false, delay: 0.85) }
@@ -182,7 +175,6 @@ struct MetricDetailView: View {
             refreshSerial &+= 1
             processRows = []
             processRowsLoading = false
-            stopNetworkMonitoringIfNeeded()
         }
     }
 
@@ -603,7 +595,7 @@ struct MetricDetailView: View {
     }
 
     private func refreshProcessRows(force: Bool, delay: TimeInterval = 0) {
-        guard let processKind = kind.processKind else { return }
+        guard kind != .network, let processKind = kind.processKind else { return }
         if force {
             if let cached = ProcessUsageService.shared.cachedTop(processKind, limit: processLimit) {
                 processRows = cached
@@ -643,18 +635,6 @@ struct MetricDetailView: View {
         } else {
             run()
         }
-    }
-
-    private func startNetworkMonitoringIfNeeded() {
-        guard !networkMonitoringActive else { return }
-        networkMonitoringActive = true
-        ProcessUsageService.shared.startNetworkMonitoring()
-    }
-
-    private func stopNetworkMonitoringIfNeeded() {
-        guard networkMonitoringActive else { return }
-        networkMonitoringActive = false
-        ProcessUsageService.shared.stopNetworkMonitoring()
     }
 
     private func processValue(_ row: ProcessUsage) -> String {

@@ -12,6 +12,13 @@ struct NetworkProcessSample: Equatable {
 }
 
 enum NetworkProcessSupport {
+    // Include loopback: apps using a local HTTP/SOCKS proxy transfer their
+    // payload there. The proxy's upstream bytes remain in its own app row.
+    static let appTrafficArguments = [
+        "-P", "-d", "-n", "-x", "-t", "external", "-t", "loopback",
+        "-J", "bytes_in,bytes_out", "-L", "0", "-s", "2",
+    ]
+
     static let nettopArguments = [
         "-P", "-d", "-x",
         "-J", "bytes_in,bytes_out",

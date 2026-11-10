@@ -7,6 +7,9 @@ import Foundation
         precondition(pathOnly.process == "Example")
         let remote = ProxyConnection.parse(["id": "lan", "metadata": ["sourceIP": "192.0.2.9"]])!
         precondition(remote.process == "客户端 · 192.0.2.9")
+        let sourced = ProxyConnection.parse(["id": "source", "metadata": ["sourceIP": "127.0.0.1", "sourcePort": 50100, "network": "tcp"]])!
+        precondition(sourced.sourceIP == "127.0.0.1" && sourced.sourcePort == "50100")
+        precondition(pathOnly.sourceIP.isEmpty && pathOnly.sourcePort.isEmpty)
         var sampler = ProxyTrafficSampler()
         func snapshot(_ up: Double, _ down: Double) -> [String: Any] {
             ["uploadTotal": up, "downloadTotal": down, "connections": [["id": "one", "upload": up, "download": down, "metadata": ["process": "Fixture", "processPath": "/fixture", "host": "example.invalid", "destinationPort": "443"]]]]

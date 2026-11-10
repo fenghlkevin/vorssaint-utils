@@ -8,6 +8,8 @@ struct NetworkInfoStrings {
         if language == .zhTW || language == .zhHK { return traditional }
         return en
     }
+    var appTraffic: String { value("软件流量与链路", "軟件流量與鏈路", "App traffic and connections") }
+    var closeTraffic: String { value("关闭", "關閉", "Close") }
     var historyTitle: String { value("最近查询记录", "最近查詢記錄", "Recent lookups") }
     var historyCaption: String { value("本机保存最近 10 次实际查询，重启后保留；使用缓存不会重复记录。", "本機儲存最近 10 次實際查詢，重新啟動後保留；使用快取不會重複記錄。", "The last 10 actual lookups are saved on this Mac across restarts. Cached results do not add records.") }
     var historyEmpty: String { value("暂无记录，点击“刷新”查询后会保存。", "暫無記錄，點擊「重新整理」查詢後會儲存。", "No history yet. Click Refresh to make a lookup.") }

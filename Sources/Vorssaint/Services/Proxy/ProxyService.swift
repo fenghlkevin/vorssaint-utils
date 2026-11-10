@@ -294,7 +294,10 @@ final class ProxyService: ObservableObject {
             return [NSXPCConnectionInterrupted, NSXPCConnectionInvalid].contains(value.code)
         }
         // XPC and guardian replies preserve the message, but not the original error type.
-        return ["网络暂时不可用", "没有可用的物理网络服务", "网络设置同时被其他程序修改", "网络助手请求超时"]
+        // DNS and outbound probes can fail while login networking is still settling.
+        // Keep the takeover guard, but allow the automatic startup loop to recover.
+        return ["网络暂时不可用", "没有可用的物理网络服务", "网络设置同时被其他程序修改", "网络助手请求超时",
+                "核心 DNS 查询失败", "当前策略组无法通过联网检测", "核心或必要规则集尚未就绪"]
             .contains { error.localizedDescription.contains($0) }
     }
     @discardableResult
@@ -384,6 +387,7 @@ final class ProxyService: ObservableObject {
             try Task.checkCancellation()
         }
         if let tunnelInterface {
+            try await validateNetworkTakeover()
             let configuration = try await client.request(["configs"])
             guard let tun = configuration["tun"] as? [String: Any], tun["enable"] as? Bool == true,
                   tun["device"] as? String == tunnelInterface else {
@@ -448,8 +452,17 @@ final class ProxyService: ObservableObject {
         guard !enabled || systemClient.available else {
             throw ProxyFailure.message("请先在网络 / VPN 中授权网络助手，再开启系统代理。")
         }
+        if enabled { try await validateNetworkTakeover() }
         _ = try await guardian.send(.init(command: "system", mixedPort: preferences.mixedPort,
                                          systemProxy: enabled, useSystemHelper: systemClient.available))
+    }
+    private func validateNetworkTakeover() async throws {
+        guard let api else { throw ProxyFailure.message("核心尚未就绪，未接管系统网络。") }
+        statusDetail = "正在验证 DNS 与代理出口…"
+        let live = try await api.groups()
+        let group = preferences.mode == "direct" ? nil : preferences.mode == "global" ? "GLOBAL" : ProxyGroup.primary(in: ordered(live))?.name
+        try await api.validateTakeover(dnsEnabled: (inspection?.source["dns"] as? [String: Any])?["enable"] as? Bool == true,
+                                       proxyGroup: (inspection?.nodeNames.isEmpty == false) ? group : nil)
     }
     func setSystemProxy(_ enabled: Bool) {
         if state != .running { var updated = preferences; updated.systemProxy = enabled; savePreferences(updated); return }

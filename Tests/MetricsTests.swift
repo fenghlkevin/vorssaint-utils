@@ -6040,10 +6040,10 @@ struct MetricsTests {
                "headphone disconnect volume preserves valid percentages")
         expect(Defaults.sanitizedMixerHeadphonesDisconnectVolumePercent(-5)
                == Defaults.minimumMixerHeadphonesDisconnectVolumePercent,
-               "headphone disconnect volume never drops below the audible floor")
+               "headphone disconnect volume clamps negative values to silence")
         expect(Defaults.sanitizedMixerHeadphonesDisconnectVolumePercent(0)
                == Defaults.minimumMixerHeadphonesDisconnectVolumePercent,
-               "headphone disconnect protection lowers the speakers, it never silences them")
+               "headphone disconnect protection allows silence")
         expect(Defaults.sanitizedMixerHeadphonesDisconnectVolumePercent(105) == 100,
                "headphone disconnect volume clamps high values")
         let headphonesSuite = "vorss.tests.mixer.headphones"
@@ -6059,6 +6059,39 @@ struct MetricsTests {
             expect(silentHeadphoneVolume.integer(forKey: DefaultsKey.mixerHeadphonesDisconnectVolumePercent) == 60,
                    "a volume the user chose is never migrated")
             silentHeadphoneVolume.removePersistentDomain(forName: headphonesSuite)
+        }
+        expect(MixerRoutingSupport.shouldMuteOutputLoweredForDisconnect(lowerToPercent: 0, currentlyMuted: false),
+               "zero disconnect volume also mutes speakers")
+        expect(!MixerRoutingSupport.shouldMuteOutputLoweredForDisconnect(lowerToPercent: 25, currentlyMuted: false),
+               "audible disconnect volume does not mute")
+        expect(!MixerRoutingSupport.shouldMuteOutputLoweredForDisconnect(lowerToPercent: 0, currentlyMuted: true),
+               "existing user mute is not owned by disconnect protection")
+        expect(!MixerRoutingSupport.shouldMuteOutputLoweredForDisconnect(lowerToPercent: 0, currentlyMuted: nil),
+               "devices without mute control are left alone")
+        expectClose(Double(MixerRoutingSupport.gain(forVolume: 0.5)), 0.25, "50 percent plays at quarter gain")
+        expectClose(Double(MixerRoutingSupport.gain(forVolume: 0.25)), 0.0625, "25 percent plays at sixteenth gain")
+        for gain in [0.0, 0.01, 0.25, 0.5, 1, 1.5, 2] {
+            expectClose(Double(MixerRoutingSupport.gain(forVolume: MixerRoutingSupport.volume(forGain: gain))),
+                        gain, "legacy gain round trip preserves loudness")
+        }
+        expect(MixerRoutingSupport.gain(forVolume: -1) == 0, "negative volume is silent")
+        expect(MixerRoutingSupport.gain(forVolume: .nan) == 1, "invalid volume plays untouched")
+        let curveSuite = "vorss.tests.mixer.curve"
+        if let store = UserDefaults(suiteName: curveSuite) {
+            store.removePersistentDomain(forName: curveSuite)
+            store.set(["quiet": 0.25, "boost": 1.5], forKey: DefaultsKey.appVolumes)
+            Defaults.migrateAppVolumesToPositions(in: store)
+            expectClose((store.dictionary(forKey: DefaultsKey.appVolumes)?["quiet"] as? Double) ?? -1,
+                        0.5, "saved gain migrates to equivalent slider position")
+            Defaults.migrateAppVolumesToPositions(in: store)
+            expectClose((store.dictionary(forKey: DefaultsKey.appVolumes)?["quiet"] as? Double) ?? -1,
+                        0.5, "volume migration runs only once")
+            store.set(0, forKey: DefaultsKey.mixerHeadphonesDisconnectVolumePercent)
+            store.set(true, forKey: DefaultsKey.mixerHeadphonesDisconnectSilenceAllowed)
+            Defaults.migrateSilentHeadphonesDisconnectVolume(in: store)
+            expect(store.integer(forKey: DefaultsKey.mixerHeadphonesDisconnectVolumePercent) == 0,
+                   "explicit silence survives relaunch and backup restore")
+            store.removePersistentDomain(forName: curveSuite)
         }
         expect(Defaults.sanitizedAppOutputDeviceUID(" BuiltInSpeakerDevice ") == "BuiltInSpeakerDevice",
                "audio output device UIDs are trimmed")

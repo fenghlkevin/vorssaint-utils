@@ -7,6 +7,7 @@ struct NetworkInfoSettings: View {
     @ObservedObject private var l10n = L10n.shared
     @ObservedObject private var service = NetworkInfoService.shared
     @AppStorage(DefaultsKey.panelShowNetworkInfo) private var panelEntry = true
+    @State private var showingTraffic = false
     private var text: NetworkInfoStrings { NetworkInfoStrings(language: l10n.language) }
 
     var body: some View {
@@ -18,6 +19,9 @@ struct NetworkInfoSettings: View {
                         Text(text.overview).foregroundStyle(.secondary)
                     }
                     Spacer()
+                    Button { showingTraffic = true } label: {
+                        Label(text.appTraffic, systemImage: "chart.bar.xaxis")
+                    }
                     Button(text.open) { (NSApp.delegate as? AppDelegate)?.showNetworkInfoPanel() }
                     Button { service.refresh(force: true) } label: {
                         Label(text.refresh, systemImage: "arrow.clockwise")
@@ -81,6 +85,18 @@ struct NetworkInfoSettings: View {
                 .frame(maxWidth: .infinity)
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .sheet(isPresented: $showingTraffic) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Spacer()
+                    Button(text.closeTraffic) { showingTraffic = false }
+                        .keyboardShortcut(.cancelAction)
+                }
+                NetworkChainView()
+            }
+            .padding(24)
+            .frame(width: 940, height: 720)
+        }
     }
 
     private var surface: some View {

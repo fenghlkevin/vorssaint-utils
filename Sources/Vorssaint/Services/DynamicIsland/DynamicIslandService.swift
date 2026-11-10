@@ -240,7 +240,11 @@ final class DynamicIslandService: ObservableObject {
             w.isOpaque = false; w.backgroundColor = .clear; w.level = .statusBar; w.hasShadow = false
             w.acceptsMouseMovedEvents = true
             w.becomesKeyOnlyIfNeeded = true
-            w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            w.hidesOnDeactivate = false
+            // This is a screen overlay, not a desktop window. Keep Show Desktop
+            // and Stage Manager from moving it with the application's windows.
+            w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary,
+                                    .canJoinAllApplications, .stationary, .ignoresCycle]
             w.contentView = DynamicIslandHostingView(rootView: DynamicIslandView())
             window = w
         }

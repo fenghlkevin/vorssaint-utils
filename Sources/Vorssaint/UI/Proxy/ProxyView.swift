@@ -124,6 +124,9 @@ struct ProxyWorkspaceView: View {
                 Text("修改局域网访问会重启核心。开启后，局域网设备可使用本机代理端口。Controller 始终只监听本机。")
                     .font(.caption).foregroundStyle(.secondary)
                 port("代理端口", \.mixedPort); port("Controller 端口", \.controllerPort); port("DNS 端口", \.dnsPort)
+                Toggle("备用加密 DNS 通过代理访问", isOn: Binding(get: { service.preferences.usesDNSFallbackRecovery }, set: { value in var updated = service.preferences; updated.dnsFallbackRecovery = value; service.savePreferences(updated) })).disabled(service.state != .stopped || service.busy)
+                Text("已有 fallback 中未指定出口的 DoH / DoT 使用主策略组。保留原上游、公司域名策略和指定出口，不修改 macOS DNS；需要可用节点。")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("允许唯一匹配的策略名称大小写修复", isOn: Binding(get: { service.preferences.repairReferences }, set: { value in var updated = service.preferences; updated.repairReferences = value; service.savePreferences(updated) })).disabled(service.state != .stopped || service.busy)
             }
             Section("启动与终端") {

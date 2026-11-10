@@ -26,6 +26,12 @@ import Darwin
         precondition(ProxyService.isTransientStartupFailure(URLError(.notConnectedToInternet)))
         precondition(!ProxyService.isTransientStartupFailure(ProxyFailure.message("请先授权网络助手")))
         precondition(!ProxyService.isTransientStartupFailure(ProxyFailure.message("端口 7890 已被占用")))
+        for message in ["核心 DNS 查询失败，未接管系统网络。请检查 DNS 上游及其代理出口。",
+                        "当前策略组无法通过联网检测，未接管系统网络。请更换可用节点后重试。",
+                        "核心或必要规则集尚未就绪，系统代理未启用。请重试以使用已缓存资源。"] {
+            precondition(ProxyService.isTransientStartupFailure(ProxyFailure.message(message)),
+                         "login health-check failures must retry after network recovery")
+        }
         precondition(!ProxyService.isTransientStartupFailure(CancellationError()))
         let slowInspection = try ProxyConfigCompiler.inspect(Data("proxies: []\nproxy-groups: []\nrule-providers: {slow: {type: http, behavior: classical, url: 'http://127.0.0.1:27181/slow', interval: 3600}}\nrules: ['RULE-SET,slow,DIRECT', 'MATCH,DIRECT']\n".utf8))
         let slowWork = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

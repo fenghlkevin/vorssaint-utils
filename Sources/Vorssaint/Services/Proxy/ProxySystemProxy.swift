@@ -5,9 +5,13 @@ import Security
 import SystemConfiguration
 
 protocol ProxyNetworkStore: AnyObject {
+    func containsService(_ service: String) throws -> Bool
     func activeService() throws -> String?
     func read(_ service: String) throws -> [String: Any]
     func write(_ service: String, _ values: [String: Any], expected: [String: Any]) throws
+}
+extension ProxyNetworkStore {
+    func containsService(_ service: String) throws -> Bool { true }
 }
 struct ProxyNetworkError: LocalizedError {
     let message: String
@@ -46,6 +50,21 @@ final class ProxySystemLease {
         default: return false
         }
     }
+    static func restorationSnapshot(_ original: [String: Any], port: Int) -> [String: Any] {
+        var result = original
+        // The core has already bound this port before the lease is acquired.
+        // An earlier enabled proxy pointing here is stale, not an independent
+        // service we can restore after terminating our own core.
+        for family in [("HTTPEnable", "HTTPProxy", "HTTPPort"),
+                       ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
+                       ("SOCKSEnable", "SOCKSProxy", "SOCKSPort")] {
+            let host = (original[family.1] as? String ?? "").lowercased()
+            if ["127.0.0.1", "localhost", "::1", "[::1]"].contains(host), original[family.2] as? Int == port {
+                result[family.0] = 0
+            }
+        }
+        return result
+    }
     private func save() throws {
         let data = try PropertyListSerialization.data(fromPropertyList: records, format: .binary, options: 0)
         try data.write(to: journal, options: .atomic)
@@ -57,17 +76,30 @@ final class ProxySystemLease {
                   let written = entry["written"] as? [String: Any] else {
                 throw ProxyNetworkError(message: "系统代理恢复记录格式无效。")
             }
+            guard try store.containsService(service) else {
+                records.removeValue(forKey: service); try save(); continue
+            }
             let snapshot = try store.read(service)
+            let restored = Self.restorationSnapshot(original, port: written["HTTPPort"] as? Int ?? 0)
             var current = snapshot
             var changed = false
             let families = [["HTTPEnable", "HTTPProxy", "HTTPPort"], ["HTTPSEnable", "HTTPSProxy", "HTTPSPort"], ["SOCKSEnable", "SOCKSProxy", "SOCKSPort"], ["ProxyAutoConfigEnable"], ["ProxyAutoDiscoveryEnable"]]
             for family in families where family.allSatisfy({ Self.equal(current[$0], written[$0]) }) {
                 for key in family {
-                    if !Self.equal(current[key], original[key]) { changed = true }
-                    current[key] = original[key]
+                    if !Self.equal(current[key], restored[key]) { changed = true }
+                    current[key] = restored[key]
                 }
             }
-            if changed { try store.write(service, current, expected: snapshot) }
+            if changed {
+                try store.write(service, current, expected: snapshot)
+                if try store.containsService(service) {
+                    let actual = try store.read(service)
+                    let changedKeys = Set(snapshot.keys).union(current.keys).filter { !Self.equal(snapshot[$0], current[$0]) }
+                    guard changedKeys.allSatisfy({ Self.equal(actual[$0], current[$0]) }) else {
+                        throw ProxyNetworkError(message: "系统代理恢复后验证失败，已保留恢复记录；请重试停止代理。")
+                    }
+                }
+            }
             records.removeValue(forKey: service)
             try save()
         }
@@ -85,7 +117,7 @@ final class ProxySystemLease {
         try restore()
         let original = try store.read(service)
         let desired = Self.desired(port: port)
-        records[service] = ["original": original, "written": desired]
+        records[service] = ["original": Self.restorationSnapshot(original, port: port), "written": desired]
         try save() // Must succeed before touching the OS.
         var updated = original
         desired.forEach { updated[$0.key] = $0.value }
@@ -137,6 +169,9 @@ final class SCProxyNetworkStore: ProxyNetworkStore {
     func read(_ service: String) throws -> [String: Any] {
         let prefs = try preferences(writing: false)
         return SCPreferencesPathGetValue(prefs, "/NetworkServices/\(service)/Proxies" as CFString) as? [String: Any] ?? [:]
+    }
+    func containsService(_ service: String) throws -> Bool {
+        SCNetworkServiceCopy(try preferences(writing: false), service as CFString) != nil
     }
     func write(_ service: String, _ values: [String: Any], expected: [String: Any]) throws {
         let prefs = try preferences(writing: true)

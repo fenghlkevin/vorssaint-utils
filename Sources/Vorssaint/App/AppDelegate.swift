@@ -68,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // choice is the last thing the user expressed in the app; startup
         // never turns the item off.
         LaunchAtLogin.repairAtStartup()
+        AppTrafficService.shared.start()
 
         // Switch back on any display a previous run left off. A run that ends
         // without putting one back leaves a screen dark with no app around to
@@ -263,6 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminating = true
+        AppTrafficService.shared.stop()
         MenuBarIconCollapser.shared.shutdown()
         // Quitting properly means the start worked, whenever it happened.
         endStartupWatch()

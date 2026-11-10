@@ -2654,7 +2654,7 @@ extension Strings {
         mixerSystemOutputTooltip: "Choose system output",
         mixerSystemOutputErrorFormat: "Could not switch: %@",
         mixerLowerOnHeadphonesDisconnect: "Lower volume when headphones disconnect",
-        mixerLowerOnHeadphonesDisconnectCaption: "Adjusts output when wired or Bluetooth headphones disconnect.",
+        mixerLowerOnHeadphonesDisconnectCaption: "Adjusts output when wired or Bluetooth headphones disconnect. Choose 0% to mute.",
         mixerHeadphonesDisconnectVolume: "Volume after disconnect",
         preciseVolumeRollerEnable: "Use finer volume steps",
         preciseVolumeRollerCaption: "Turns volume wheels and keys into smaller system volume steps.",

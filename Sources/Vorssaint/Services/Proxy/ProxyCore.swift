@@ -114,6 +114,31 @@ final class ProxyAPI: @unchecked Sendable {
         throw ProxyFailure.message("核心或必要规则集尚未就绪，系统代理未启用。请重试以使用已缓存资源。")
     }
     func logSocket(level: String) -> URLSessionWebSocketTask { socket(path: "logs", query: [.init(name: "level", value: level)]) }
+    func validateTakeover(dnsEnabled: Bool, proxyGroup: String?) async throws {
+        if dnsEnabled {
+            do {
+                let result = try await request(["dns", "query"], query: [.init(name: "name", value: "example.com"), .init(name: "type", value: "A")])
+                guard result["Status"] as? Int == 0,
+                      let answers = result["Answer"] as? [[String: Any]],
+                      answers.contains(where: { $0["type"] as? Int == 1 && !($0["data"] as? String ?? "").isEmpty }) else {
+                    throw ProxyFailure.message("DNS 未返回有效 IPv4 地址。")
+                }
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                throw ProxyFailure.message("核心 DNS 查询失败，未接管系统网络。请检查 DNS 上游及其代理出口。")
+            }
+        }
+        if let proxyGroup {
+            do {
+                let result = try await request(["proxies", proxyGroup, "delay"], query: [.init(name: "timeout", value: "5000"), .init(name: "url", value: "https://www.gstatic.com/generate_204")])
+                guard let delay = result["delay"] as? Int, delay >= 0 else { throw ProxyFailure.message("节点探测未成功。") }
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                throw ProxyFailure.message("当前策略组无法通过联网检测，未接管系统网络。请更换可用节点后重试。")
+            }
+        }
+        try Task.checkCancellation()
+    }
     func memorySocket() -> URLSessionWebSocketTask { socket(path: "memory", query: []) }
     private func socket(path: String, query: [URLQueryItem]) -> URLSessionWebSocketTask {
         var url = URLComponents(string: "ws://127.0.0.1:\(port)/\(path)")!

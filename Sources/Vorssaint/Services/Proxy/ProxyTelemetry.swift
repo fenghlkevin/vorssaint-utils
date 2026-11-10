@@ -17,6 +17,8 @@ struct ProxyConnection: Identifiable {
     let download: Double
     var uploadRate: Double = 0
     var downloadRate: Double = 0
+    var sourceIP = ""
+    var sourcePort = ""
     static func parse(_ value: [String: Any]) -> ProxyConnection? {
         guard let id = value["id"] as? String, !id.isEmpty else { return nil }
         let metadata = value["metadata"] as? [String: Any] ?? [:]
@@ -32,7 +34,8 @@ struct ProxyConnection: Identifiable {
                      network: text("network"), rule: String(([value["rule"] as? String, value["rulePayload"] as? String].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ": ")).prefix(512)),
                      chains: (value["chains"] as? [String] ?? []).prefix(20).joined(separator: " → "),
                      started: String((value["start"] as? String ?? "").prefix(80)),
-                     upload: counter(value["upload"]), download: counter(value["download"]))
+                     upload: counter(value["upload"]), download: counter(value["download"]),
+                     sourceIP: source, sourcePort: metadata["sourcePort"].map { String(describing: $0) } ?? "")
     }
     static func counter(_ value: Any?) -> Double { let n = (value as? NSNumber)?.doubleValue ?? 0; return n.isFinite ? max(0, n) : 0 }
 }

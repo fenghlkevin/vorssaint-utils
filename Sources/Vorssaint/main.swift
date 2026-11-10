@@ -2,6 +2,14 @@
 // Copyright (C) 2026 Vorssaint
 
 import AppKit
+#if VORSSAINT_DEVELOPMENT
+import SwiftUI
+#endif
+
+// Enter before Defaults, AppDelegate, windows or startup services are created.
+if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--app-traffic-worker" {
+    exit(AppTrafficWorker.run(parentPID: Int32(CommandLine.arguments[2]) ?? 0))
+}
 
 if CommandLine.arguments.contains("--hosts-helper-check") || CommandLine.arguments.contains("--hosts-helper-repair") {
     HostsHelperClient.diagnoseAndExit(repair: CommandLine.arguments.contains("--hosts-helper-repair"))
@@ -67,4 +75,23 @@ if CommandLine.arguments.contains("--uninstall") {
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
+#if VORSSAINT_DEVELOPMENT
+// A visible, real-service network view for local delivery checks; no settings changed.
+var networkPreviewWindow: NSWindow?
+if CommandLine.arguments.contains("--network-preview") {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 430, height: 700),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = "Network · Developer Preview"
+        window.contentView = NSHostingView(rootView: ScrollView {
+            NetworkSection(collapsible: false).padding(16)
+        }.frame(minWidth: 390, minHeight: 400))
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        networkPreviewWindow = window
+    }
+}
+#endif
 app.run()

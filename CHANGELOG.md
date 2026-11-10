@@ -10,6 +10,8 @@ All notable changes to this project are documented here. The format follows
 Vorssaint expands screen text recognition, clipboard, Super key, Dock Preview, App Switcher, Window Layout and snippet controls, broadens app update and safe cleanup discovery, and hardens Accessibility timeouts, Volume Mixer audio rendering and teardown, Super key shutdown, process termination, update and uninstallation teardown, window handling, pasteboard restoration, sensor selection, Cleaning Mode unlock and favicon downloads. It also improves disk space metrics, Settings, Scratchpad, Screenshot Editor, floating panels and several menu bar behaviors.
 
 ### Added
+- Headphone disconnect protection now allows 0% and mutes supported outputs at zero, restoring only the mute it applied.
+- Per-app mixer sliders now follow perceived loudness, with existing saved levels migrated to preserve their actual gain.
 - Native Hosts management with local profile editing, combined activation, menu panel switching, signed-helper writes, conflict checks, and backup recovery.
 - Window Layout now offers configurable window and screen gaps, so snapped windows can keep a preset distance from each other and from the screen edge. Thanks to @marcelharinck.
 - Eject all disks can now exclude specific drives in Settings, keeping backup drives and permanent storage mounted when ejecting other external disks.

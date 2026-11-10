@@ -6,10 +6,13 @@ final class MemoryNetwork: ProxyNetworkStore {
     var active: String? = "wifi"
     var values: [String: [String: Any]] = ["wifi": ["HTTPEnable": 0, "ExceptionsList": ["*.local"]], "ethernet": [:]]
     var fail = false
+    var ignoreWrites = false
+    func containsService(_ service: String) throws -> Bool { values[service] != nil }
     func activeService() throws -> String? { active }
     func read(_ service: String) throws -> [String: Any] { values[service] ?? [:] }
     func write(_ service: String, _ value: [String: Any], expected: [String: Any]) throws {
         if fail { throw ProxyNetworkError(message: "simulated authorization failure") }
+        if ignoreWrites { return }
         values[service] = value
     }
 }
@@ -62,6 +65,20 @@ final class MemoryNetwork: ProxyNetworkStore {
         check(vpnProxies.contains { $0["type"] as? String == "direct" && $0["interface-name"] as? String == "utun4" }, "VPN direct egress not bound")
         check((vpnConfig["rules"] as! [String]).first == "IP-CIDR,172.27.192.0/20,Vorssaint VPN utun4", "VPN route must precede catch-all rules")
         check((root["dns"] as! [String: Any])["nameserver-policy"] != nil, "company DNS preserved")
+        let fallbackFixture = fixture.replacingOccurrences(of: "enable: true", with: "enable: true\n  fallback: ['https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query']\n  fallback-filter: {geoip: true, geoip-code: CN}")
+        let fallbackInspection = try ProxyConfigCompiler.inspect(Data(fallbackFixture.utf8))
+        let fallbackRoot = try JSONSerialization.jsonObject(with: ProxyConfigCompiler.compile(fallbackInspection, preferences: preferences, secret: "test")) as! [String: Any]
+        let fallbackDNS = fallbackRoot["dns"] as! [String: Any]
+        check(fallbackDNS["fallback"] as? [String] == ["https://1.1.1.1/dns-query#Proxy", "https://8.8.8.8/dns-query#Proxy"], "foreign fallback uses primary proxy without changing upstreams")
+        let originalDNS = fallbackInspection.source["dns"] as! [String: Any]
+        check(NSDictionary(dictionary: fallbackDNS["nameserver-policy"] as! [String: Any]).isEqual(to: originalDNS["nameserver-policy"] as! [String: Any]), "recovery never changes private domain policy")
+        var exactDNS = preferences; exactDNS.dnsFallbackRecovery = false
+        let exactRoot = try JSONSerialization.jsonObject(with: ProxyConfigCompiler.compile(fallbackInspection, preferences: exactDNS, secret: "test")) as! [String: Any]
+        check((exactRoot["dns"] as! [String: Any])["fallback"] as? [String] == originalDNS["fallback"] as? [String], "explicit opt-out preserves fallback")
+        check((root["dns"] as! [String: Any])["fallback"] == nil, "no fallback is invented when absent")
+        let boundFixture = fallbackFixture.replacingOccurrences(of: "https://1.1.1.1/dns-query", with: "https://1.1.1.1/dns-query#utun4")
+        let boundRoot = try JSONSerialization.jsonObject(with: ProxyConfigCompiler.compile(ProxyConfigCompiler.inspect(Data(boundFixture.utf8)), preferences: preferences, secret: "test")) as! [String: Any]
+        check(((boundRoot["dns"] as! [String: Any])["fallback"] as! [String]).first == "https://1.1.1.1/dns-query#utun4", "explicit DNS egress preserved")
         check(root["find-process-mode"] as? String == "always", "local process lookup always enabled")
         check(root["external-controller"] as? String == "127.0.0.1:19090", "controller bound locally")
         for invalid in ["rules: []\nrules: []", "rules: &a []\nproxies: *a", "---\nrules: []\n---\nrules: []"] {
@@ -97,6 +114,44 @@ final class MemoryNetwork: ProxyNetworkStore {
         backend.fail = true
         do { try ProxySystemLease(store: backend, journal: journal).enable(port: 17890); fatalError("write failure ignored") } catch {}
         backend.fail = false; try fresh.restore()
+        // A previous client can leave its proxy enabled after releasing the
+        // same port. Stopping our core must restore usable direct access.
+        for host in ["127.0.0.1", "localhost", "::1"] {
+            let stale = MemoryNetwork()
+            stale.values["wifi"] = ["HTTPEnable": 1, "HTTPProxy": host, "HTTPPort": 17890,
+                                    "HTTPSEnable": 1, "HTTPSProxy": host, "HTTPSPort": 17890,
+                                    "SOCKSEnable": 1, "SOCKSProxy": host, "SOCKSPort": 17890,
+                                    "ExceptionsList": ["*.local"]]
+            let staleURL = directory.appendingPathComponent(UUID().uuidString)
+            let owned = try ProxySystemLease(store: stale, journal: staleURL)
+            try owned.enable(port: 17890)
+            try ProxySystemLease(store: stale, journal: staleURL).restore()
+            for key in ["HTTPEnable", "HTTPSEnable", "SOCKSEnable"] {
+                check(stale.values["wifi"]?[key] as? Int == 0, "stale same-port proxy must not be re-enabled after restart recovery")
+            }
+            check(stale.values["wifi"]?["ExceptionsList"] as? [String] == ["*.local"], "bypass rules preserved")
+        }
+        let previousProxy = MemoryNetwork()
+        previousProxy.values["wifi"] = ["HTTPEnable": 1, "HTTPProxy": "127.0.0.1", "HTTPPort": 17891]
+        let previousLease = try ProxySystemLease(store: previousProxy, journal: directory.appendingPathComponent("other.plist"))
+        try previousLease.enable(port: 17890); try previousLease.restore()
+        check(previousProxy.values["wifi"]?["HTTPEnable"] as? Int == 1 && previousProxy.values["wifi"]?["HTTPPort"] as? Int == 17891, "independent proxy restored")
+        let unconfirmed = MemoryNetwork()
+        let unconfirmedLease = try ProxySystemLease(store: unconfirmed, journal: directory.appendingPathComponent("unconfirmed.plist"))
+        try unconfirmedLease.enable(port: 17890); unconfirmed.ignoreWrites = true
+        do { try unconfirmedLease.restore(); fatalError("unconfirmed restoration accepted") } catch {}
+        check(!unconfirmedLease.records.isEmpty, "readback failure retains journal")
+        unconfirmed.ignoreWrites = false; try unconfirmedLease.restore()
+        try unconfirmedLease.enable(port: 17890); unconfirmed.values.removeValue(forKey: "wifi")
+        try unconfirmedLease.restore()
+        check(unconfirmedLease.records.isEmpty && unconfirmed.values["wifi"] == nil, "deleted service must not be recreated")
+        let legacy = MemoryNetwork()
+        let legacyURL = directory.appendingPathComponent("legacy.plist")
+        legacy.values["wifi"] = ProxySystemLease.desired(port: 17890)
+        let legacyRecord = ["wifi": ["original": legacy.values["wifi"]!, "written": legacy.values["wifi"]!]]
+        try PropertyListSerialization.data(fromPropertyList: legacyRecord, format: .binary, options: 0).write(to: legacyURL)
+        try ProxySystemLease(store: legacy, journal: legacyURL).restore()
+        check(legacy.values["wifi"]?["HTTPEnable"] as? Int == 0, "old journals with stale same-port proxy recover to direct")
         if CommandLine.arguments.count > 1 {
             let data = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
             let actual = try ProxyConfigCompiler.inspect(data)

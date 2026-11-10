@@ -23,6 +23,8 @@ struct ProxyPreferences: Codable, Equatable {
     var mode = "rule"
     var repairReferences = false
     var dnsPort = 1053
+    var dnsFallbackRecovery: Bool? = nil
+    var usesDNSFallbackRecovery: Bool { dnsFallbackRecovery ?? true }
     var selections: [String: String] = [:]
     var tunnel: ProxyTunnelSettings? = nil
     var tunnelSettings: ProxyTunnelSettings { get { tunnel ?? .init() } set { tunnel = newValue } }
@@ -217,6 +219,17 @@ enum ProxyConfigCompiler {
         var dns = root["dns"] as? [String: Any] ?? [:]
         dns["listen"] = "127.0.0.1:\(preferences.dnsPort)"
         if dns["proxy-server-nameserver"] == nil { dns["proxy-server-nameserver"] = ["system"] }
+        // Foreign fallback resolvers are often unreachable directly. Route
+        // unbound encrypted fallback through the selected proxy group, keeping
+        // explicit interfaces, upstream choices and private domain policies.
+        if preferences.usesDNSFallbackRecovery, dns["enable"] as? Bool == true,
+           let fallback = dns["fallback"] as? [String],
+           let primary = ProxyGroup.primary(in: inspection.groups), !inspection.nodeNames.isEmpty {
+            dns["fallback"] = fallback.map { server in
+                guard !server.contains("#"), server.hasPrefix("https://") || server.hasPrefix("tls://") else { return server }
+                return server + "#" + primary.name
+            }
+        }
         if let tunnel {
             let routes = tunnel.preservedRoutes.sorted { $0.prefix.prefix > $1.prefix.prefix }
             func bind(_ value: Any) -> Any {

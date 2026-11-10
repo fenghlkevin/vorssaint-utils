@@ -548,7 +548,7 @@ extension Strings {
         mixerSystemOutputTooltip: "選擇系統輸出",
         mixerSystemOutputErrorFormat: "無法切換：%@",
         mixerLowerOnHeadphonesDisconnect: "耳機中斷連線時降低音量",
-        mixerLowerOnHeadphonesDisconnectCaption: "有線或藍牙耳機中斷連線時，自動調整輸出音量。",
+        mixerLowerOnHeadphonesDisconnectCaption: "有線或藍牙耳機中斷連線時，自動調整輸出音量；設為 0% 時靜音。",
         mixerHeadphonesDisconnectVolume: "中斷連線後的音量",
         preciseVolumeRollerEnable: "使用更細的音量級距",
         preciseVolumeRollerCaption: "將音量滾輪和按鍵轉成更小的系統音量級距。",
